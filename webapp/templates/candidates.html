@@ -1,0 +1,54 @@
+{% extends "base.html" %}
+{% block title %}발굴 후보{% endblock %}
+{% block content %}
+<h1>발굴 후보</h1>
+
+<div class="panel">
+  <h2>새로 스캔하기</h2>
+  <form method="post" action="{{ url_for('discover_scan') }}" onsubmit="
+      var b = this.querySelector('button');
+      b.disabled = true;
+      b.textContent = this.category.value === 'all' ? '전체 카테고리 스캔 중... (5분 이상 걸릴 수 있음)' : '스캔 중...';
+    ">
+    <label for="category">카테고리</label>
+    <select name="category" id="category">
+      <option value="주방용품">주방용품</option>
+      <option value="욕실용품">욕실용품</option>
+      <option value="생활용품">생활용품</option>
+      <option value="정리수납">정리수납</option>
+      <option value="all">전체 비교 스캔</option>
+    </select>
+    <div class="row" style="margin-top:12px;">
+      <button type="submit">스캔 실행 (1~2분 소요, 전체 비교는 더 오래 걸림)</button>
+    </div>
+  </form>
+</div>
+
+<div class="panel">
+  <h2>후보 목록 ({{ candidates|length }}개, 점수순)</h2>
+  <div class="table-wrap">
+  <table>
+    <tr><th>키워드</th><th>점수</th><th>레이시오</th><th>상품수</th><th>카테고리</th><th>액션</th></tr>
+    {% for c in candidates %}
+    <tr>
+      <td>{{ c.keyword }}</td>
+      <td class="mono">{{ c.score }}</td>
+      <td class="mono">{{ c.golden_ratio }}</td>
+      <td class="mono">{{ "{:,}".format(c.product_count) }}</td>
+      <td class="muted">{{ c.category }}</td>
+      <td>
+        <div class="row" style="gap:6px;">
+          <a class="btn secondary" style="padding:5px 10px;font-size:12px;" href="{{ url_for('candidates_preview', keyword=c.keyword) }}">미리보기</a>
+          <form method="post" action="{{ url_for('register_candidate') }}" style="display:flex;gap:6px;align-items:center;">
+            <input type="hidden" name="keyword" value="{{ c.keyword }}">
+            <label style="display:inline;margin:0;font-size:11px;"><input type="checkbox" name="live"> 실등록</label>
+            <button type="submit" class="secondary" style="padding:5px 10px;font-size:12px;">바로등록</button>
+          </form>
+        </div>
+      </td>
+    </tr>
+    {% endfor %}
+  </table>
+  </div>
+</div>
+{% endblock %}

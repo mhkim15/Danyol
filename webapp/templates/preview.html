@@ -1,0 +1,66 @@
+{% extends "base.html" %}
+{% block title %}미리보기{% endblock %}
+{% block content %}
+<h1>등록 미리보기 — "{{ keyword }}"</h1>
+
+<div class="panel">
+  <h2>상품명 최적화</h2>
+  <label>도매매 원본</label>
+  <div class="mono" style="padding:8px 10px;background:var(--paper);border-radius:6px;color:var(--ink-soft);">{{ raw_name }}</div>
+  <label for="name_override">최적화 후 (동의어 제거 + SEO 규칙 적용) — 직접 수정 가능</label>
+  <input type="text" id="name_override" form="register-form" name="name_override" value="{{ optimized_name }}" maxlength="100" class="mono">
+</div>
+
+<div class="panel">
+  <h2>검색어 태그</h2>
+  <div class="row">
+    {% for t in tags %}<span class="badge">{{ t }}</span>{% else %}<span class="muted">없음</span>{% endfor %}
+  </div>
+</div>
+
+<div class="panel">
+  <h2>카테고리</h2>
+  <div>{{ category_name }} <span class="muted mono">({{ category_id or "미확정" }})</span></div>
+</div>
+
+<div class="panel">
+  <h2>가격 · 마진</h2>
+  <div class="row">
+    <div class="badge">판매가 {{ "{:,}".format(sale_price) }}원</div>
+    <div class="badge">도매가 {{ "{:,}".format(supply_price) }}원</div>
+    <div class="badge">마진율 {{ "%.1f"|format(margin_rate * 100) }}%</div>
+  </div>
+</div>
+
+<div class="panel">
+  <h2>리스팅 품질</h2>
+  <div class="row">
+    <div class="badge">이미지 {{ image_count }}장</div>
+    <div class="badge">설명 {{ description_len }}자</div>
+  </div>
+  {% if image_count <= 1 or description_len < 200 %}
+  <div class="flash flash-error" style="margin-top:10px;">원본 리스팅이 부실할 수 있습니다 — 등록 전 도매매 원본 페이지를 육안으로 확인하세요.</div>
+  {% endif %}
+</div>
+
+<div class="panel">
+  <h2>상세페이지 미리보기</h2>
+  <div style="border:1px solid var(--line);border-radius:6px;padding:10px;max-height:400px;overflow-y:auto;">
+    {{ detail_content|safe }}
+  </div>
+</div>
+
+<div class="panel">
+  <h2>이 내용으로 등록</h2>
+  <form method="post" action="{{ url_for('register_candidate') }}" id="register-form">
+    <input type="hidden" name="keyword" value="{{ keyword }}">
+    <input type="hidden" name="goods_no" value="{{ goods_no }}">
+    <div class="muted" style="font-size:12.5px;margin-bottom:8px;">도매매 상품번호 <span class="mono">{{ goods_no }}</span>를 그대로 등록합니다 — 재검색하지 않으므로 위에서 확인한 것과 동일한 상품이 등록됩니다.</div>
+    <label><input type="checkbox" name="live"> 실제로 등록 (체크 안 하면 미리보기만 한번 더 실행)</label>
+    <div class="row" style="margin-top:12px;">
+      <button type="submit">등록 실행</button>
+      <a class="btn secondary" href="{{ url_for('candidates') }}">뒤로</a>
+    </div>
+  </form>
+</div>
+{% endblock %}

@@ -1,0 +1,51 @@
+{% extends "base.html" %}
+{% block title %}도매매 발주{% endblock %}
+{% block content %}
+<h1>도매매 발주</h1>
+
+<div class="panel" style="background:var(--err-bg);color:var(--err);">
+  실제 결제(이머니 차감)가 발생합니다. 기본은 항상 미리보기(dry-run)이며, 아래 "실제로 발주 실행"을
+  체크하고 버튼을 눌러야만 실제로 결제됩니다 — 체크 전에는 몇 번 눌러도 안전합니다.
+</div>
+
+<div class="panel">
+  <form method="post" action="{{ url_for('purchase_place') }}">
+    <input type="hidden" name="return_to" value="purchase">
+    {% if goods_no %}
+    <div class="flash flash-success">주문 화면에서 자동으로 채워졌습니다 — 내용 확인 후 발주하세요.</div>
+    {% endif %}
+
+    <label>도매매 상품번호</label>
+    <input type="text" name="goods_no" value="{{ goods_no or '' }}" required>
+
+    <label>수량</label>
+    <input type="number" name="qty" value="{{ qty or 1 }}" min="1">
+
+    <label>수령인 이름</label>
+    <input type="text" name="receiver_name" value="{{ receiver_name or '' }}" required>
+
+    <label>휴대전화 (010-0000-0000 형식)</label>
+    <input type="text" name="phone" value="{{ phone or '' }}" required>
+
+    <label>우편번호</label>
+    <input type="text" name="zipcode" value="{{ zipcode or '' }}" required>
+
+    <label>주소1</label>
+    <input type="text" name="address1" value="{{ address1 or '' }}" required>
+
+    <label>주소2</label>
+    <input type="text" name="address2" value="{{ address2 or '' }}">
+
+    <label>쇼핑몰명/상호명 (필수 — 도매꾹 상표 노출 방지)</label>
+    <input type="text" name="shop_name" value="{{ shop_name or '' }}" required>
+
+    <div class="panel" style="background:var(--paper);margin-top:16px;">
+      <label style="margin-top:0;"><input type="checkbox" name="live"> 실제로 발주 실행 (체크 안 하면 미리보기만)</label>
+    </div>
+
+    <div class="row" style="margin-top:14px;">
+      <button type="submit">발주 요청 전송</button>
+    </div>
+  </form>
+</div>
+{% endblock %}

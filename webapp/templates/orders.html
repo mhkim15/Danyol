@@ -1,0 +1,80 @@
+{% extends "base.html" %}
+{% block title %}주문{% endblock %}
+{% block content %}
+<h1>주문</h1>
+
+<div class="panel">
+  <h2>신규 주문 확인</h2>
+  <form method="post" action="{{ url_for('orders_check') }}" class="row">
+    <div style="flex:1;min-width:120px;">
+      <label for="hours">조회 범위 (시간)</label>
+      <input type="number" name="hours" id="hours" value="24">
+    </div>
+    <button type="submit" style="align-self:flex-end;">조회</button>
+  </form>
+  <div class="row" style="margin-top:10px;">
+    <a class="btn secondary" href="{{ url_for('orders_demo') }}">샘플 데이터로 화면 확인 (API 안 될 때)</a>
+  </div>
+</div>
+
+{% if checked %}
+<div class="panel">
+  <h2>조회 결과 ({{ pairs|length }}건)</h2>
+  {% for o, match in pairs %}
+  <div class="panel" style="background:var(--paper);margin-bottom:10px;">
+    <div class="mono" style="font-size:12px;color:var(--ink-soft);">주문 {{ o.product_order_id }} {% if demo %}<span class="badge">샘플</span>{% endif %}</div>
+    <div style="margin:4px 0;">{{ o.product_name }} {{ o.option_name }} × {{ o.quantity }} — {{ "{:,}".format(o.unit_price) }}원</div>
+    <div class="muted" style="font-size:13px;">{{ o.receiver_name }} ({{ o.receiver_tel }}) · {{ o.receiver_address }}</div>
+
+    {% if match %}
+    <form method="post" action="{{ url_for('purchase_place') }}" style="margin-top:10px;background:var(--paper);border:1px solid var(--line);border-radius:6px;padding:10px 12px;">
+      <input type="hidden" name="return_to" value="orders">
+      <input type="hidden" name="goods_no" value="{{ match.domemae_goods_no }}">
+      <input type="hidden" name="qty" value="{{ o.quantity }}">
+      <input type="hidden" name="receiver_name" value="{{ o.receiver_name }}">
+      <input type="hidden" name="phone" value="{{ o.receiver_tel }}">
+      <input type="hidden" name="zipcode" value="{{ o.receiver_zipcode }}">
+      <input type="hidden" name="address1" value="{{ o.receiver_address1 }}">
+      <input type="hidden" name="address2" value="{{ o.receiver_address2 }}">
+      <input type="hidden" name="shop_name" value="{{ match.name }}">
+      <div class="muted" style="font-size:12.5px;margin-bottom:6px;">도매매 <span class="mono">{{ match.domemae_goods_no }}</span> · {{ o.quantity }}개 · {{ o.receiver_name }} ({{ o.receiver_tel }}) · {{ o.receiver_address1 }} {{ o.receiver_address2 }}</div>
+      <div class="row">
+        <label style="margin:0;"><input type="checkbox" name="live"> 위 내용 확인함 — 실제로 발주</label>
+        <button type="submit">발주 넣기</button>
+        <a class="btn secondary" href="{{ url_for('purchase',
+            goods_no=match.domemae_goods_no, qty=o.quantity,
+            receiver_name=o.receiver_name, phone=o.receiver_tel,
+            zipcode=o.receiver_zipcode, address1=o.receiver_address1, address2=o.receiver_address2,
+            shop_name=match.name) }}" style="font-size:12px;padding:9px 12px;">수정해서 발주</a>
+      </div>
+    </form>
+    {% else %}
+    <div class="row" style="margin-top:10px;">
+      <a class="btn secondary" href="{{ url_for('purchase',
+          qty=o.quantity, receiver_name=o.receiver_name, phone=o.receiver_tel,
+          zipcode=o.receiver_zipcode, address1=o.receiver_address1, address2=o.receiver_address2) }}">발주하기 (상품 자동매칭 실패 — 상품번호 직접 입력 필요)</a>
+    </div>
+    {% endif %}
+
+    <form method="post" action="{{ url_for('orders_dispatch') }}" class="row" style="margin-top:10px;">
+      <input type="hidden" name="product_order_id" value="{{ o.product_order_id }}">
+      <div style="flex:1;min-width:100px;">
+        <label>택배사</label>
+        <select name="company">
+          <option>CJ대한통운</option><option>롯데택배</option><option>우체국택배</option>
+          <option>한진택배</option><option>로젠택배</option>
+        </select>
+      </div>
+      <div style="flex:1;min-width:140px;">
+        <label>송장번호</label>
+        <input type="text" name="tracking_number" required>
+      </div>
+      <button type="submit" style="align-self:flex-end;">발송처리</button>
+    </form>
+  </div>
+  {% else %}
+  <div class="muted">신규 주문 없음</div>
+  {% endfor %}
+</div>
+{% endif %}
+{% endblock %}

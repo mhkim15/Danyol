@@ -1,0 +1,21 @@
+# 비밀키/환경설정
+.env
+
+# macOS
+.DS_Store
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# 분석 결과물 (재생성 가능, 대용량)
+*.xlsx
+*.txt
+!requirements.txt
+
+# 캐시/로그성 데이터 (재생성되거나 개인 실행 이력)
+data/naver_categories_cache.json
+data/sourcing_log.json
+data/registered_products.json

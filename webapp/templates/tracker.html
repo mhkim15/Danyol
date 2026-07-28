@@ -1,0 +1,64 @@
+{% extends "base.html" %}
+{% block title %}판매추적{% endblock %}
+{% block content %}
+<h1>판매추적</h1>
+
+<div class="panel">
+  <h2>주문 데이터로 판매일 동기화</h2>
+  <form method="post" action="{{ url_for('tracker_sync') }}">
+    <button type="submit">최근 30일 주문으로 동기화 (커머스 API 필요)</button>
+  </form>
+</div>
+
+<div class="panel">
+  <h2>추적 대상 추가</h2>
+  <form method="post" action="{{ url_for('tracker_add') }}" class="row">
+    <div style="flex:1;min-width:140px;">
+      <label>스마트스토어 상품ID</label>
+      <input type="text" name="product_id" required>
+    </div>
+    <div style="flex:2;min-width:160px;">
+      <label>상품명</label>
+      <input type="text" name="name" required>
+    </div>
+    <button type="submit" style="align-self:flex-end;">추가</button>
+  </form>
+</div>
+
+<div class="panel">
+  <h2>자동삭제 위험 ({{ risky|length }}건, 13개월+ 미판매)</h2>
+  {% for p in risky %}
+  <div class="row" style="padding:6px 0;border-bottom:1px solid var(--line);">
+    <span class="mono">{{ p.product_id }}</span> {{ p.name }} <span class="muted">— {{ p.months_since_sold() }}개월째</span>
+  </div>
+  {% else %}<div class="muted">없음</div>{% endfor %}
+</div>
+
+<div class="panel">
+  <h2>교체 검토 ({{ stale|length }}건, 3개월+ 미판매)</h2>
+  {% for p in stale %}
+  <div class="row" style="padding:6px 0;border-bottom:1px solid var(--line);">
+    <span class="mono">{{ p.product_id }}</span> {{ p.name }} <span class="muted">— {{ p.months_since_sold() }}개월째</span>
+  </div>
+  {% else %}<div class="muted">없음</div>{% endfor %}
+</div>
+
+<div class="panel">
+  <h2>전체 추적 목록 ({{ products|length }}건)</h2>
+  <div class="table-wrap">
+  <table>
+    <tr><th>상품ID</th><th>상품명</th><th>등록일</th><th>최근판매일</th></tr>
+    {% for p in products %}
+    <tr>
+      <td class="mono">{{ p.product_id }}</td>
+      <td>{{ p.name }}</td>
+      <td class="muted">{{ p.registered_date }}</td>
+      <td class="muted">{{ p.last_sold_date or "판매이력 없음" }}</td>
+    </tr>
+    {% else %}
+    <tr><td colspan="4" class="muted">추적 중인 상품이 없습니다</td></tr>
+    {% endfor %}
+  </table>
+  </div>
+</div>
+{% endblock %}

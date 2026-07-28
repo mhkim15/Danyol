@@ -1,0 +1,31 @@
+{% extends "base.html" %}
+{% block title %}홈{% endblock %}
+{% block content %}
+<h1>파이프라인 현황</h1>
+
+<div class="panel">
+  <h2>요약</h2>
+  <div class="row">
+    <div class="badge">발굴 후보 {{ candidate_count }}개</div>
+    <div class="badge">진입권장(70점+) {{ recommended_count }}개</div>
+    <div class="badge">등록 완료 {{ registered_count }}개</div>
+  </div>
+  <div class="row" style="margin-top:14px;">
+    <a class="btn" href="{{ url_for('candidates') }}">발굴 후보 보기</a>
+    <a class="btn secondary" href="{{ url_for('orders') }}">주문 확인</a>
+  </div>
+</div>
+
+<div class="panel">
+  <h2>연동 상태</h2>
+  <table>
+    <tr><th>항목</th><th>상태</th></tr>
+    {% for name, ok in env_status.items() %}
+    <tr>
+      <td>{{ name }}</td>
+      <td>{% if ok %}<span class="badge">설정됨</span>{% else %}<span class="muted mono">미설정</span>{% endif %}</td>
+    </tr>
+    {% endfor %}
+  </table>
+</div>
+{% endblock %}

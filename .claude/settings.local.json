@@ -1,0 +1,25 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(npm init:*)",
+      "Bash(npm install:*)",
+      "Bash(sudo chown:*)",
+      "Bash(node naver_keywords.js)",
+      "Bash(node -e \":*)",
+      "mcp__Claude_in_Chrome__switch_browser",
+      "mcp__Claude_in_Chrome__tabs_context_mcp",
+      "mcp__Claude_in_Chrome__navigate",
+      "mcp__Claude_in_Chrome__computer",
+      "Bash(python3 main.py:*)",
+      "Skill(update-config)",
+      "Skill(update-config:*)",
+      "Bash(python3 -c \":*)",
+      "Bash(python3 -c \"import hmac; print\\(dir\\(hmac\\)\\); print\\(type\\(hmac.new\\)\\)\")",
+      "Bash(python3 -m py_compile bebrave/config.py bebrave/sourcing/keyword_tool.py bebrave/sourcing/trend.py bebrave/sourcing/discover.py main.py)",
+      "Bash(python3 test_domemae_api.py)",
+      "Bash(python3 test_*.py:*)",
+      "Bash(curl:*)",
+      "Bash(python3 -c \"import sys,re; body=sys.stdin.read\\(\\); apis=re.findall\\(r''''\\(getGoods\\\\w+|api/v\\\\d+[^\\\\s\"\"<]+|/v\\\\d+/\\\\w+\\)'''', body\\); print\\(''''\\\\n''''.join\\(set\\(apis\\)\\)[:2000]\\)\")"
+    ]
+  }
+}

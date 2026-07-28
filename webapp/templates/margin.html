@@ -1,0 +1,37 @@
+{% extends "base.html" %}
+{% block title %}마진 계산기{% endblock %}
+{% block content %}
+<h1>마진 계산기</h1>
+
+<div class="panel">
+  <form method="post">
+    <label>판매가 (원)</label>
+    <input type="number" name="price" value="{{ result.sale_price if result else '' }}" required>
+    <label>도매가 (원)</label>
+    <input type="number" name="cost" value="{{ result.cost_price if result else '' }}" required>
+    <label><input type="checkbox" name="free_shipping" {{ "checked" if result and result.shipping_cost == 0 }}> 무료배송</label>
+    <div class="row" style="margin-top:12px;">
+      <button type="submit">계산</button>
+    </div>
+  </form>
+</div>
+
+{% if result %}
+<div class="panel">
+  <h2>결과</h2>
+  <table>
+    <tr><td>주문관리수수료</td><td class="mono">{{ "{:,}".format(result.order_fee) }}원</td></tr>
+    <tr><td>판매수수료</td><td class="mono">{{ "{:,}".format(result.sales_fee) }}원</td></tr>
+    <tr><td>배송비</td><td class="mono">{{ "{:,}".format(result.shipping_cost) }}원</td></tr>
+    <tr><td>CS 예비비</td><td class="mono">{{ "{:,}".format(result.cs_reserve) }}원</td></tr>
+    <tr><td><b>순이익</b></td><td class="mono"><b>{{ "{:,}".format(result.net_profit) }}원</b></td></tr>
+    <tr><td><b>마진율</b></td><td class="mono"><b>{{ "%.1f"|format(result.margin_rate * 100) }}%</b></td></tr>
+  </table>
+  <div class="row" style="margin-top:12px;">
+    {% if result.passes_target %}<span class="badge">목표 마진율 달성</span>
+    {% elif result.passes_min %}<span class="badge">최소 마진율 통과</span>
+    {% else %}<div class="flash flash-error">최소 마진율 미달</div>{% endif %}
+  </div>
+</div>
+{% endif %}
+{% endblock %}

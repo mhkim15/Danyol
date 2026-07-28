@@ -1,0 +1,29 @@
+{% extends "base.html" %}
+{% block title %}등록 상품{% endblock %}
+{% block content %}
+<h1>등록된 상품</h1>
+
+<div class="panel">
+  <div class="table-wrap">
+  <table>
+    <tr><th>상품명</th><th>판매가</th><th>마진</th><th>스마트스토어ID</th><th>등록일</th><th></th></tr>
+    {% for p in products %}
+    <tr>
+      <td>{{ p.name }}</td>
+      <td class="mono">{{ "{:,}".format(p.sale_price) }}원</td>
+      <td class="mono">{{ "%.1f"|format(p.margin_rate * 100) }}%</td>
+      <td class="mono">{{ p.naver_product_id }}</td>
+      <td class="muted">{{ p.registered_date }}</td>
+      <td>
+        {% if p.naver_product_id %}
+        <a class="btn secondary" style="padding:5px 10px;font-size:12px;" href="{{ url_for('registered_status', product_id=p.naver_product_id) }}">실시간 상태</a>
+        {% endif %}
+      </td>
+    </tr>
+    {% else %}
+    <tr><td colspan="6" class="muted">아직 등록된 상품이 없습니다</td></tr>
+    {% endfor %}
+  </table>
+  </div>
+</div>
+{% endblock %}

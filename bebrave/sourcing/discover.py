@@ -31,6 +31,7 @@ from ..config import (
     BLOCKED_MEDICAL_KEYWORDS,
     BLOCKED_KIDS_KEYWORDS,
     BLOCKED_INFO_INTENT_SUFFIXES,
+    BLOCKED_LOCATION_PREFIXES,
 )
 from ..margin.calculator import calculate as calc_margin
 from .competition import CompetitionResult, fetch_competition
@@ -237,6 +238,9 @@ def _prefilter_candidates(kds: List[KeywordData], cap: int) -> List[KeywordData]
     def _is_info_intent_keyword(kw: str) -> bool:
         return any(s in kw for s in BLOCKED_INFO_INTENT_SUFFIXES)
 
+    def _is_location_keyword(kw: str) -> bool:
+        return any(loc in kw for loc in BLOCKED_LOCATION_PREFIXES)
+
     pool = [
         kd for kd in kds
         if kd.monthly_clicks > 0
@@ -245,6 +249,7 @@ def _prefilter_candidates(kds: List[KeywordData], cap: int) -> List[KeywordData]
         and not _is_medical_keyword(kd.keyword)
         and not _is_kids_keyword(kd.keyword)
         and not _is_info_intent_keyword(kd.keyword)
+        and not _is_location_keyword(kd.keyword)
     ]
     # 사전점수: 검색수에 클릭률(구매의도) 가중, comp_idx 높음은 감점(제외 아님).
     def _pre(kd: KeywordData) -> float:

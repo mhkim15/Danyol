@@ -46,7 +46,7 @@ def _load_env() -> None:
         load_dotenv(env_path)
     except ImportError:
         # python-dotenv 없을 때 직접 파싱
-        with open(env_path) as f:
+        with open(env_path, encoding="utf-8") as f:
             for line in f:
                 line = line.strip()
                 if line and not line.startswith("#") and "=" in line:
@@ -270,7 +270,10 @@ def cmd_sourcing(args: argparse.Namespace) -> None:
         print_report(results, category)
 
         if not args.dry_run and results:
-            recommended = [r for r in results if r.recommendation in ("진입 권장", "진입 가능")]
+            recommended = [
+                r for r in results
+                if r.recommendation in ("진입 권장", "진입 가능", "리메이크 권장", "리메이크 검토")
+            ]
             if recommended:
                 candidates = load_from_json(SOURCING_LOG)
                 existing = {c.keyword for c in candidates}
@@ -282,9 +285,9 @@ def cmd_sourcing(args: argparse.Namespace) -> None:
                         existing.add(c.keyword)
                         added += 1
                 save_to_json(candidates, SOURCING_LOG)
-                print(f"  sourcing_log.json 저장: {added}개 추가 (진입 권장 + 가능 기준)\n")
+                print(f"  sourcing_log.json 저장: {added}개 추가 (트랙A 진입권장/가능 + 트랙B 리메이크권장/검토 기준)\n")
             else:
-                print("  저장할 후보 없음 (진입 권장/가능 0개)\n")
+                print("  저장할 후보 없음\n")
         elif args.dry_run:
             print("  [dry-run] 저장 생략\n")
 

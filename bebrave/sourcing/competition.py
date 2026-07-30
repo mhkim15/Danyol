@@ -32,6 +32,21 @@ class CompetitionResult:
     avg_price: float = 0.0   # 상위 상품 평균 판매가 (참고용 — 리뷰·신뢰 쌓인 기존셀러 가격대)
     entry_price: float = 0.0  # 신규셀러 예상 진입가 (마진 계산 기준가) — 상위가격 하위 1/3 지점
     top_titles: List[str] = field(default_factory=list)  # 상위 상품명 (도매매 타입매칭용)
+    top_mall_names: List[str] = field(default_factory=list)  # 상위 상품 판매처명 (과점도 판단용)
+
+    @property
+    def price_spread(self) -> float:
+        """(최고가-최저가)/평균가 — 클수록 품질/가격대 스펙트럼이 넓어 리메이크로 파고들 여지."""
+        if not self.top_prices or self.avg_price <= 0:
+            return 0.0
+        return round((max(self.top_prices) - min(self.top_prices)) / self.avg_price, 4)
+
+    @property
+    def unique_seller_ratio(self) -> float:
+        """고유 판매처 수 ÷ 상위 노출 수 — 낮을수록 소수 판매처 과점(진입장벽 높음)."""
+        if not self.top_mall_names:
+            return 0.0
+        return round(len(set(self.top_mall_names)) / len(self.top_mall_names), 4)
 
     def summary(self) -> str:
         barrier_str = {
@@ -41,9 +56,10 @@ class CompetitionResult:
         }.get(self.barrier, "?")
         price_str = f" | 상위 평균가: {self.avg_price:,.0f}원" if self.avg_price else ""
         entry_str = f" | 신규셀러 진입가(추정): {self.entry_price:,.0f}원" if self.entry_price else ""
+        seller_str = f" | 판매처 다양성: {self.unique_seller_ratio:.0%}" if self.top_mall_names else ""
         return (
             f"경쟁 강도: {barrier_str}\n"
-            f"  등록 상품수: {self.product_count:,}개{price_str}{entry_str}"
+            f"  등록 상품수: {self.product_count:,}개{price_str}{entry_str}{seller_str}"
         )
 
 
@@ -84,10 +100,11 @@ def fetch_competition(
 
     product_count = int(data.get("total", 0))
 
-    # 상위 상품 가격 수집 (판매가 참고용)
+    # 상위 상품 가격 + 판매처 수집 (판매가/과점도 참고용)
     items = data.get("items", [])
     prices = []
     titles = []
+    mall_names = []
     for item in items:
         lp = item.get("lprice", 0)
         try:
@@ -96,6 +113,9 @@ def fetch_competition(
             pass
         raw_title = item.get("title", "")
         titles.append(re.sub(r"<[^>]+>", "", raw_title))
+        mall_name = item.get("mallName", "")
+        if mall_name:
+            mall_names.append(mall_name)
 
     avg_price = sum(prices) / len(prices) if prices else 0.0
 
@@ -123,6 +143,7 @@ def fetch_competition(
         avg_price=round(avg_price, 0),
         entry_price=round(entry_price, 0),
         top_titles=titles,
+        top_mall_names=mall_names,
     )
 
 

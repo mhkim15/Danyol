@@ -7,8 +7,19 @@
   <h2>새로 스캔하기</h2>
   <form method="post" action="{{ url_for('discover_scan') }}" onsubmit="
       var b = this.querySelector('button');
+      var isAll = this.category.value === 'all';
       b.disabled = true;
-      b.textContent = this.category.value === 'all' ? '전체 카테고리 스캔 중... (5분 이상 걸릴 수 있음)' : '스캔 중...';
+      var label = isAll ? '전체 카테고리 스캔 중' : '스캔 중';
+      var started = Date.now();
+      var timerEl = document.getElementById('scanTimer');
+      timerEl.style.display = 'inline';
+      var tick = function () {
+        var sec = Math.floor((Date.now() - started) / 1000);
+        var m = Math.floor(sec / 60), s = sec % 60;
+        b.textContent = label + '... (' + m + '분 ' + s + '초 경과)';
+      };
+      tick();
+      setInterval(tick, 1000);
     ">
     <label for="category">카테고리</label>
     <select name="category" id="category">
@@ -20,6 +31,7 @@
     </select>
     <div class="row" style="margin-top:12px;">
       <button type="submit">스캔 실행 (1~2분 소요, 전체 비교는 더 오래 걸림)</button>
+      <span id="scanTimer" class="muted" style="display:none;font-size:12.5px;">페이지를 벗어나지 말고 기다려주세요</span>
     </div>
   </form>
 </div>

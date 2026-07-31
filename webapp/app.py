@@ -16,6 +16,7 @@ import os
 import secrets
 import sys
 from contextlib import redirect_stdout
+from datetime import date, datetime
 from pathlib import Path
 
 from flask import Flask, Response, flash, redirect, render_template, request, url_for
@@ -101,6 +102,7 @@ def _find_registered_product(product_name: str) -> dict:
 @app.route("/")
 def index():
     from bebrave.tracker.products import ProductTracker
+    from bebrave.report import load_sales_orders, sales_month_series
 
     candidates = _load_json(SOURCING_LOG)
     registered = _load_json(REGISTERED_PRODUCTS)
@@ -117,12 +119,61 @@ def index():
     watch_count = len(stale) - risky_count
     normal_count = tracked_total - len(stale)
 
+    checked_at = datetime.now().strftime("%H:%M")
+
+    # 처리 대기 주문 — 최근 24시간 내 결제완료(PAYED)로 바뀐 뒤 아직 발송처리 안 된 건수.
+    # 조회한 김에 매출 원장에도 바로 반영해서(record_sales_orders) 방문할 때마다
+    # 자동으로 최신화되게 함 — 별도 "새로고침" 버튼/API 호출 불필요.
+    pending_orders = None
+    try:
+        from bebrave.smartstore.auth import get_access_token
+        from bebrave.smartstore.orders import fetch_new_orders
+        from bebrave.report import record_sales_orders
+        token = get_access_token()
+        recent_orders = fetch_new_orders(token, hours=24)
+        pending_orders = len([o for o in recent_orders if o.status == "PAYED"])
+        record_sales_orders(recent_orders)
+    except Exception:
+        pending_orders = None  # API 미연동/실패 시 화면에서 "확인 필요"로 표시
+
+    # 반품·취소 — 최근 24시간 내 상태변경 건수 (별도 lastChangedType 조회라 실패해도 위 주문 조회엔 영향 없음)
+    returns_count = None
+    try:
+        from bebrave.smartstore.auth import get_access_token
+        from bebrave.smartstore.orders import fetch_new_orders
+        token = get_access_token()
+        returns_count = len(fetch_new_orders(token, hours=24, status_type="RETURNED"))
+        returns_count += len(fetch_new_orders(token, hours=24, status_type="CANCELED"))
+    except Exception:
+        returns_count = None
+
+    sales_records = load_sales_orders()
+    today = date.today()
+    selected_year = request.args.get("year", type=int) or today.year
+    selected_month = request.args.get("month", type=int) or today.month
+    if (selected_year, selected_month) > (today.year, today.month):
+        selected_year, selected_month = today.year, today.month
+
+    chart_series = sales_month_series(sales_records, selected_year, selected_month)
+    is_current_month = (selected_year, selected_month) == (today.year, today.month)
+    current_series = chart_series if is_current_month else sales_month_series(sales_records, today.year, today.month)
+    this_month = {
+        "revenue": sum(p["revenue"] for p in current_series),
+        "profit": sum(p["profit"] for p in current_series),
+        "order_count": sum(p["order_count"] for p in current_series),
+    }
+
+    prev_month, prev_year = (12, selected_year - 1) if selected_month == 1 else (selected_month - 1, selected_year)
+    next_month, next_year = (1, selected_year + 1) if selected_month == 12 else (selected_month + 1, selected_year)
+    next_disabled = (next_year, next_month) > (today.year, today.month)
+
+    # (설정여부, 필수여부) — 카카오 알림·Claude API는 선택 기능이라 미설정이어도 경고색 안 씀
     env_status = {
-        "도매매 (Open API)": bool(os.environ.get("DOMEMAE_API_KEY")),
-        "네이버 커머스 API": bool(os.environ.get("NAVER_COMMERCE_CLIENT_ID")),
-        "도매매 발주 (Private, 신규계정)": bool(os.environ.get("DOMEMAE_USER_ID")),
-        "카카오 알림": bool(os.environ.get("KAKAO_REST_API_KEY")),
-        "Claude API (AI 상품명)": bool(os.environ.get("ANTHROPIC_API_KEY")),
+        "도매매 (Open API)": (bool(os.environ.get("DOMEMAE_API_KEY")), True),
+        "네이버 커머스 API": (bool(os.environ.get("NAVER_COMMERCE_CLIENT_ID")), True),
+        "도매매 발주 (Private, 신규계정)": (bool(os.environ.get("DOMEMAE_USER_ID")), True),
+        "카카오 알림 (선택)": (bool(os.environ.get("KAKAO_REST_API_KEY")), False),
+        "Claude API (선택 — AI 상품명)": (bool(os.environ.get("ANTHROPIC_API_KEY")), False),
     }
 
     return render_template(
@@ -136,6 +187,16 @@ def index():
         watch_count=watch_count,
         risky_count=risky_count,
         risky_names=[p.name for p in risky[:3]],
+        pending_orders=pending_orders,
+        checked_at=checked_at,
+        returns_count=returns_count,
+        this_month=this_month,
+        chart_series=chart_series,
+        selected_year=selected_year,
+        selected_month=selected_month,
+        prev_year=prev_year, prev_month=prev_month,
+        next_year=next_year, next_month=next_month,
+        next_disabled=next_disabled,
         env_status=env_status,
     )
 
@@ -291,29 +352,48 @@ def register_candidate():
 
 # ── 등록된 상품 ────────────────────────────────────────────────────────────
 
+PRODUCT_STATUS_CACHE = DATA_DIR / "product_status_cache.json"
+
+
 @app.route("/registered")
 def registered():
+    from bebrave.tracker.products import ProductTracker
+
     items = _load_json(REGISTERED_PRODUCTS)
     items.reverse()
-    return render_template("registered.html", products=items)
+    status_cache = _load_json(PRODUCT_STATUS_CACHE)
+    status_by_id = {s["product_id"]: s for s in status_cache} if isinstance(status_cache, list) else {}
+    tracked_ids = {p.product_id for p in ProductTracker(TRACKED_PRODUCTS).products}
+    return render_template("registered.html", products=items, status_by_id=status_by_id, tracked_ids=tracked_ids)
 
 
 @app.route("/registered/status/<product_id>")
 def registered_status(product_id):
     """로컬 JSON은 등록 당시 스냅샷이라 스마트스토어센터에서 직접 바꾸면 화면에 안 반영됨
-    — 실시간 상태를 그때그때 확인하는 용도 (2026-07-13 추가)."""
+    — 실시간 상태를 확인해서 목록에도 남도록 캐시에 저장 (2026-07-13 추가, 2026-07-31 캐시화)."""
     try:
+        from datetime import datetime
         from bebrave.smartstore.auth import get_access_token
         from bebrave.smartstore.register import fetch_registered_product
         token = get_access_token()
         info = fetch_registered_product(product_id, token)
         op = info.get("originProduct", {})
         scp = info.get("smartstoreChannelProduct", {})
-        flash(
-            f"상품 {product_id} 실시간 상태 — statusType: {op.get('statusType')}, "
-            f"채널노출: {scp.get('channelProductDisplayStatusType')}, 재고: {op.get('stockQuantity')}개",
-            "success",
-        )
+
+        cache = _load_json(PRODUCT_STATUS_CACHE)
+        cache = [s for s in cache if s.get("product_id") != product_id] if isinstance(cache, list) else []
+        cache.append({
+            "product_id": product_id,
+            "status_type": op.get("statusType"),
+            "display_status": scp.get("channelProductDisplayStatusType"),
+            "stock": op.get("stockQuantity"),
+            "checked_at": datetime.now().isoformat(timespec="minutes"),
+        })
+        PRODUCT_STATUS_CACHE.parent.mkdir(parents=True, exist_ok=True)
+        with open(PRODUCT_STATUS_CACHE, "w", encoding="utf-8") as f:
+            json.dump(cache, f, ensure_ascii=False, indent=2)
+
+        flash(f"상품 {product_id} 실시간 상태를 갱신했습니다", "success")
     except Exception as e:
         flash(f"상태 확인 실패: {e}", "error")
     return redirect(url_for("registered"))
@@ -425,7 +505,7 @@ def tracker_add():
     )
     t.save()
     flash("추적 등록 완료", "success")
-    return redirect(url_for("tracker"))
+    return redirect(url_for(request.form.get("return_to", "tracker")))
 
 
 @app.route("/tracker/sync", methods=["POST"])

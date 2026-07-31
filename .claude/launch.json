@@ -3,7 +3,7 @@
   "configurations": [
     {
       "name": "friday",
-      "runtimeExecutable": "python3",
+      "runtimeExecutable": "/usr/bin/python3",
       "runtimeArgs": ["/Users/danyol/Desktop/비브레이브/webapp/app.py"],
       "port": 5050
     }

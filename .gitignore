@@ -19,3 +19,6 @@ venv/
 data/naver_categories_cache.json
 data/sourcing_log.json
 data/registered_products.json
+data/tracked_products.json
+data/sales_orders.json
+data/product_status_cache.json

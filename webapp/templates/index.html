@@ -4,100 +4,303 @@
 <h1>파이프라인 현황</h1>
 
 <div class="section">
-  <p class="eyebrow">주문 확인 및 처리</p>
+  <p class="eyebrow">주문 <span style="text-transform:none;letter-spacing:normal;font-weight:400;">· {{ checked_at }} 기준</span></p>
   <a href="{{ url_for('orders') }}" class="todo-row">
     <div class="todo-left">
-      <span class="todo-dot dot-idle"></span>
+      <span class="todo-dot {{ 'dot-err' if pending_orders else 'dot-idle' }}"></span>
       <div>
-        <p class="todo-title">신규 주문 확인하기</p>
-        <p class="todo-sub">최근 24시간 주문 조회 → 발송처리 · 도매매 발주까지 한 화면에서</p>
+        <p class="todo-title {{ 'attn' if pending_orders else '' }}">처리할 주문 {{ pending_orders if pending_orders is not none else '확인 필요' }}{{ '건' if pending_orders is not none else '' }}</p>
+        <p class="todo-sub">{{ '결제완료 후 발송 대기 중 — 지금 발송처리하세요' if pending_orders else '결제완료 후 아직 발송처리 안 된 주문' }}</p>
       </div>
     </div>
     <span class="todo-arrow">→</span>
   </a>
-</div>
-
-<div class="section">
-  <p class="eyebrow">추천 상품 확인 및 등록</p>
-  <div class="panel">
-    <div class="funnel-row">
-      <div class="funnel-label"><span>발굴 후보</span><span class="n">{{ candidate_count }}개</span></div>
-      <div class="bar-track"><div class="bar-fill" style="width:100%"></div></div>
+  <div class="stat-grid" style="margin-top:8px;">
+    <div class="stat-card">
+      <p class="stat-num">{{ this_month.order_count }}건</p>
+      <p class="stat-label">이번달 주문</p>
     </div>
-    <div class="funnel-row">
-      <div class="funnel-label"><span>진입권장 (70점+)</span><span class="n">{{ recommended_count }}개</span></div>
-      <div class="bar-track"><div class="bar-fill" style="width:{{ (recommended_count / candidate_count * 100) if candidate_count else 0 }}%"></div></div>
+    <div class="stat-card">
+      <p class="stat-num {{ 'attn' if returns_count else '' }}">
+        {{ returns_count if returns_count is not none else '확인 필요' }}{{ '건' if returns_count is not none else '' }}
+      </p>
+      <p class="stat-label">반품·취소 (최근 24시간)</p>
     </div>
-    <div class="funnel-row">
-      <div class="funnel-label"><span>등록 완료</span><span class="n">{{ registered_count }}개</span></div>
-      <div class="bar-track"><div class="bar-fill" style="width:{{ (registered_count / candidate_count * 100) if candidate_count else 0 }}%"></div></div>
-    </div>
-  </div>
-
-  {% if top_candidates %}
-  <div class="panel" style="margin-top:8px;">
-    <h2>바로 등록할 만한 후보</h2>
-    <div class="stack">
-      {% for c in top_candidates %}
-      <a href="{{ url_for('candidates_preview', keyword=c.keyword) }}" class="todo-row" style="margin-bottom:0;">
-        <div class="todo-left">
-          <span class="todo-dot dot-ok"></span>
-          <div>
-            <p class="todo-title">{{ c.keyword }}</p>
-            <p class="todo-sub">점수 {{ c.score }} · {{ c.category }}</p>
-          </div>
-        </div>
-        <span class="todo-arrow">→</span>
-      </a>
-      {% endfor %}
-    </div>
-  </div>
-  {% endif %}
-
-  <div class="row" style="margin-top:12px;">
-    <a class="btn secondary" href="{{ url_for('candidates') }}">발굴 후보 전체 보기</a>
   </div>
 </div>
 
 <div class="section">
-  <p class="eyebrow">판매 현황</p>
-  <div class="panel">
-    {% if tracked_total %}
-    <div class="stack-bar">
-      <div class="stack-seg-ok" style="width:{{ normal_count / tracked_total * 100 }}%"></div>
-      <div class="stack-seg-warn" style="width:{{ watch_count / tracked_total * 100 }}%"></div>
-      <div class="stack-seg-err" style="width:{{ risky_count / tracked_total * 100 }}%"></div>
+  <p class="eyebrow">판매</p>
+  <div class="stat-grid">
+    <div class="stat-card">
+      <div class="stat-icon" style="font-size:14px;font-weight:700;">₩</div>
+      <p class="stat-num">{{ "{:,}".format(this_month.revenue) }}원</p>
+      <p class="stat-label">이번달 매출</p>
     </div>
-    <div class="legend">
-      <span><span class="dot" style="background:var(--ok);"></span>정상판매중 {{ normal_count }}개</span>
-      <span><span class="dot" style="background:var(--warn);"></span>미판매주의(3개월+) {{ watch_count }}개</span>
-      <span><span class="dot" style="background:var(--err);"></span>자동삭제위험(13개월+) {{ risky_count }}개</span>
+    <div class="stat-card">
+      <div class="stat-icon money">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 19h16M4 19V9l4-3 4 4 4-6 4 3v12"/></svg>
+      </div>
+      <p class="stat-num money">{{ "{:,}".format(this_month.profit) }}원</p>
+      <p class="stat-label">이번달 순수익</p>
     </div>
-    {% if risky_names %}
-    <p class="muted" style="font-size:12.5px;margin:12px 0 0;">위험 상품: {{ risky_names|join(', ') }}</p>
-    {% endif %}
-    {% else %}
-    <p class="muted">판매추적 등록된 상품이 없습니다.</p>
-    {% endif %}
+  </div>
+
+  <div class="panel" style="margin-top:16px;">
+    <div class="chart-toolbar">
+      <div class="month-nav">
+        <a href="{{ url_for('index', year=prev_year, month=prev_month) }}"><button type="button" aria-label="이전 달">‹</button></a>
+        <span class="month-label">{{ selected_year }}년 {{ selected_month }}월</span>
+        {% if next_disabled %}
+        <button type="button" disabled aria-label="다음 달">›</button>
+        {% else %}
+        <a href="{{ url_for('index', year=next_year, month=next_month) }}"><button type="button" aria-label="다음 달">›</button></a>
+        {% endif %}
+      </div>
+    </div>
+    <div class="chart-legend">
+      <span class="legend-toggle" data-series="revenue"><i class="sw" style="border-color:var(--money);"></i>매출</span>
+      <span class="legend-toggle" data-series="profit"><i class="sw" style="border-color:var(--money-2);border-top-style:dashed;"></i>순수익</span>
+    </div>
+
+    <div class="chart-wrap">
+      <svg id="salesChart" width="100%" viewBox="0 0 680 220" style="overflow:visible;"></svg>
+      <div id="chartTooltip" class="chart-tooltip"></div>
+    </div>
+    <p id="chartEmpty" class="muted" style="display:none;">이 달엔 집계된 매출이 없습니다. 홈 화면을 방문할 때마다 최근 주문이 자동으로 반영돼요.</p>
+
     <div class="row" style="margin-top:14px;">
-      <a class="btn secondary" href="{{ url_for('tracker') }}">판매추적 상세 보기</a>
       <a class="btn secondary" href="{{ url_for('report') }}">주간 리포트</a>
     </div>
   </div>
 </div>
 
-<details>
-  <summary class="eyebrow" style="cursor:pointer;display:inline-block;">연동 상태</summary>
-  <div class="panel" style="margin-top:10px;">
-    <table>
-      <tr><th>항목</th><th>상태</th></tr>
-      {% for name, ok in env_status.items() %}
-      <tr>
-        <td>{{ name }}</td>
-        <td>{% if ok %}<span class="badge">설정됨</span>{% else %}<span class="muted mono">미설정</span>{% endif %}</td>
-      </tr>
-      {% endfor %}
-    </table>
+<div class="section">
+  <p class="eyebrow">상품</p>
+
+  <div class="stat-grid">
+    <div class="stat-card">
+      <p class="stat-num">{{ registered_count }}개</p>
+      <p class="stat-label">등록된 상품</p>
+    </div>
+    <div class="stat-card">
+      <p class="stat-num" style="color:var(--ok);">{{ normal_count }}개</p>
+      <p class="stat-label">정상판매중</p>
+    </div>
+    <div class="stat-card">
+      <p class="stat-num" style="color:{{ 'var(--err)' if watch_count else 'var(--ink)' }};">{{ watch_count }}개</p>
+      <p class="stat-label">점검필요(3개월+ 미판매)</p>
+    </div>
+    <a href="{{ url_for('tracker') }}" class="stat-card {{ 'link' if risky_count }}">
+      <p class="stat-num" style="color:{{ 'var(--err)' if risky_count else 'var(--ink)' }};">{{ risky_count }}개</p>
+      <p class="stat-label">자동삭제위험(13개월+)</p>
+      {% if risky_names %}<p class="stat-label" style="margin-top:4px;">{{ risky_names|join(', ') }}</p>{% endif %}
+    </a>
   </div>
-</details>
+
+  <div class="panel" style="margin-top:16px;">
+    <h2>추천 상품 ({{ candidate_count }}개 발굴 · {{ recommended_count }}개 진입권장)</h2>
+    {% if top_candidates %}
+    <div class="stack">
+      {% for c in top_candidates %}
+      <a href="{{ url_for('candidates_preview', keyword=c.keyword) }}" class="todo-row" style="margin-bottom:0;">
+        <div>
+          <p class="todo-title">{{ c.keyword }}</p>
+          <p class="todo-sub">
+            <span class="score-badge {{ 'score-high' if c.score >= 90 else ('score-mid' if c.score >= 80 else 'score-low') }}">{{ c.score }}점</span>
+            {{ c.category }}
+          </p>
+        </div>
+        <span class="todo-arrow">→</span>
+      </a>
+      {% endfor %}
+    </div>
+    {% else %}
+    <p class="muted">진입권장 후보가 없습니다.</p>
+    {% endif %}
+    <div class="row" style="margin-top:12px;">
+      <a class="btn secondary" href="{{ url_for('candidates') }}">발굴 후보 전체 보기</a>
+    </div>
+  </div>
+</div>
+
+<div class="panel">
+  <h2>연동 상태</h2>
+  <table>
+    <tr><th>항목</th><th>상태</th></tr>
+    {% for name, status in env_status.items() %}
+    {% set ok, required = status %}
+    <tr>
+      <td>{{ name }}</td>
+      <td>
+        {% if ok %}<span class="badge-ok">설정됨</span>
+        {% elif required %}<span class="badge-err">미설정</span>
+        {% else %}<span class="muted mono">미설정</span>
+        {% endif %}
+      </td>
+    </tr>
+    {% endfor %}
+  </table>
+</div>
+
+<script>
+(function () {
+  var series = {{ chart_series|tojson }};
+  var svg = document.getElementById("salesChart");
+  var tooltip = document.getElementById("chartTooltip");
+  var emptyEl = document.getElementById("chartEmpty");
+  var wrap = svg.parentElement;
+
+  var hasData = series.some(function (p) { return p.revenue > 0 || p.profit > 0; });
+  if (!hasData) {
+    wrap.style.display = "none";
+    document.querySelector(".chart-legend").style.display = "none";
+    emptyEl.style.display = "block";
+    return;
+  }
+
+  var W = 680, H = 220, padL = 56, padR = 12, padT = 12, padB = 24;
+  var plotW = W - padL - padR, plotH = H - padT - padB;
+  var n = series.length;
+
+  function niceMax(v) {
+    if (v <= 0) return 10;
+    var mag = Math.pow(10, Math.floor(Math.log10(v)));
+    var norm = v / mag;
+    var nice = norm <= 1 ? 1 : norm <= 2 ? 2 : norm <= 5 ? 5 : 10;
+    return nice * mag;
+  }
+  var maxVal = Math.max.apply(null, series.map(function (p) { return Math.max(p.revenue, p.profit); }));
+  var top = niceMax(maxVal);
+
+  function x(i) { return padL + (n > 1 ? (i / (n - 1)) * plotW : 0); }
+  function y(v) { return padT + plotH - (v / top) * plotH; }
+  function fmt(v) { return v >= 10000 ? Math.round(v / 1000) + "k" : v.toLocaleString(); }
+
+  var svgns = "http://www.w3.org/2000/svg";
+  function el(tag, attrs) {
+    var e = document.createElementNS(svgns, tag);
+    for (var k in attrs) e.setAttribute(k, attrs[k]);
+    return e;
+  }
+
+  [0, 0.25, 0.5, 0.75, 1].forEach(function (f) {
+    var val = Math.round(top * f);
+    var yy = y(val);
+    svg.appendChild(el("line", { x1: padL, y1: yy, x2: W - padR, y2: yy, stroke: "var(--line)", "stroke-width": 1 }));
+    var t = el("text", { x: padL - 8, y: yy + 4, "text-anchor": "end", "font-size": 10.5, fill: "var(--ink-muted)" });
+    t.textContent = fmt(val);
+    svg.appendChild(t);
+  });
+
+  series.forEach(function (p, i) {
+    if (p.day % 5 !== 0 && p.day !== 1) return;
+    var t = el("text", { x: x(i), y: H - 6, "text-anchor": "middle", "font-size": 10.5, fill: "var(--ink-muted)" });
+    t.textContent = p.day;
+    svg.appendChild(t);
+  });
+
+  function pointsFor(key) {
+    return series.map(function (p, i) { return x(i) + "," + y(p[key]); }).join(" ");
+  }
+
+  // 호버 시 해당 날짜 열을 은은하게 강조하는 배경 밴드 (선/점보다 먼저 그려서 뒤에 깔림)
+  var colW = n > 1 ? plotW / (n - 1) : plotW;
+  var hoverBand = el("rect", {
+    y: padT, width: colW, height: plotH, fill: "var(--accent-soft)", opacity: 0.5, style: "display:none",
+  });
+  svg.appendChild(hoverBand);
+
+  // 매출 라인 아래 옅은 영역 채우기
+  var areaPoints = "M" + x(0) + "," + (padT + plotH) + " L" + pointsFor("revenue").replace(/ /g, " L") + " L" + x(n - 1) + "," + (padT + plotH) + " Z";
+  var area = el("path", { d: areaPoints, fill: "var(--money)", opacity: 0.08 });
+  svg.appendChild(area);
+
+  var lineRev = el("polyline", { points: pointsFor("revenue"), fill: "none", stroke: "var(--money)", "stroke-width": 2 });
+  var lineProfit = el("polyline", { points: pointsFor("profit"), fill: "none", stroke: "var(--money-2)", "stroke-width": 2, "stroke-dasharray": "4 3" });
+  svg.appendChild(lineRev);
+  svg.appendChild(lineProfit);
+
+  // 로드 시 선이 왼쪽에서 그려지는 애니메이션
+  [lineRev, lineProfit].forEach(function (line) {
+    var len = line.getTotalLength ? line.getTotalLength() : 1000;
+    line.style.strokeDasharray = String(len);
+    line.style.strokeDashoffset = String(len);
+    line.style.transition = "stroke-dashoffset 0.7s ease";
+    requestAnimationFrame(function () {
+      requestAnimationFrame(function () {
+        line.style.strokeDashoffset = "0";
+        if (line === lineProfit) {
+          setTimeout(function () { line.setAttribute("stroke-dasharray", "4 3"); }, 700);
+        }
+      });
+    });
+  });
+
+  var dotRev = el("circle", { r: 4, fill: "var(--money)", style: "display:none" });
+  var dotProfit = el("circle", { r: 4, fill: "var(--money-2)", style: "display:none" });
+  var hoverLine = el("line", { y1: padT, y2: padT + plotH, stroke: "var(--line)", "stroke-width": 1, style: "display:none" });
+  svg.appendChild(hoverLine);
+  svg.appendChild(dotRev);
+  svg.appendChild(dotProfit);
+
+  var activeSeries = { revenue: true, profit: true };
+
+  series.forEach(function (p, i) {
+    var rect = el("rect", {
+      x: x(i) - colW / 2, y: padT, width: colW, height: plotH, fill: "transparent", style: "cursor:pointer",
+    });
+    rect.addEventListener("mouseenter", function () { showHover(i); });
+    rect.addEventListener("mousemove", function () { showHover(i); });
+    svg.appendChild(rect);
+  });
+
+  function showHover(i) {
+    var p = series[i];
+    var px = x(i);
+    hoverBand.setAttribute("x", px - colW / 2);
+    hoverBand.style.display = "block";
+    hoverLine.setAttribute("x1", px); hoverLine.setAttribute("x2", px);
+    hoverLine.style.display = "block";
+    if (activeSeries.revenue) { dotRev.setAttribute("cx", px); dotRev.setAttribute("cy", y(p.revenue)); dotRev.style.display = "block"; }
+    if (activeSeries.profit) { dotProfit.setAttribute("cx", px); dotProfit.setAttribute("cy", y(p.profit)); dotProfit.style.display = "block"; }
+
+    var lines = [];
+    if (activeSeries.revenue) lines.push("매출 " + p.revenue.toLocaleString() + "원");
+    if (activeSeries.profit) lines.push("순수익 " + p.profit.toLocaleString() + "원");
+    tooltip.innerHTML = '<div class="tt-date">' + p.date + '</div>' + lines.join(" · ");
+    var svgRect = svg.getBoundingClientRect();
+    var wrapRect = wrap.getBoundingClientRect();
+    var scale = svgRect.width / W;
+    tooltip.style.left = (svgRect.left - wrapRect.left + px * scale) + "px";
+    tooltip.style.top = (svgRect.top - wrapRect.top + y(Math.max(p.revenue, p.profit)) * scale - 8) + "px";
+    tooltip.style.opacity = 1;
+  }
+
+  // 범례 클릭 시 해당 라인 on/off
+  var seriesEls = {
+    revenue: { line: lineRev, dot: dotRev, area: area },
+    profit: { line: lineProfit, dot: dotProfit, area: null },
+  };
+  Array.prototype.forEach.call(document.querySelectorAll(".legend-toggle"), function (toggle) {
+    toggle.addEventListener("click", function () {
+      var key = toggle.dataset.series;
+      activeSeries[key] = !activeSeries[key];
+      toggle.classList.toggle("off", !activeSeries[key]);
+      var els = seriesEls[key];
+      els.line.style.display = activeSeries[key] ? "" : "none";
+      if (els.area) els.area.style.display = activeSeries[key] ? "" : "none";
+      if (!activeSeries[key]) { els.dot.style.display = "none"; }
+    });
+  });
+
+  svg.addEventListener("mouseleave", function () {
+    hoverBand.style.display = "none";
+    hoverLine.style.display = "none";
+    dotRev.style.display = "none";
+    dotProfit.style.display = "none";
+    tooltip.style.opacity = 0;
+  });
+})();
+</script>
 {% endblock %}

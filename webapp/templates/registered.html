@@ -6,8 +6,9 @@
 <div class="panel">
   <div class="table-wrap">
   <table>
-    <tr><th>상품명</th><th>판매가</th><th>마진</th><th>스마트스토어ID</th><th>등록일</th><th></th></tr>
+    <tr><th>상품명</th><th>판매가</th><th>마진</th><th>스마트스토어ID</th><th>등록일</th><th>상태</th><th></th></tr>
     {% for p in products %}
+    {% set s = status_by_id.get(p.naver_product_id) %}
     <tr>
       <td>{{ p.name }}</td>
       <td class="mono">{{ "{:,}".format(p.sale_price) }}원</td>
@@ -15,13 +16,34 @@
       <td class="mono">{{ p.naver_product_id }}</td>
       <td class="muted">{{ p.registered_date }}</td>
       <td>
-        {% if p.naver_product_id %}
-        <a class="btn secondary" style="padding:5px 10px;font-size:12px;" href="{{ url_for('registered_status', product_id=p.naver_product_id) }}">실시간 상태</a>
+        {% if s %}
+        <span class="{{ 'badge-ok' if s.display_status == 'ON' else 'badge-err' }}">{{ s.display_status or s.status_type }}</span>
+        <p class="muted" style="font-size:11px;margin:3px 0 0;">재고 {{ s.stock }}개 · {{ s.checked_at.replace('T', ' ') }} 확인</p>
+        {% else %}
+        <span class="muted mono">미확인</span>
         {% endif %}
+      </td>
+      <td>
+        <div class="row" style="gap:6px;">
+          {% if p.naver_product_id %}
+          <a class="btn secondary" style="padding:5px 10px;font-size:12px;" href="{{ url_for('registered_status', product_id=p.naver_product_id) }}">{{ '다시 확인' if s else '실시간 상태' }}</a>
+          {% endif %}
+          {% if p.naver_product_id in tracked_ids %}
+          <span class="badge-ok">추적중</span>
+          {% else %}
+          <form method="post" action="{{ url_for('tracker_add') }}">
+            <input type="hidden" name="product_id" value="{{ p.naver_product_id }}">
+            <input type="hidden" name="name" value="{{ p.name }}">
+            <input type="hidden" name="registered_date" value="{{ p.registered_date }}">
+            <input type="hidden" name="return_to" value="registered">
+            <button type="submit" class="secondary" style="padding:5px 10px;font-size:12px;">판매추적 시작</button>
+          </form>
+          {% endif %}
+        </div>
       </td>
     </tr>
     {% else %}
-    <tr><td colspan="6" class="muted">아직 등록된 상품이 없습니다</td></tr>
+    <tr><td colspan="7" class="muted">아직 등록된 상품이 없습니다</td></tr>
     {% endfor %}
   </table>
   </div>

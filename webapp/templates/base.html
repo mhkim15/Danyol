@@ -8,7 +8,8 @@
   :root {
     --ink: #12151a; --ink-soft: #6b7280; --ink-muted: #9aa1ab; --paper: #eef0f3; --panel: #ffffff;
     --line: #e3e5e9; --accent: #12151a; --accent-soft: #e4e6ea;
-    --ok: #3f7d3f; --ok-bg: #e4f3e9; --err: #a5321f; --err-bg: #f8e4de; --warn: #b0791a; --warn-bg: #f7ecd8;
+    --ok: #3f7d3f; --ok-bg: #e4f3e9; --err: #c22a1a; --err-bg: #fbe6e2; --warn: #b0791a; --warn-bg: #f7ecd8;
+    --money: #1d5fd6; --money-bg: #e6edfc; --money-2: #6a97ea;
     --mono: ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace;
     --sans: -apple-system, "system-ui", "Segoe UI", "Pretendard", "Apple SD Gothic Neo", "Malgun Gothic", sans-serif;
     --sidebar-w: 190px;
@@ -25,13 +26,18 @@
     position: sticky; top: 0; height: 100vh; overflow-y: auto;
   }
   nav.sidebar .brand { font-weight: 700; font-size: 16px; padding: 0 10px 16px; }
-  nav.sidebar .nav-group { font-size: 10.5px; letter-spacing: 0.06em; text-transform: uppercase; color: var(--ink-muted); font-weight: 600; margin: 14px 10px 4px; }
+  nav.sidebar .nav-group {
+    font-size: 10.5px; letter-spacing: 0.07em; text-transform: uppercase; color: var(--ink-muted);
+    font-weight: 700; margin: 20px 10px 6px; padding-top: 14px; border-top: 1px solid var(--line);
+  }
+  nav.sidebar .nav-group:first-of-type { border-top: none; padding-top: 0; }
+  nav.sidebar .nav-links { display: flex; flex-direction: column; gap: 2px; }
   nav.sidebar a {
     display: block; text-decoration: none; color: var(--ink-soft); font-size: 13.5px;
-    padding: 9px 10px; border-radius: 6px; margin-bottom: 2px;
+    padding: 9px 10px; border-radius: 6px;
     transition: background .12s ease, color .12s ease;
   }
-  nav.sidebar a:hover, nav.sidebar a.active { background: var(--accent-soft); color: var(--accent); }
+  nav.sidebar a:hover, nav.sidebar a.active { background: var(--accent-soft); color: var(--accent); font-weight: 600; }
 
   .shell { flex: 1; min-width: 0; max-width: 760px; margin: 0 auto; padding: 24px 20px 60px; }
 
@@ -60,6 +66,7 @@
   .dot-ok { background: var(--ok); }
   .dot-idle { background: var(--ink-muted); }
   .todo-title { font-size: 14px; font-weight: 700; margin: 0; }
+  .todo-title.attn { color: var(--err); }
   .todo-sub { font-size: 12px; color: var(--ink-muted); margin: 2px 0 0; }
   .todo-arrow { color: var(--ink-muted); font-size: 16px; flex-shrink: 0; }
 
@@ -75,8 +82,18 @@
     width: 26px; height: 26px; border-radius: 7px; background: var(--accent-soft); color: var(--accent);
     display: flex; align-items: center; justify-content: center; margin-bottom: 8px; font-size: 14px;
   }
+  .stat-icon.money { background: var(--money-bg); color: var(--money); }
   .stat-num { font-size: 21px; font-weight: 700; margin: 0; }
+  .stat-num.money { color: var(--money); }
+  .stat-num.attn { color: var(--err); }
   .stat-label { font-size: 12px; color: var(--ink-muted); margin: 2px 0 0; }
+
+  .badge-ok { display: inline-block; font-family: var(--mono); font-size: 10.5px; padding: 2px 7px; border-radius: 99px; background: var(--ok-bg); color: var(--ok); }
+  .badge-err { display: inline-block; font-family: var(--mono); font-size: 10.5px; padding: 2px 7px; border-radius: 99px; background: var(--err-bg); color: var(--err); font-weight: 600; }
+  .score-badge { display: inline-block; font-family: var(--mono); font-size: 10.5px; font-weight: 700; padding: 2px 7px; border-radius: 99px; margin-right: 4px; }
+  .score-high { background: var(--ok-bg); color: var(--ok); }
+  .score-mid { background: var(--money-bg); color: var(--money); }
+  .score-low { background: var(--warn-bg); color: var(--warn); }
 
   .chart-toolbar { display: flex; align-items: center; justify-content: space-between; margin-bottom: 4px; flex-wrap: wrap; gap: 10px; }
   .month-nav { display: flex; align-items: center; gap: 10px; }
@@ -87,6 +104,10 @@
   .chart-legend { display: flex; gap: 16px; font-size: 12.5px; color: var(--ink-soft); margin-bottom: 6px; }
   .chart-legend span { display: inline-flex; align-items: center; gap: 6px; }
   .chart-legend .sw { width: 14px; height: 0; border-top: 2px solid; display: inline-block; }
+  .legend-toggle { cursor: pointer; padding: 3px 8px; border-radius: 99px; transition: background .12s ease; user-select: none; }
+  .legend-toggle:hover { background: var(--accent-soft); }
+  .legend-toggle.off { opacity: 0.4; }
+  .legend-toggle.off .sw { border-color: var(--ink-muted) !important; border-top-style: solid !important; }
   .chart-wrap { position: relative; }
   .chart-tooltip {
     position: absolute; background: var(--ink); color: #fff; font-size: 12px; padding: 6px 10px;
@@ -156,17 +177,25 @@
 <div class="layout">
   <nav class="sidebar">
     <div class="brand">Friday</div>
-    <a href="{{ url_for('index') }}" class="{{ 'active' if request.endpoint == 'index' }}">홈</a>
+    <div class="nav-links">
+      <a href="{{ url_for('index') }}" class="{{ 'active' if request.endpoint == 'index' }}">홈</a>
+    </div>
     <p class="nav-group">상품</p>
-    <a href="{{ url_for('candidates') }}" class="{{ 'active' if request.endpoint in ('candidates','candidates_preview') }}">발굴 후보</a>
-    <a href="{{ url_for('registered') }}" class="{{ 'active' if request.endpoint == 'registered' }}">등록 상품</a>
-    <a href="{{ url_for('tracker') }}" class="{{ 'active' if request.endpoint == 'tracker' }}">판매추적</a>
+    <div class="nav-links">
+      <a href="{{ url_for('candidates') }}" class="{{ 'active' if request.endpoint in ('candidates','candidates_preview') }}">발굴 후보</a>
+      <a href="{{ url_for('registered') }}" class="{{ 'active' if request.endpoint == 'registered' }}">등록 상품</a>
+      <a href="{{ url_for('tracker') }}" class="{{ 'active' if request.endpoint == 'tracker' }}">판매추적</a>
+    </div>
     <p class="nav-group">주문</p>
-    <a href="{{ url_for('orders') }}" class="{{ 'active' if request.endpoint in ('orders','orders_check','orders_demo') }}">주문 확인</a>
-    <a href="{{ url_for('purchase') }}" class="{{ 'active' if request.endpoint == 'purchase' }}">도매매 발주</a>
+    <div class="nav-links">
+      <a href="{{ url_for('orders') }}" class="{{ 'active' if request.endpoint in ('orders','orders_check','orders_demo') }}">주문 확인</a>
+      <a href="{{ url_for('purchase') }}" class="{{ 'active' if request.endpoint == 'purchase' }}">도매매 발주</a>
+    </div>
     <p class="nav-group">부가기능</p>
-    <a href="{{ url_for('report') }}" class="{{ 'active' if request.endpoint == 'report' }}">주간리포트</a>
-    <a href="{{ url_for('margin') }}" class="{{ 'active' if request.endpoint == 'margin' }}">마진계산</a>
+    <div class="nav-links">
+      <a href="{{ url_for('report') }}" class="{{ 'active' if request.endpoint == 'report' }}">주간리포트</a>
+      <a href="{{ url_for('margin') }}" class="{{ 'active' if request.endpoint == 'margin' }}">마진계산</a>
+    </div>
   </nav>
   <div class="shell">
     {% with messages = get_flashed_messages(with_categories=true) %}

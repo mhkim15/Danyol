@@ -76,9 +76,11 @@ _MAX_WINDOW_HOURS = 24  # last-changed-statuses API 제한 (실측 확인: 2026-
 def fetch_new_orders(
     access_token: str,
     hours: int = 24,
+    status_type: str = "PAYED",
 ) -> List[ProductOrder]:
     """
-    최근 N시간 내 결제완료(PAYED, 신규주문=발주 대기) 상태로 바뀐 주문 목록 조회.
+    최근 N시간 내 특정 상태(기본 PAYED=결제완료, 신규주문=발주 대기)로 바뀐 주문 목록 조회.
+    반품/취소 집계에는 status_type="RETURNED"/"CANCELED"로 호출.
 
     2단계로 동작:
       1) last-changed-statuses 로 최근 상태변경된 productOrderId 목록 취득
@@ -103,7 +105,7 @@ def fetch_new_orders(
             params={
                 "lastChangedFrom": window_start.strftime("%Y-%m-%dT%H:%M:%S.000+09:00"),
                 "lastChangedTo": window_end.strftime("%Y-%m-%dT%H:%M:%S.000+09:00"),
-                "lastChangedType": "PAYED",
+                "lastChangedType": status_type,
             },
             timeout=15,
         )

@@ -1,0 +1,11 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "friday",
+      "runtimeExecutable": "python3",
+      "runtimeArgs": ["/Users/danyol/Desktop/비브레이브/webapp/app.py"],
+      "port": 5050
+    }
+  ]
+}

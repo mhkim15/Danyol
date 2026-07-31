@@ -13,11 +13,12 @@ Claude 앱 대화 대신 실제 브라우저 화면으로 발굴 후보 확인/�
 import io
 import json
 import os
+import secrets
 import sys
 from contextlib import redirect_stdout
 from pathlib import Path
 
-from flask import Flask, flash, redirect, render_template, request, url_for
+from flask import Flask, Response, flash, redirect, render_template, request, url_for
 
 ROOT = Path(__file__).parent.parent
 sys.path.insert(0, str(ROOT))
@@ -48,6 +49,28 @@ _load_env()
 
 app = Flask(__name__)
 app.secret_key = os.environ.get("DASHBOARD_SECRET_KEY", "local-dev-only-not-secret")
+
+FRIDAY_USER = os.environ.get("FRIDAY_USER")
+FRIDAY_PASSWORD = os.environ.get("FRIDAY_PASSWORD")
+
+
+@app.before_request
+def _require_login():
+    # 외부 배포 시 발주/등록 기능이 인증 없이 노출되지 않도록 강제.
+    # FRIDAY_USER/PASSWORD 미설정이면(로컬 전용 실행) 인증 생략.
+    if not FRIDAY_USER or not FRIDAY_PASSWORD:
+        return
+    auth = request.authorization
+    ok = (
+        auth
+        and secrets.compare_digest(auth.username, FRIDAY_USER)
+        and secrets.compare_digest(auth.password, FRIDAY_PASSWORD)
+    )
+    if not ok:
+        return Response(
+            "로그인이 필요합니다.", 401,
+            {"WWW-Authenticate": 'Basic realm="Friday"'},
+        )
 
 
 def _load_json(path: Path) -> list:
@@ -475,5 +498,8 @@ def purchase_place():
 
 
 if __name__ == "__main__":
-    print("\nFriday — http://127.0.0.1:5050\n")
-    app.run(host="127.0.0.1", port=5050, debug=False)
+    # PORT/HOST가 설정되면(Render 등 외부 배포) 그걸 쓰고, 아니면 로컬 전용 기본값.
+    port = int(os.environ.get("PORT", 5050))
+    host = os.environ.get("HOST", "127.0.0.1")
+    print(f"\nFriday — http://{host}:{port}\n")
+    app.run(host=host, port=port, debug=False)

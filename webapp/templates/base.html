@@ -6,9 +6,9 @@
 <title>Friday · {% block title %}비브레이브{% endblock %}</title>
 <style>
   :root {
-    --ink: #211f1a; --ink-soft: #6b6558; --paper: #faf7f1; --panel: #ffffff;
-    --line: #e2d9c6; --accent: #2b5d58; --accent-soft: #dfe9e4;
-    --ok: #3f7d3f; --ok-bg: #e6f0e1; --err: #a5321f; --err-bg: #f8e4de;
+    --ink: #12151a; --ink-soft: #6b7078; --ink-muted: #8a8f98; --paper: #eef0f3; --panel: #ffffff;
+    --line: #e1e3e8; --accent: #2b5d58; --accent-soft: #dfe9e4;
+    --ok: #3f7d3f; --ok-bg: #e6f0e1; --err: #a5321f; --err-bg: #f8e4de; --warn: #b0791a; --warn-bg: #f7ecd8;
     --mono: "SFMono-Regular", ui-monospace, Menlo, Consolas, monospace;
     --sans: -apple-system, "Pretendard", "Apple SD Gothic Neo", "Malgun Gothic", sans-serif;
     --sidebar-w: 190px;
@@ -37,9 +37,47 @@
   .flash-success { background: var(--ok-bg); color: var(--ok); }
   .flash-error { background: var(--err-bg); color: var(--err); }
 
-  h1 { font-size: 20px; margin: 4px 0 18px; }
-  .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 16px 18px; margin-bottom: 16px; }
+  h1 { font-size: 20px; font-weight: 700; margin: 4px 0 18px; }
+  .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 16px 18px; margin-bottom: 16px; }
   .panel h2 { font-size: 14px; margin: 0 0 12px; }
+
+  .eyebrow { font-size: 11px; letter-spacing: 0.06em; text-transform: uppercase; color: var(--ink-muted); font-weight: 600; margin: 0 0 8px; }
+  .section { margin-bottom: 26px; }
+
+  .todo-row {
+    display: flex; align-items: center; justify-content: space-between;
+    background: var(--panel); border: 1px solid var(--line); border-radius: 12px;
+    padding: 13px 16px; margin-bottom: 8px; text-decoration: none; color: inherit;
+  }
+  .todo-row:last-child { margin-bottom: 0; }
+  .todo-left { display: flex; align-items: center; gap: 12px; min-width: 0; }
+  .todo-dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
+  .dot-err { background: var(--err); }
+  .dot-ok { background: var(--ok); }
+  .dot-idle { background: var(--ink-muted); }
+  .todo-title { font-size: 14px; font-weight: 700; margin: 0; }
+  .todo-sub { font-size: 12px; color: var(--ink-muted); margin: 2px 0 0; }
+  .todo-arrow { color: var(--ink-muted); font-size: 16px; flex-shrink: 0; }
+
+  .stat-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(110px, 1fr)); gap: 10px; }
+  .stat-card { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 14px; }
+  .stat-num { font-size: 22px; font-weight: 700; margin: 0; }
+  .stat-label { font-size: 12px; color: var(--ink-muted); margin: 2px 0 0; }
+
+  .funnel-row { margin-bottom: 10px; }
+  .funnel-row:last-child { margin-bottom: 0; }
+  .funnel-label { display: flex; justify-content: space-between; font-size: 12.5px; margin-bottom: 4px; }
+  .funnel-label .n { font-weight: 700; color: var(--ink); }
+  .bar-track { height: 8px; background: var(--accent-soft); border-radius: 99px; overflow: hidden; }
+  .bar-fill { height: 100%; background: var(--accent); border-radius: 99px; }
+
+  .stack-bar { display: flex; height: 10px; border-radius: 99px; overflow: hidden; background: var(--line); }
+  .stack-seg-ok { background: var(--ok); }
+  .stack-seg-warn { background: var(--warn); }
+  .stack-seg-err { background: var(--err); }
+  .legend { display: flex; gap: 16px; flex-wrap: wrap; margin-top: 10px; font-size: 12.5px; color: var(--ink-soft); }
+  .legend span { display: inline-flex; align-items: center; gap: 6px; }
+  .legend .dot { width: 8px; height: 8px; border-radius: 50%; }
 
   label { display: block; font-size: 12.5px; color: var(--ink-soft); margin: 10px 0 4px; }
   input[type=text], input[type=number], input[type=password], select {

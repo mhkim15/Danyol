@@ -100,9 +100,22 @@ def _find_registered_product(product_name: str) -> dict:
 
 @app.route("/")
 def index():
+    from bebrave.tracker.products import ProductTracker
+
     candidates = _load_json(SOURCING_LOG)
     registered = _load_json(REGISTERED_PRODUCTS)
-    recommended = [c for c in candidates if c.get("score", 0) >= 70]
+    recommended = sorted(
+        (c for c in candidates if c.get("score", 0) >= 70),
+        key=lambda c: c.get("score", 0), reverse=True,
+    )
+
+    tracker = ProductTracker(TRACKED_PRODUCTS)
+    risky = tracker.auto_delete_risk()
+    stale = tracker.stale_products()
+    tracked_total = len(tracker.products)
+    risky_count = len(risky)
+    watch_count = len(stale) - risky_count
+    normal_count = tracked_total - len(stale)
 
     env_status = {
         "도매매 (Open API)": bool(os.environ.get("DOMEMAE_API_KEY")),
@@ -117,6 +130,12 @@ def index():
         candidate_count=len(candidates),
         recommended_count=len(recommended),
         registered_count=len(registered),
+        top_candidates=recommended[:3],
+        tracked_total=tracked_total,
+        normal_count=normal_count,
+        watch_count=watch_count,
+        risky_count=risky_count,
+        risky_names=[p.name for p in risky[:3]],
         env_status=env_status,
     )
 

@@ -3,29 +3,101 @@
 {% block content %}
 <h1>파이프라인 현황</h1>
 
-<div class="panel">
-  <h2>요약</h2>
-  <div class="row">
-    <div class="badge">발굴 후보 {{ candidate_count }}개</div>
-    <div class="badge">진입권장(70점+) {{ recommended_count }}개</div>
-    <div class="badge">등록 완료 {{ registered_count }}개</div>
+<div class="section">
+  <p class="eyebrow">주문 확인 및 처리</p>
+  <a href="{{ url_for('orders') }}" class="todo-row">
+    <div class="todo-left">
+      <span class="todo-dot dot-idle"></span>
+      <div>
+        <p class="todo-title">신규 주문 확인하기</p>
+        <p class="todo-sub">최근 24시간 주문 조회 → 발송처리 · 도매매 발주까지 한 화면에서</p>
+      </div>
+    </div>
+    <span class="todo-arrow">→</span>
+  </a>
+</div>
+
+<div class="section">
+  <p class="eyebrow">추천 상품 확인 및 등록</p>
+  <div class="panel">
+    <div class="funnel-row">
+      <div class="funnel-label"><span>발굴 후보</span><span class="n">{{ candidate_count }}개</span></div>
+      <div class="bar-track"><div class="bar-fill" style="width:100%"></div></div>
+    </div>
+    <div class="funnel-row">
+      <div class="funnel-label"><span>진입권장 (70점+)</span><span class="n">{{ recommended_count }}개</span></div>
+      <div class="bar-track"><div class="bar-fill" style="width:{{ (recommended_count / candidate_count * 100) if candidate_count else 0 }}%"></div></div>
+    </div>
+    <div class="funnel-row">
+      <div class="funnel-label"><span>등록 완료</span><span class="n">{{ registered_count }}개</span></div>
+      <div class="bar-track"><div class="bar-fill" style="width:{{ (registered_count / candidate_count * 100) if candidate_count else 0 }}%"></div></div>
+    </div>
   </div>
-  <div class="row" style="margin-top:14px;">
-    <a class="btn" href="{{ url_for('candidates') }}">발굴 후보 보기</a>
-    <a class="btn secondary" href="{{ url_for('orders') }}">주문 확인</a>
+
+  {% if top_candidates %}
+  <div class="panel" style="margin-top:8px;">
+    <h2>바로 등록할 만한 후보</h2>
+    <div class="stack">
+      {% for c in top_candidates %}
+      <a href="{{ url_for('candidates_preview', keyword=c.keyword) }}" class="todo-row" style="margin-bottom:0;">
+        <div class="todo-left">
+          <span class="todo-dot dot-ok"></span>
+          <div>
+            <p class="todo-title">{{ c.keyword }}</p>
+            <p class="todo-sub">점수 {{ c.score }} · {{ c.category }}</p>
+          </div>
+        </div>
+        <span class="todo-arrow">→</span>
+      </a>
+      {% endfor %}
+    </div>
+  </div>
+  {% endif %}
+
+  <div class="row" style="margin-top:12px;">
+    <a class="btn secondary" href="{{ url_for('candidates') }}">발굴 후보 전체 보기</a>
   </div>
 </div>
 
-<div class="panel">
-  <h2>연동 상태</h2>
-  <table>
-    <tr><th>항목</th><th>상태</th></tr>
-    {% for name, ok in env_status.items() %}
-    <tr>
-      <td>{{ name }}</td>
-      <td>{% if ok %}<span class="badge">설정됨</span>{% else %}<span class="muted mono">미설정</span>{% endif %}</td>
-    </tr>
-    {% endfor %}
-  </table>
+<div class="section">
+  <p class="eyebrow">판매 현황</p>
+  <div class="panel">
+    {% if tracked_total %}
+    <div class="stack-bar">
+      <div class="stack-seg-ok" style="width:{{ normal_count / tracked_total * 100 }}%"></div>
+      <div class="stack-seg-warn" style="width:{{ watch_count / tracked_total * 100 }}%"></div>
+      <div class="stack-seg-err" style="width:{{ risky_count / tracked_total * 100 }}%"></div>
+    </div>
+    <div class="legend">
+      <span><span class="dot" style="background:var(--ok);"></span>정상판매중 {{ normal_count }}개</span>
+      <span><span class="dot" style="background:var(--warn);"></span>미판매주의(3개월+) {{ watch_count }}개</span>
+      <span><span class="dot" style="background:var(--err);"></span>자동삭제위험(13개월+) {{ risky_count }}개</span>
+    </div>
+    {% if risky_names %}
+    <p class="muted" style="font-size:12.5px;margin:12px 0 0;">위험 상품: {{ risky_names|join(', ') }}</p>
+    {% endif %}
+    {% else %}
+    <p class="muted">판매추적 등록된 상품이 없습니다.</p>
+    {% endif %}
+    <div class="row" style="margin-top:14px;">
+      <a class="btn secondary" href="{{ url_for('tracker') }}">판매추적 상세 보기</a>
+      <a class="btn secondary" href="{{ url_for('report') }}">주간 리포트</a>
+    </div>
+  </div>
 </div>
+
+<details>
+  <summary class="eyebrow" style="cursor:pointer;display:inline-block;">연동 상태</summary>
+  <div class="panel" style="margin-top:10px;">
+    <table>
+      <tr><th>항목</th><th>상태</th></tr>
+      {% for name, ok in env_status.items() %}
+      <tr>
+        <td>{{ name }}</td>
+        <td>{% if ok %}<span class="badge">설정됨</span>{% else %}<span class="muted mono">미설정</span>{% endif %}</td>
+      </tr>
+      {% endfor %}
+    </table>
+  </div>
+</details>
 {% endblock %}

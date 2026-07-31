@@ -146,8 +146,3 @@ def fetch_competition(
         top_mall_names=mall_names,
     )
 
-
-def fetch_product_count(keyword: str, client_id: str = "", client_secret: str = "") -> int:
-    """등록 상품수만 빠르게 조회 (discover 파이프라인 내부 사용)."""
-    result = fetch_competition(keyword, client_id, client_secret)
-    return result.product_count

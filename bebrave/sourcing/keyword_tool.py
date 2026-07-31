@@ -333,30 +333,6 @@ def discover_keywords(
     return list(seen.values())
 
 
-def fetch_category_keywords(
-    category: str,
-    limit: int = 50,
-    min_search: int = 500,
-    max_search: int = 50000,
-    api_key: str = "",
-    secret_key: str = "",
-    customer_id: str = "",
-    client_id: str = "",        # 미사용 (호환성 유지)
-    client_secret: str = "",    # 미사용 (호환성 유지)
-) -> List[KeywordData]:
-    """
-    (하위호환) 단일 레벨 카테고리 키워드 수집 → 검색수 필터링 → 검색수 내림차순.
-    신규 파이프라인은 discover_keywords()를 사용한다.
-    """
-    kds = discover_keywords(category, depth=1,
-                            api_key=api_key, secret_key=secret_key, customer_id=customer_id)
-    filtered = [kd for kd in kds if min_search <= kd.monthly_total <= max_search]
-    filtered.sort(key=lambda k: k.monthly_total, reverse=True)
-    for rank, kd in enumerate(filtered[:limit], 1):
-        kd.rank = rank
-    return filtered[:limit]
-
-
 def _parse_count(val) -> int:
     """'< 10' 같은 문자열도 처리."""
     if isinstance(val, int):

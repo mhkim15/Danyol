@@ -13,6 +13,7 @@ API: https://developers.naver.com/docs/serviceapi/datalab/shopping/shopping.md
 """
 import json
 import os
+import statistics
 from dataclasses import dataclass, field
 from datetime import date, timedelta
 from typing import List
@@ -115,11 +116,9 @@ def _analyze_trend(keyword: str, ratios: List[float], raw: List[dict]) -> TrendR
 
     # 계절성 = 변동계수(CV)가 크면서 + 특정 월에 뚜렷한 피크가 있을 때만 판정.
     # (max-min)/avg 방식은 정상 변동도 과민 감지하므로 CV + 피크 조건으로 교체.
-    mean = sum(ratios) / len(ratios)
-    std = (sum((r - mean) ** 2 for r in ratios) / len(ratios)) ** 0.5
-    cv = std / mean if mean > 0 else 0
-    sorted_ratios = sorted(ratios)
-    median = sorted_ratios[len(sorted_ratios) // 2]
+    mean = statistics.mean(ratios)
+    cv = statistics.pstdev(ratios) / mean if mean > 0 else 0
+    median = statistics.median(ratios)
     peak = max(ratios)
     is_seasonal = cv > MAX_SEASONAL_VARIANCE and peak > 1.8 * median
 

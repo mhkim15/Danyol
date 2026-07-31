@@ -112,15 +112,3 @@ def describe_category(category_id: str, access_token: str) -> str:
             return c.get("wholeCategoryName", "")
     return ""
 
-
-def verify_category(category_id: str, access_token: str) -> bool:
-    """커머스 API로 카테고리 ID 유효성 확인."""
-    if not _HAS_REQUESTS:
-        return True
-
-    headers = {"Authorization": f"Bearer {access_token}"}
-    try:
-        resp = requests.get(f"{_CATEGORIES_URL}/{category_id}", headers=headers, timeout=5)
-        return resp.status_code == 200
-    except Exception:
-        return True

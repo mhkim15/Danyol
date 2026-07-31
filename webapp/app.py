@@ -500,6 +500,7 @@ def purchase_place():
 if __name__ == "__main__":
     # PORT/HOST가 설정되면(Render 등 외부 배포) 그걸 쓰고, 아니면 로컬 전용 기본값.
     port = int(os.environ.get("PORT", 5050))
-    host = os.environ.get("HOST", "127.0.0.1")
+    # Render 등은 PORT를 지정해서 실행하므로 그때만 0.0.0.0으로 바인딩 (로컬 실행 시엔 127.0.0.1 유지)
+    host = os.environ.get("HOST", "0.0.0.0" if "PORT" in os.environ else "127.0.0.1")
     print(f"\nFriday — http://{host}:{port}\n")
     app.run(host=host, port=port, debug=False)

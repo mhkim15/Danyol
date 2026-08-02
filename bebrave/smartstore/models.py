@@ -22,6 +22,9 @@ class StoreProduct:
     supplier: str = ""                 # 공급사명
     keyword: str = ""                  # 소싱 키워드
     tags: List[str] = field(default_factory=list)  # 검색어 태그 (SEO)
+    origin_country: str = ""           # 원산지 (도매매 원본값, 빈 값이면 미확인)
+    option_group_name: str = ""        # 옵션 축 이름 (예: "색상") — 빈 값이면 옵션 없음
+    options: List[dict] = field(default_factory=list)  # [{"name","extra_price","stock"}]
     registered_date: str = field(default_factory=lambda: date.today().isoformat())
     naver_product_id: str = ""         # 등록 후 부여된 스마트스토어 상품 ID
 

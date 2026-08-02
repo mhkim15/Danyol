@@ -157,7 +157,12 @@ def search(
 
     try:
         from .competition import fetch_competition
-        comp = fetch_competition(keyword)
+        from .keyword_tool import fetch_related_keywords
+        # 쇼핑검색 API 폐지(2026-07-31)로 등록상품수 직접 조회 불가 —
+        # 검색광고 API 경쟁지수(comp_idx)로 근사한다.
+        related = fetch_related_keywords(keyword, limit=50)
+        comp_idx = next((k.comp_idx for k in related if k.keyword == keyword), "")
+        comp = fetch_competition(keyword, comp_idx=comp_idx)
         naver_total = comp.product_count
         naver_avg_price = comp.avg_price
         naver_entry_price = comp.entry_price

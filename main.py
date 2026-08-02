@@ -169,10 +169,15 @@ def cmd_sourcing(args: argparse.Namespace) -> None:
     elif args.sourcing_cmd == "competition":
         _load_env()
         from bebrave.sourcing.competition import fetch_competition
+        from bebrave.sourcing.keyword_tool import fetch_related_keywords
         keyword = args.keyword
         print(f"\n'{keyword}' 경쟁 품질 조회 중...")
         try:
-            result = fetch_competition(keyword)
+            # 쇼핑검색 API 폐지(2026-07-31)로 등록상품수 직접 조회 불가 —
+            # 검색광고 API 경쟁지수(comp_idx)로 근사한다.
+            related = fetch_related_keywords(keyword, limit=50)
+            comp_idx = next((k.comp_idx for k in related if k.keyword == keyword), "")
+            result = fetch_competition(keyword, comp_idx=comp_idx)
             print(f"\n{result.summary()}\n")
         except (ValueError, NotImplementedError) as e:
             print(f"[오류] {e}\n")
@@ -398,6 +403,7 @@ def cmd_register(args: argparse.Namespace) -> None:
         dry_run=args.dry_run,
         status="SUSPENSION" if args.suspend else "ON",
         output_path=Path(args.output) if args.output else None,
+        force=args.force,
     )
 
     if results:
@@ -705,6 +711,7 @@ def main() -> None:
     reg_p.add_argument("--suspend", action="store_true", default=True, help="판매중지 상태로 등록 (기본, 수동 확인 후 활성화)")
     reg_p.add_argument("--on-sale", action="store_false", dest="suspend", help="즉시 판매중 상태로 등록")
     reg_p.add_argument("--output", default="", help="결과 저장 경로 (기본: data/registered_products.json)")
+    reg_p.add_argument("--force", action="store_true", help="부실 리스팅 경고(사진 1장/설명 부족/저해상도)가 있어도 등록 강행")
 
     # ── report ────────────────────────────────────────────
     subparsers.add_parser("report", help="주간 체크리스트")

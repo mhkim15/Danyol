@@ -19,9 +19,7 @@ from dataclasses import dataclass, field
 from typing import List, Optional
 
 from ..config import (
-    GOLDEN_RATIO,
     SUPPLY_CEILING,
-    SUPPLY_TIERS,
     RESEED_MIN_SEARCH,
     CANDIDATE_CAP,
     EXPANSION_DEPTH,
@@ -34,11 +32,8 @@ from ..config import (
     BLOCKED_LOCATION_PREFIXES,
     BLOCKED_GENDER_PREFIXES,
     REMAKE_MIN_SEARCH,
-    REMAKE_SUPPLY_FLOOR,
-    REMAKE_PRICE_SPREAD_MIN,
-    REMAKE_SELLER_RATIO_MIN,
 )
-from ..margin.calculator import calculate as calc_margin
+from ..margin.calculator import calculate as calc_margin, estimate_sale_price
 from .competition import CompetitionResult, fetch_competition
 from .domemae import search_products, find_matching_product
 from .keyword_tool import KeywordData, discover_keywords
@@ -48,15 +43,11 @@ from .trend import TrendResult, fetch_trend
 
 # ── 점수 기준 ─────────────────────────────────────────────────────────────────
 
-def _supply_tier(product_count: int) -> str:
-    """등록 상품수 → 진입 난이도 tier (tight/normal/loose/over)."""
-    if product_count <= SUPPLY_TIERS["tight"]:
-        return "tight"
-    if product_count <= SUPPLY_TIERS["normal"]:
-        return "normal"
-    if product_count <= SUPPLY_TIERS["loose"]:
-        return "loose"
-    return "over"
+def _supply_tier(comp_idx: str) -> str:
+    """검색광고 경쟁지수(comp_idx) → 진입 난이도 tier.
+    원래 등록 상품수 기준이었으나, 그 API(쇼핑검색)가 2026-07-31 대체 없이
+    영구 종료돼 comp_idx(낮음/중간/높음)로 근사한다."""
+    return {"낮음": "tight", "중간": "normal", "높음": "loose"}.get(comp_idx, "normal")
 
 
 \
@@ -67,12 +58,14 @@ def _supply_tier(product_count: int) -> str:
 # (2) 분자/분모가 둘 다 작을 때 비율이 착시(가짜 블루오션)를 만든다는 점,
 # (3) 비율 연산이 "선형으로 좋다"는 잘못된 가정을 깐다는 점에서 구조적 한계가
 # 있었다. 대신 수요/진입가능성/수익성을 독립 축으로 점수화한 뒤 트랙별로
-# 가중 평균한다. 골든레이시오는 폐기하지 않고 참고 보조지표로만 남긴다
-# (2026-07-29 재설계).
+# 가중 평균한다 (2026-07-29 재설계).
 #
-# 트랙 A(신규 틈새 발굴) — 상품수 적을수록 가점, SUPPLY_CEILING 하드컷 유지.
-# 트랙 B(리메이크 후보) — 상품수 하한만 게이트, 절대 검색량·가격분산·판매처
-# 파편화를 봐서 "이미 풀린 시장이어도 리메이크로 이길 여지"를 찾는다.
+# 2026-07-31 추가 변경: 골든레이시오·상품수 기반 진입가능성 산출에 쓰던 네이버
+# 쇼핑검색 API가 대체 없이 영구 종료돼, 등록상품수/상위판매가/판매처명을 더 이상
+# 조회할 수 없다. 진입가능성은 검색광고 API의 경쟁지수(comp_idx: 낮음/중간/높음)로
+# 대체 산출한다. 트랙 A(신규 틈새 발굴) — comp_idx 낮을수록 가점.
+# 트랙 B(리메이크 후보) — 절대 검색량·트렌드로 "이미 풀린 시장이어도 리메이크로
+# 이길 여지"를 찾는다(가격분산·판매처파편화 신호는 데이터 소스 폐지로 상실).
 
 def _demand_score(monthly_search: int, trend: TrendResult, keyword_data: Optional[KeywordData],
                    track: str) -> int:
@@ -111,55 +104,36 @@ def _demand_score(monthly_search: int, trend: TrendResult, keyword_data: Optiona
 
 
 def _entry_score(
-    product_count: int,
-    price_spread: float,
-    unique_seller_ratio: float,
-    has_seller_data: bool,
+    tier: str,
     track: str,
     supply_matched: Optional[bool] = None,
 ) -> int:
     """
-    진입가능성 축 (0~100): 상품수(트랙 A만) + 가격분산도 + 판매처 파편화 + 도매매 매칭.
+    진입가능성 축 (0~100): 경쟁지수tier(트랙 A만) + 도매매 매칭.
+
+    tier: _supply_tier()가 comp_idx로 산출한 tight/normal/loose. 원래는 등록
+    상품수 구간이었으나 그 데이터 소스(쇼핑검색 API)가 폐지돼 comp_idx 기반으로
+    대체(2026-07-31).
+
+    가격분산도·판매처 파편화 가점은 삭제했다 — 그 데이터(네이버 상위 상품가/
+    판매처명)도 같은 API 폐지로 항상 조회 불가(0/False)해져 있으나 마나 한
+    죽은 항목이었다. 대신 tier 기본점수를 올려 그 몫을 재분배했다 (2026-08).
 
     supply_matched: 도매매 조회 결과 반영 (None=아직 미조회/중립, True=형태 일치
-    확인됨, False=매칭 실패 또는 불확실). 검색 수요는 있어도 실제로 소싱할 수
-    있는 도매매 상품이 없으면 진입가능성이 낮다고 봐야 하는데, 기존에는 이
-    정보가 점수에 전혀 반영되지 않고 마진 강제 제외 규칙에만 쓰였다 — 도매매
-    조회가 늦게(상위 후보에서만) 일어나는 구조상 어쩔 수 없이 점수 재계산
-    시점에 반영한다 (2026-07-30).
+    확인됨, False=매칭 실패 또는 불확실). True만 가점하고 False는 더 이상
+    감점하지 않는다 — 형태 매칭에 쓰는 단어 사전이 뷰티/셀프케어 어휘 위주라
+    다른 카테고리는 실제로 맞는 상품도 "확인 실패"로 뜨는 경우가 흔함을
+    실측으로 확인했다(2026-08) — 사전 커버리지 부족을 진입 난이도 감점으로
+    잘못 해석하고 있었다.
     """
     if track == "A":
-        # 상품수 적을수록 진입 쉬움 — 기존 supply tier 철학 계승
-        if product_count <= SUPPLY_TIERS["tight"]:
-            score = 55
-        elif product_count <= SUPPLY_TIERS["normal"]:
-            score = 40
-        elif product_count <= SUPPLY_TIERS["loose"]:
-            score = 20
-        else:
-            score = 0
+        score = {"tight": 80, "normal": 55, "loose": 25}.get(tier, 0)
     else:
-        # 트랙 B — 상품수는 참고만(시장 규모 신호), 과점 여부가 핵심
-        score = 30 if product_count >= REMAKE_SUPPLY_FLOOR else 0
+        # 트랙 B — 절대 검색량으로 이미 게이트됐으므로 매칭 여부만 반영하는 중립 기본값
+        score = 50
 
-    # 가격 분산도 — 넓을수록 품질/브랜드 차별화 여지 (두 트랙 공통 가점)
-    if price_spread >= REMAKE_PRICE_SPREAD_MIN:
-        score += 25
-    elif price_spread >= REMAKE_PRICE_SPREAD_MIN / 2:
-        score += 12
-
-    # 판매처 파편화 — 소수 판매처 과점이면 감점, 파편화돼 있으면 가점
-    if has_seller_data:
-        if unique_seller_ratio >= REMAKE_SELLER_RATIO_MIN:
-            score += 20
-        elif unique_seller_ratio < 0.3:
-            score -= 15
-
-    # 도매매 매칭 — 실제 소싱 가능성이 검증됐는지
     if supply_matched is True:
         score += 15
-    elif supply_matched is False:
-        score -= 20
 
     return max(0, min(100, score))
 
@@ -177,10 +151,7 @@ _TRACK_B_WEIGHTS = {"demand": 0.45, "entry": 0.35, "profit": 0.20}
 
 
 def _score_from_axes(
-    product_count: int,
-    price_spread: float,
-    unique_seller_ratio: float,
-    has_seller_data: bool,
+    tier: str,
     monthly_search: int,
     trend: TrendResult,
     keyword_data: Optional[KeywordData] = None,
@@ -190,12 +161,6 @@ def _score_from_axes(
     supply_matched: Optional[bool] = None,
 ) -> int:
     """수요×진입가능성×수익성 3축 가중평균 점수 (0~100점) — 원시값 기반."""
-    if product_count <= 0:
-        return 0
-    if track == "A" and product_count > SUPPLY_CEILING:
-        return 0
-    if track == "B" and product_count < REMAKE_SUPPLY_FLOOR:
-        return 0
     if monthly_search > 0:
         min_search = REMAKE_MIN_SEARCH if track == "B" else RESEED_MIN_SEARCH
         if monthly_search < min_search:
@@ -203,10 +168,7 @@ def _score_from_axes(
 
     weights = _TRACK_B_WEIGHTS if track == "B" else _TRACK_A_WEIGHTS
     demand = _demand_score(monthly_search, trend, keyword_data, track)
-    entry = _entry_score(
-        product_count, price_spread, unique_seller_ratio, has_seller_data, track,
-        supply_matched=supply_matched,
-    )
+    entry = _entry_score(tier, track, supply_matched=supply_matched)
     profit = _profit_score(margin_passes, margin_rate)
 
     total = demand * weights["demand"] + entry * weights["entry"] + profit * weights["profit"]
@@ -223,11 +185,9 @@ def _score(
 ) -> int:
     """CompetitionResult 기반 래퍼 — 최초 채점(1차 조회 직후)에 사용."""
     monthly_search = getattr(keyword_data, "monthly_total", 0) if keyword_data else 0
+    tier = _supply_tier(keyword_data.comp_idx if keyword_data else "")
     return _score_from_axes(
-        product_count=competition.product_count,
-        price_spread=competition.price_spread,
-        unique_seller_ratio=competition.unique_seller_ratio,
-        has_seller_data=bool(competition.top_mall_names),
+        tier=tier,
         monthly_search=monthly_search,
         trend=trend, keyword_data=keyword_data,
         margin_passes=margin_passes, margin_rate=margin_rate, track=track,
@@ -242,8 +202,6 @@ def _recommendation(score: int, tier: str, track: str = "A") -> str:
             return "리메이크 검토"
         return "제외"
 
-    if tier == "over":
-        return "제외"
     if score >= 55:
         return "진입 권장"
     if score >= 40:
@@ -261,13 +219,13 @@ class DiscoveryResult:
     category: str
     score: int
     recommendation: str
-    product_count: int                            # 네이버 쇼핑 등록 상품수
+    product_count: int                            # 항상 0 — 쇼핑검색 API 폐지(2026-07-31)로 미조회
     monthly_search: int                           # 실제 월간 검색수 (광고 API)
     trend_direction: str                          # up / stable / down
     is_seasonal: bool
-    competition_barrier: str                      # low / mid / high
-    supply_tier: str                              # tight / normal / loose / over
-    avg_naver_price: float                        # 네이버 상위 평균 판매가
+    competition_barrier: str                      # low / mid / high (comp_idx 기반)
+    supply_tier: str                              # tight / normal / loose (comp_idx 기반)
+    avg_naver_price: float                        # 도매매 소비자가로 대체 추정 (네이버가 조회 불가)
     supply_price: int                             # 도매매 최저 도매가 (0 = 조회 실패)
     supply_name: str                              # 도매매 상품명
     margin_rate: float                            # 실질 마진율 (0 = 계산 불가)
@@ -278,15 +236,10 @@ class DiscoveryResult:
     supply_match_uncertain: bool = False          # True면 도매매 상품 타입 일치 미확인
     entry_price: float = 0.0                      # 신규셀러 예상 진입가 (마진 계산 기준가)
     track: str = "A"                              # "A"=신규 틈새 발굴 / "B"=리메이크 후보
-    price_spread: float = 0.0                     # (최고가-최저가)/평균가 — 가격 스펙트럼
-    unique_seller_ratio: float = 0.0               # 고유판매처수/상위노출수 — 낮을수록 과점
-    has_seller_data: bool = False                  # mallName 조회 성공 여부 (재계산 시 판별용)
-
-    @property
-    def golden_ratio(self) -> float:
-        if self.product_count == 0:
-            return 0.0
-        return round(self.monthly_search / self.product_count, 2)
+    price_spread: float = 0.0                     # 항상 0 — 상품수 API와 함께 폐지
+    unique_seller_ratio: float = 0.0               # 항상 0 — 상품수 API와 함께 폐지
+    has_seller_data: bool = False                  # 항상 False — 상품수 API와 함께 폐지
+    comp_idx: str = ""                             # 검색광고 경쟁지수 (낮음/중간/높음)
 
     def one_line(self) -> str:
         trend_ko = {"up": "상승", "stable": "안정", "down": "하락"}.get(self.trend_direction, "-")
@@ -296,8 +249,7 @@ class DiscoveryResult:
         uncertain = " ⚠매칭불확실" if self.supply_match_uncertain else ""
         return (
             f"  {self.keyword:<18} 점수:{self.score:>3}  "
-            f"트렌드:{trend_ko:<3}  경쟁:{barrier_ko:<3}  "
-            f"상품수:{self.product_count:>6,}개  "
+            f"트렌드:{trend_ko:<3}  경쟁:{barrier_ko:<3}({self.comp_idx or '-'})  "
             f"도매가:{self.supply_price:>7,}원{uncertain}  마진:{margin_str}  "
             f"→ {self.recommendation}{seasonal}"
         )
@@ -310,14 +262,12 @@ class DiscoveryResult:
             f"  트렌드   : {'상승' if self.trend_direction == 'up' else '안정' if self.trend_direction == 'stable' else '하락'}"
             + (f" (지수: {self.trend_index:.1f})" if self.trend_index else "")
             + (" ⚠ 계절성 상품" if self.is_seasonal else ""),
-            f"  경쟁강도 : {'약함 ✓' if self.competition_barrier == 'low' else '보통' if self.competition_barrier == 'mid' else '강함 ✗'}  (등록 상품: {self.product_count:,}개)",
-            f"  네이버가 : 상위 평균 {self.avg_naver_price:,.0f}원  |  신규셀러 진입가(추정) {self.entry_price:,.0f}원",
+            f"  경쟁강도 : {'약함 ✓' if self.competition_barrier == 'low' else '보통' if self.competition_barrier == 'mid' else '강함 ✗'}  (경쟁지수: {self.comp_idx or '미상'})",
         ]
-        if self.track == "B":
-            seller_str = f"{self.unique_seller_ratio:.0%}" if self.has_seller_data else "미조회"
-            lines.append(
-                f"  진입가능성: 가격분산 {self.price_spread:.0%}  |  판매처다양성 {seller_str}"
-            )
+        if self.entry_price:
+            lines.append(f"  판매가   : {self.entry_price:,.0f}원 (도매매 소비자가 기준 추정 — 네이버가 조회 불가)")
+        else:
+            lines.append("  판매가   : 미조회 (도매매 매칭 후보 없음 — 수동 확인 필요)")
         if self.supply_price:
             match_flag = "  ⚠ 상품타입 일치 미확인 — 실물 수동확인 필수" if self.supply_match_uncertain else ""
             lines.append(f"  도매가   : {self.supply_price:,}원  ({self.supply_name[:30]}){match_flag}")
@@ -406,9 +356,8 @@ def discover(
     소싱 탐색 파이프라인 — 트랙 A(신규 틈새 발굴) + 트랙 B(리메이크 후보) 병행.
 
     같은 키워드 후보 풀에서 두 트랙을 각각 채점한다.
-    트랙 A: 상품수 적을수록 유리(SUPPLY_CEILING 하드컷), 골든레이시오 계열 철학 계승.
-    트랙 B: 상품수 많아도 무방(REMAKE_SUPPLY_FLOOR 하한만), 절대 검색량·가격분산·
-            판매처 파편화로 "이미 풀린 시장이어도 리메이크로 이길 여지"를 찾는다.
+    트랙 A: 검색광고 경쟁지수(comp_idx) 낮을수록 유리.
+    트랙 B: 절대 검색량·트렌드로 "이미 풀린 시장이어도 리메이크로 이길 여지"를 찾는다.
 
     Args:
         category      : 소싱 카테고리 (예: 주방용품)
@@ -418,7 +367,7 @@ def discover(
         with_domemae  : 도매매 도매가 조회 여부 (상위 도매매_top_n개만)
         api_delay     : API 호출 간 딜레이(초)
         depth         : 키워드 재귀 확장 단계 수
-        max_supply    : 트랙 A 등록 상품수 하드 상한 (초과 시 트랙 A 후보 제외)
+        max_supply    : 미사용 (쇼핑검색 API 폐지로 등록상품수 조회 불가 — 호환용으로만 남김)
         domemae_top_n : 도매가 조회할 상위 후보 수 (트랙별)
         tracks        : 실행할 트랙 목록. None이면 ["A", "B"] 둘 다 실행
 
@@ -453,23 +402,16 @@ def discover(
     keyword_data_map = {kd.keyword: kd for kd in kd_list}
     keyword_list = [kd.keyword for kd in kd_list]
 
-    # ── Step 2~3: 상품수 + 트렌드 조회 — 트랙 공통(API 호출 1회로 공유) ───────
+    # ── Step 2~3: 경쟁도 + 트렌드 조회 — 트랙 공통 ───────────────────────────
+    # 경쟁도는 이미 확보한 kd.comp_idx로 즉시 산출(네트워크 호출 없음) —
+    # 쇼핑검색 API(등록상품수 조회용)가 2026-07-31 대체 없이 폐지됐다.
     fetched = []  # (keyword, kd, competition, trend, error_msgs)
     for i, keyword in enumerate(keyword_list, 1):
         print(f"  [{i}/{len(keyword_list)}] '{keyword}' 조회 중...", end=" ", flush=True)
         kd = keyword_data_map.get(keyword)
         error_msgs = []
 
-        try:
-            competition = fetch_competition(keyword)
-            time.sleep(api_delay)
-        except Exception as e:
-            error_msgs.append(f"경쟁도조회실패:{e}")
-            competition = CompetitionResult(keyword=keyword, product_count=0, barrier="mid")
-
-        if competition.product_count <= 0:
-            print("제외 (상품수 조회 실패)")
-            continue
+        competition = fetch_competition(keyword, comp_idx=kd.comp_idx if kd else "")
 
         try:
             trend = fetch_trend(keyword)
@@ -480,7 +422,8 @@ def discover(
                                 recent_avg=0, prev_avg=0, variance=0,
                                 is_seasonal=False)
 
-        print(f"상품수:{competition.product_count:,} 검색:{kd.monthly_total if kd else 0:,}")
+        comp_display = (kd.comp_idx if kd else "") or "-"
+        print(f"경쟁도:{comp_display} 검색:{kd.monthly_total if kd else 0:,}")
         fetched.append((keyword, kd, competition, trend, error_msgs))
 
     # ── Step 4~6: 트랙별 채점 + 도매매/마진 검증 + 등급 확정 ──────────────────
@@ -490,19 +433,14 @@ def discover(
         print("  [안내] DOMEMAE_API_KEY 미설정 — 도매가/마진 생략")
 
     for track in tracks:
-        track_max_supply = max_supply if track == "A" else None
         results = []
         for keyword, kd, competition, trend, error_msgs in fetched:
-            if track == "A" and competition.product_count > track_max_supply:
-                continue
-            if track == "B" and competition.product_count < REMAKE_SUPPLY_FLOOR:
-                continue
-
             score = _score(competition, trend, kd, margin_passes=False, track=track)
             if score <= 0:
                 continue
 
-            tier = _supply_tier(competition.product_count)
+            comp_idx = kd.comp_idx if kd else ""
+            tier = _supply_tier(comp_idx)
             monthly_search = kd.monthly_total if kd else 0
 
             result = DiscoveryResult(
@@ -529,6 +467,7 @@ def discover(
                 price_spread=competition.price_spread,
                 unique_seller_ratio=competition.unique_seller_ratio,
                 has_seller_data=bool(competition.top_mall_names),
+                comp_idx=comp_idx,
             )
             result._trend = trend
             result._kd = kd
@@ -552,12 +491,21 @@ def discover(
             supply_matched: Optional[bool] = None
             try:
                 domemae_result = search_products(r.keyword, limit=10)
-                p, matched = find_matching_product(r.top_titles, domemae_result.products)
+                # r.top_titles는 항상 빈 리스트(쇼핑검색 API 폐지로 네이버 상위
+                # 상품명을 조회할 수 없음) — 검색 키워드 자체를 타입매칭 기준으로
+                # 대체한다.
+                p, matched = find_matching_product([r.keyword], domemae_result.products)
                 if p:
                     r.supply_price = p.supply_price
                     r.supply_name = p.name
                     r.supply_match_uncertain = not matched
                     supply_matched = matched
+                    if not r.entry_price:
+                        # 도매매는 소비자가를 제공하지 않는다(retail_price는 항상 0) —
+                        # 네이버 경쟁가도 조회 불가하니, 도매가+목표마진 역산이 유일한
+                        # 판매가 추정 방법이다 (실제 등록 단계와 동일 공식, 2026-08).
+                        r.entry_price = float(estimate_sale_price(p.supply_price))
+                        r.avg_naver_price = r.entry_price
                 else:
                     # 도매매 검색 자체는 됐는데 매칭 후보가 하나도 없음 — 소싱 불확실
                     supply_matched = False
@@ -579,10 +527,7 @@ def discover(
 
             if supply_matched is not None:
                 r.score = _score_from_axes(
-                    product_count=r.product_count,
-                    price_spread=r.price_spread,
-                    unique_seller_ratio=r.unique_seller_ratio,
-                    has_seller_data=r.has_seller_data,
+                    tier=r.supply_tier,
                     monthly_search=r.monthly_search,
                     trend=r._trend, keyword_data=r._kd,
                     margin_passes=r.margin_passes, margin_rate=r.margin_rate,
@@ -614,7 +559,7 @@ def to_product_candidates(results: List[DiscoveryResult]) -> List[ProductCandida
             category=r.category,
             is_seasonal=r.is_seasonal,
             notes=(
-                f"자동탐색 | 트렌드:{r.trend_direction} | 경쟁:{r.competition_barrier}"
+                f"자동탐색 | 트렌드:{r.trend_direction} | 경쟁지수:{r.comp_idx or '-'}"
                 + (f" | 도매가:{r.supply_price:,}원" if r.supply_price else "")
                 + (f" | 마진:{r.margin_rate:.1%}" if r.margin_rate else "")
             ),
@@ -627,36 +572,35 @@ def to_product_candidates(results: List[DiscoveryResult]) -> List[ProductCandida
 
 
 def _print_track_table(results: List[DiscoveryResult], category: str, track: str) -> None:
-    tier_ko = {"tight": "엄격", "normal": "보통", "loose": "느슨", "over": "초과"}
+    tier_ko = {"tight": "엄격", "normal": "보통", "loose": "느슨"}
     if track == "A":
-        print(f"\n{'─'*104}")
-        print(f"  {'키워드':<18} {'카테고리':<10} {'점수':>4}  {'트렌드':<5} {'검색수':>7}  {'상품수':>8}  {'공급':<5} {'레이시오':>7}  판단")
-        print(f"{'─'*104}")
+        print(f"\n{'─'*96}")
+        print(f"  {'키워드':<18} {'카테고리':<10} {'점수':>4}  {'트렌드':<5} {'검색수':>7}  {'경쟁도':<5} {'공급':<5}  판단")
+        print(f"{'─'*96}")
         for r in results:
             trend_ko = {"up": "상승", "stable": "안정", "down": "하락"}.get(r.trend_direction, "-")
             seasonal = "★" if r.is_seasonal else " "
             search_str = f"{r.monthly_search:,}" if r.monthly_search else "  -  "
-            golden_str = f"{r.golden_ratio:.1f}" if r.golden_ratio else "  -  "
+            comp_str = r.comp_idx or "-"
             tier_str = tier_ko.get(r.supply_tier, "-")
             cat_str = getattr(r, "category", category)
             print(
                 f"  {r.keyword:<18} {cat_str:<10} {r.score:>4}  {trend_ko:<5} {search_str:>7}  "
-                f"{r.product_count:>8,}개  {tier_str:<5} {golden_str:>7}  {seasonal}{r.recommendation}"
+                f"{comp_str:<5} {tier_str:<5}  {seasonal}{r.recommendation}"
             )
     else:
-        print(f"\n{'─'*110}")
-        print(f"  {'키워드':<18} {'카테고리':<10} {'점수':>4}  {'트렌드':<5} {'검색수':>7}  {'상품수':>8}  {'가격분산':>8}  {'판매처다양성':>10}  판단")
-        print(f"{'─'*110}")
+        print(f"\n{'─'*96}")
+        print(f"  {'키워드':<18} {'카테고리':<10} {'점수':>4}  {'트렌드':<5} {'검색수':>7}  {'경쟁도':<5}  판단")
+        print(f"{'─'*96}")
         for r in results:
             trend_ko = {"up": "상승", "stable": "안정", "down": "하락"}.get(r.trend_direction, "-")
             seasonal = "★" if r.is_seasonal else " "
             search_str = f"{r.monthly_search:,}" if r.monthly_search else "  -  "
-            spread_str = f"{r.price_spread:.0%}" if r.price_spread else "  -  "
-            seller_str = f"{r.unique_seller_ratio:.0%}" if r.has_seller_data else "  -  "
+            comp_str = r.comp_idx or "-"
             cat_str = getattr(r, "category", category)
             print(
                 f"  {r.keyword:<18} {cat_str:<10} {r.score:>4}  {trend_ko:<5} {search_str:>7}  "
-                f"{r.product_count:>8,}개  {spread_str:>8}  {seller_str:>10}  {seasonal}{r.recommendation}"
+                f"{comp_str:<5}  {seasonal}{r.recommendation}"
             )
 
 
@@ -734,10 +678,9 @@ def print_report(results: List[DiscoveryResult], category: str) -> None:
 
     print(f"\n{'═'*70}")
     print("  ★ = 계절성 상품 (비수기 재고 리스크 주의)")
-    print("  [트랙 A] 공급: 엄격(~3천)·보통(~1만)·느슨(~3만) = 등록 상품수 구간 (적을수록 블루오션)")
-    print("           레이시오 = 월검색수 ÷ 등록상품수 (참고 보조지표, 높을수록 수요>공급)")
-    print("  [트랙 B] 가격분산 = (최고가-최저가)/평균가 (높을수록 리메이크로 파고들 여지)")
-    print("           판매처다양성 = 상위 노출 고유 판매처 비율 (높을수록 과점 아님, 진입 여지)")
+    print("  경쟁도/공급 = 검색광고 API 경쟁지수(comp_idx: 낮음/중간/높음) 기반 — 네이버")
+    print("  쇼핑검색 API가 2026-07-31 대체 없이 폐지되어 등록상품수·레이시오·")
+    print("  가격분산·판매처다양성은 더 이상 조회 불가")
     print("  다음 단계: 권장 등급 상품을 도매꾹/온채널에서 수동 최종 확인")
     print(f"{'═'*70}\n")
 
@@ -769,14 +712,14 @@ class CategoryScore:
         return (self.recommended + self.possible) / len(self.results)
 
     @property
-    def avg_golden(self) -> float:
-        ratios = [r.golden_ratio for r in self.results if r.golden_ratio]
-        return round(sum(ratios) / len(ratios), 2) if ratios else 0.0
-
-    @property
-    def median_supply(self) -> int:
-        counts = sorted(r.product_count for r in self.results if r.product_count)
-        return counts[len(counts) // 2] if counts else 0
+    def low_comp_ratio(self) -> float:
+        """경쟁지수 '낮음'(tight) 후보 비율 — 높을수록 블루오션 후보 많음.
+        원래 평균 골든레이시오였으나 그 산출 근거(등록상품수)가 쇼핑검색 API
+        폐지로 조회 불가해져 comp_idx 기반으로 대체(2026-07-31)."""
+        if not self.results:
+            return 0.0
+        tight = sum(1 for r in self.results if r.supply_tier == "tight")
+        return round(tight / len(self.results), 4)
 
     @property
     def top3(self) -> List[DiscoveryResult]:
@@ -813,28 +756,28 @@ def scan_categories(
 
 
 def print_category_ranking(scores: List[CategoryScore]) -> None:
-    """카테고리 순위표 — 기회 밀도·평균 레이시오·대표 키워드 비교."""
-    # 정렬: 기회 밀도 → 평균 레이시오
+    """카테고리 순위표 — 기회 밀도·저경쟁비율·대표 키워드 비교."""
+    # 정렬: 기회 밀도 → 저경쟁(comp_idx 낮음) 비율
     ranked = sorted(
         scores,
-        key=lambda s: (s.opportunity_density, s.avg_golden),
+        key=lambda s: (s.opportunity_density, s.low_comp_ratio),
         reverse=True,
     )
 
     print(f"\n{'═'*78}")
     print("  카테고리 경쟁력 비교 — 어디로 진입할까")
     print(f"{'═'*78}")
-    print(f"\n  {'순위':<4} {'카테고리':<10} {'기회밀도':>7}  {'권장':>4} {'가능':>4}  {'평균레이시오':>10}  {'중앙상품수':>9}")
-    print(f"  {'─'*70}")
+    print(f"\n  {'순위':<4} {'카테고리':<10} {'기회밀도':>7}  {'권장':>4} {'가능':>4}  {'저경쟁비율':>9}")
+    print(f"  {'─'*60}")
     for rank, s in enumerate(ranked, 1):
         print(
             f"  {rank:<4} {s.category:<10} {s.opportunity_density:>6.0%}  "
-            f"{s.recommended:>4} {s.possible:>4}  {s.avg_golden:>10.2f}  {s.median_supply:>8,}개"
+            f"{s.recommended:>4} {s.possible:>4}  {s.low_comp_ratio:>9.0%}"
         )
-    print(f"  {'─'*70}")
+    print(f"  {'─'*60}")
 
     print(f"\n{'━'*78}")
-    print("  카테고리별 대표 블루오션 키워드 (레이시오 상위 3)")
+    print("  카테고리별 대표 블루오션 키워드 (점수 상위 3)")
     print(f"{'━'*78}")
     for s in ranked:
         print(f"\n  ◆ {s.category}  (분석 {s.analyzed}개)")
@@ -844,14 +787,14 @@ def print_category_ranking(scores: List[CategoryScore]) -> None:
         for r in s.top3:
             seasonal = " ★" if r.is_seasonal else ""
             print(
-                f"     - {r.keyword:<18} 레이시오 {r.golden_ratio:>5.1f}  "
-                f"검색 {r.monthly_search:>6,}  상품 {r.product_count:>7,}개  "
+                f"     - {r.keyword:<18} 점수 {r.score:>3}  경쟁도 {r.comp_idx or '-':<3}  "
+                f"검색 {r.monthly_search:>6,}  "
                 f"[{r.recommendation}]{seasonal}"
             )
 
     if ranked:
         best = ranked[0]
         print(f"\n{'═'*78}")
-        print(f"  추천: '{best.category}' — 기회밀도 {best.opportunity_density:.0%}, 평균 레이시오 {best.avg_golden:.2f}")
+        print(f"  추천: '{best.category}' — 기회밀도 {best.opportunity_density:.0%}, 저경쟁비율 {best.low_comp_ratio:.0%}")
         print("  다음 단계: 해당 카테고리로 도매가 포함 정밀 탐색 후 진입 후보 확정")
         print(f"{'═'*78}\n")

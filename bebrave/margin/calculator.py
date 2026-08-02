@@ -53,6 +53,37 @@ class MarginResult:
         )
 
 
+def estimate_sale_price(cost_price: int) -> int:
+    """
+    도매가에서 목표 마진율(TARGET_MARGIN)과 최소 절대이익(MIN_ABS_PROFIT)을
+    동시에 만족하는 판매가를 역산 (100원 단위 올림) — 둘 중 더 높은 쪽을 쓴다.
+
+    원래는 목표 마진율만 딱 채우는 최소가를 썼는데, 저가 상품(도매가 1만원대
+    이하)은 %마진을 채워도 절대이익 5,000원을 못 넘는 경우가 대부분이었다
+    (2026-08 실측: 도매매 표본 100개 중 83%가 도매가 1만원 미만, 그중 %마진만
+    맞춘 가격으로는 95%가 절대이익 하한 미달). 판매가를 절대이익 하한을 채우는
+    수준까지 더 올리면(마진율은 오히려 더 좋아짐) 상당수가 통과권에 들어온다.
+
+    네이버 경쟁상품가 조회가 불가능해진 뒤(2026-07-31 API 종료) 판매가 추정의
+    유일한 근거로 씀 — 발굴 단계(discover.py)와 실제 등록 단계(pipeline.py)가
+    동일한 공식을 쓰도록 통일.
+    """
+    fee_rate = ORDER_FEE + SALES_FEE_MAX + CS_RESERVE
+
+    target_denom = 1 - fee_rate - TARGET_MARGIN
+    target_price = int(cost_price / target_denom) + 1
+
+    floor_denom = 1 - fee_rate
+    shipping = 0
+    floor_price = int((MIN_ABS_PROFIT + cost_price + shipping) / floor_denom) + 1
+    if floor_price >= FREE_SHIPPING_THRESHOLD and shipping == 0:
+        shipping = SHIPPING_FEE
+        floor_price = int((MIN_ABS_PROFIT + cost_price + shipping) / floor_denom) + 1
+
+    price = max(target_price, floor_price)
+    return ((price // 100) + 1) * 100
+
+
 def calculate(
     sale_price: int,
     cost_price: int,

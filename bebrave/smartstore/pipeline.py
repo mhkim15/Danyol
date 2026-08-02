@@ -21,14 +21,14 @@ import time
 from pathlib import Path
 from typing import List, Optional
 
-from ..margin.calculator import calculate as calc_margin
+from ..margin.calculator import calculate as calc_margin, estimate_sale_price
 from ..sourcing.domemae import DomemaeProduct, fetch_product_detail, search_products
 from ..sourcing.analyzer import load_from_json
 from .auth import get_access_token
 from .category import get_category_id
 from .content import generate_product_content
 from .models import StoreProduct
-from .register import build_request_body, register_product
+from .register import _DOMESTIC_MARKERS, build_request_body, register_product
 
 _TARGET_MARGIN = float(os.environ.get("TARGET_MARGIN", "0.20"))
 _MIN_MARGIN = float(os.environ.get("MIN_MARGIN", "0.15"))
@@ -43,6 +43,7 @@ def run(
     status: str = "SUSPENSION",
     output_path: Optional[Path] = None,
     name_override: str = "",
+    force: bool = False,
 ) -> List[StoreProduct]:
     """
     전체 자동 등록 파이프라인.
@@ -59,6 +60,8 @@ def run(
         output_path  : 등록 결과 저장 경로
         name_override: 지정하면 AI/자동생성 상품명 대신 이 값을 그대로 사용 (미리보기에서
                        사용자가 수정한 이름을 반영할 때 사용)
+        force        : True면 부실 리스팅 경고(사진 1장/설명 부족/저해상도)가 있어도 등록 강행.
+                       기본값은 False로, 해당 조건이면 자동으로 건너뜀
 
     Returns:
         등록 완료된 StoreProduct 리스트
@@ -103,9 +106,12 @@ def run(
         print("\n[1] 소싱 로그에서 진입 권장 상품 로드")
         log_path = sourcing_log or Path("data/sourcing_log.json")
         candidates = load_from_json(log_path)
-        recommended = [c for c in candidates if c.score >= 70]
+        # discover.py의 "진입 권장" 기준(55점)과 통일 — 예전엔 70점이었는데
+        # discover.py 점수 체계 재설계(2026-07-30) 이후로 안 맞춰져 있었다.
+        # 화면엔 "진입 권장"이라고 뜨는 상품이 자동등록만 안 되는 불일치였다 (2026-08).
+        recommended = [c for c in candidates if c.score >= 55]
         if not recommended:
-            print("  진입 권장(70점 이상) 상품 없음")
+            print("  진입 권장(55점 이상) 상품 없음")
             return []
         print(f"  → {len(recommended)}개 상품 처리 예정")
         # 각 키워드별로 파이프라인 실행
@@ -117,6 +123,7 @@ def run(
                 dry_run=dry_run,
                 status=status,
                 output_path=output_path,
+                force=force,
             )
             results.extend(sub)
             time.sleep(1.0)
@@ -127,8 +134,13 @@ def run(
         return []
 
     registered = []
+    already_registered = _load_registered_goods_nos(output_path)
 
     for domemae_p in domemae_products:
+        if domemae_p.goods_no and domemae_p.goods_no in already_registered:
+            print(f"\n[건너뜀] 도매매 {domemae_p.goods_no}는 이미 등록된 상품 — 중복 등록 방지")
+            continue
+
         kw = keyword or domemae_p.name.split()[0]
 
         # ── Step 2: 마진 계산 → 판매가 결정 ──────────────────────────────
@@ -146,17 +158,32 @@ def run(
             print(f"  [건너뜀] 최소 마진율({_MIN_MARGIN:.0%}) 미달")
             continue
 
-        # 리스팅 품질 경고 — 사진 1장뿐이거나 설명이 짧으면 최저가만 보고 고른
-        # 부실한 리스팅일 가능성이 높음 (2026-07-12: 실전 등록 테스트로 발견된 패턴)
+        if domemae_p.origin_country and not any(
+            m in domemae_p.origin_country.lower() for m in _DOMESTIC_MARKERS
+        ):
+            print(f"  [건너뜀] 원산지 '{domemae_p.origin_country}' — 국내산 아님, 원산지 코드 매핑 미지원이라 자동 등록 금지")
+            continue
+
+        # 리스팅 품질 체크 — 사진 1장뿐이거나 설명이 짧으면 최저가만 보고 고른
+        # 부실한 리스팅일 가능성이 높음 (2026-07-12: 실전 등록 테스트로 발견된 패턴).
+        # 기본은 자동 건너뜀 — --force로만 강행 등록 가능.
+        quality_issues = []
         if len(domemae_p.images) <= 1:
-            print(f"  [경고] 이미지가 {len(domemae_p.images)}장뿐 — 원본 리스팅이 부실할 수 있음, 등록 전 육안 확인 권장")
+            quality_issues.append(f"이미지가 {len(domemae_p.images)}장뿐")
         if len(domemae_p.description) < 200:
-            print(f"  [경고] 상세설명이 {len(domemae_p.description)}자로 짧음 — 원본 리스팅이 부실할 수 있음, 등록 전 육안 확인 권장")
+            quality_issues.append(f"상세설명이 {len(domemae_p.description)}자로 짧음")
         if domemae_p.images:
             from .images import check_min_resolution
             size = check_min_resolution(domemae_p.images[0])
             if size and min(size) < 1000:
-                print(f"  [경고] 대표이미지 해상도 {size[0]}x{size[1]}px — 네이버 권장 최소(1000px) 미만, 확대시 흐릿하게 보일 수 있음")
+                quality_issues.append(f"대표이미지 해상도 {size[0]}x{size[1]}px (권장 최소 1000px 미만)")
+
+        if quality_issues:
+            label = "[경고]" if force else "[건너뜀]"
+            print(f"  {label} 부실 리스팅 의심 — {', '.join(quality_issues)}")
+            if not force:
+                print("  강행하려면 --force 옵션 사용")
+                continue
 
         # ── Step 3: 카테고리 결정 (실제 커머스 API 카테고리 트리 기반 검색) ──
         token = get_access_token()
@@ -189,6 +216,9 @@ def run(
             supplier=domemae_p.supplier,
             keyword=kw,
             tags=content.get("tags", []),
+            origin_country=domemae_p.origin_country,
+            option_group_name=domemae_p.option_group_name,
+            options=domemae_p.options,
         )
 
         if dry_run:
@@ -237,12 +267,7 @@ def _decide_sale_price(supply_price: int, retail_price: int) -> int:
     목표 마진율 20% 달성 가능한 최소 판매가로 설정.
     소비자가가 있으면 참고하되, 마진율 기준 우선.
     """
-    # 마진율 20% 달성 판매가 역산
-    # 순이익 = 판매가 - 공급가 - 주문관리수수료(3.63%) - 판매수수료(4%) - CS예비(2.5%) - 배송
-    # margin_rate = (판매가 - 공급가 - 판매가*0.1013) / 판매가 >= 0.20
-    # 판매가 * (1 - 0.1013 - 0.20) >= 공급가
-    # 판매가 >= 공급가 / 0.6987
-    target_price = int(supply_price / 0.70) + 1
+    target_price = estimate_sale_price(supply_price)
 
     # 소비자가가 있고 목표 마진율을 달성하면 소비자가 참고
     if retail_price and retail_price >= target_price:
@@ -251,8 +276,20 @@ def _decide_sale_price(supply_price: int, retail_price: int) -> int:
         if competitor_based >= target_price:
             return competitor_based
 
-    # 100원 단위 올림
-    return ((target_price // 100) + 1) * 100
+    return target_price
+
+
+def _load_registered_goods_nos(output_path: Optional[Path]) -> set:
+    """이미 등록한 도매매 상품번호 집합 — 중복 등록 방지용."""
+    path = output_path or Path("data/registered_products.json")
+    if not path.exists():
+        return set()
+    try:
+        with open(path, encoding="utf-8") as f:
+            existing = json.load(f)
+    except Exception:
+        return set()
+    return {p.get("domemae_goods_no", "") for p in existing if p.get("domemae_goods_no")}
 
 
 def _save_result(product: StoreProduct, output_path: Optional[Path]) -> None:

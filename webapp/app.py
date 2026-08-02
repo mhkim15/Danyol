@@ -106,8 +106,9 @@ def index():
 
     candidates = _load_json(SOURCING_LOG)
     registered = _load_json(REGISTERED_PRODUCTS)
+    # discover.py의 "진입 권장" 기준(55점)과 통일 — register --from-sourcing과 동일 기준
     recommended = sorted(
-        (c for c in candidates if c.get("score", 0) >= 70),
+        (c for c in candidates if c.get("score", 0) >= 55),
         key=lambda c: c.get("score", 0), reverse=True,
     )
 

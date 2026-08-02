@@ -2,14 +2,14 @@
 Layer 2 — 네이버 데이터랩 쇼핑인사이트 API 연동.
 월별 검색 트렌드를 조회해 상승/안정/하락 방향을 판단한다.
 
-API: https://developers.naver.com/docs/serviceapi/datalab/shopping/shopping.md
-     POST https://openapi.naver.com/v1/datalab/shopping/categories
-     무료, 하루 25,000 호출
+API: NAVER API HUB 검색어트렌드 (2026-08 developers.naver.com 개발자센터 종료로 이관)
+     POST https://naverapihub.apigw.ntruss.com/search-trend/v1/search
+     종량제 (ncloud 콘솔에서 사용량/요금 확인)
 
 사전 준비:
-  1. https://developers.naver.com/apps 에서 애플리케이션 등록 (무료)
-  2. 서비스 URL 아무거나 입력 후 Client ID / Secret 발급
-  3. .env 파일에 NAVER_CLIENT_ID, NAVER_CLIENT_SECRET 설정
+  1. https://www.ncloud.com 콘솔 > Application Services > NAVER API HUB 에서 Application 등록
+  2. "NAVER 검색" 카테고리에서 필요한 API 활성화, "Data Lab > 검색어 트렌드" 활성화
+  3. .env 파일에 NAVER_CLIENT_ID, NAVER_CLIENT_SECRET 설정 (API 관리 > 인증 정보에서 확인)
 """
 import json
 import os
@@ -80,12 +80,12 @@ def fetch_trend(keyword: str, client_id: str = "", client_secret: str = "") -> T
         ],
     }
     headers = {
-        "X-Naver-Client-Id": cid,
-        "X-Naver-Client-Secret": csecret,
+        "X-NCP-APIGW-API-KEY-ID": cid,
+        "X-NCP-APIGW-API-KEY": csecret,
         "Content-Type": "application/json",
     }
     resp = requests.post(
-        "https://openapi.naver.com/v1/datalab/search",
+        "https://naverapihub.apigw.ntruss.com/search-trend/v1/search",
         headers=headers,
         data=json.dumps(payload, ensure_ascii=False),
         timeout=10,

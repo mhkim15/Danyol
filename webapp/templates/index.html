@@ -5,17 +5,11 @@
 
 <div class="section">
   <p class="eyebrow">주문 <span style="text-transform:none;letter-spacing:normal;font-weight:400;">· {{ checked_at }} 기준</span></p>
-  <a href="{{ url_for('orders') }}" class="todo-row">
-    <div class="todo-left">
-      <span class="todo-dot {{ 'dot-err' if pending_orders else 'dot-idle' }}"></span>
-      <div>
-        <p class="todo-title {{ 'attn' if pending_orders else '' }}">처리할 주문 {{ pending_orders if pending_orders is not none else '확인 필요' }}{{ '건' if pending_orders is not none else '' }}</p>
-        <p class="todo-sub">{{ '결제완료 후 발송 대기 중 — 지금 발송처리하세요' if pending_orders else '결제완료 후 아직 발송처리 안 된 주문' }}</p>
-      </div>
-    </div>
-    <span class="todo-arrow">→</span>
-  </a>
-  <div class="stat-grid" style="margin-top:8px;">
+  <div class="stat-grid" style="grid-template-columns: repeat(3, 1fr);">
+    <a href="{{ url_for('orders') }}" class="stat-card link">
+      <p class="stat-num {{ 'attn' if pending_orders else '' }}">{{ pending_orders if pending_orders is not none else '확인 필요' }}{{ '건' if pending_orders is not none else '' }}</p>
+      <p class="stat-label">처리할 주문 — 발송 대기</p>
+    </a>
     <div class="stat-card">
       <p class="stat-num">{{ this_month.order_count }}건</p>
       <p class="stat-label">이번달 주문</p>

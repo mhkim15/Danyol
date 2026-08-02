@@ -15,6 +15,20 @@ from typing import List, Set
 
 MAX_NAME_LEN = 45
 
+# 네이버쇼핑 SEO 가이드가 금지하는 판매조건·홍보문구 — Claude 경로는 프롬프트로 지시하지만
+# API 키 없는 폴백 경로(optimize_name)와 태그 생성(content._generate_tags)엔 필터가 없어서
+# 그대로 새어나가고 있었음 (2026-08 재점검에서 발견). 어뷰징으로 검색 노출 페널티 리스크.
+BANNED_PROMO_WORDS = {
+    "무료배송", "배송비무료", "당일발송", "당일출고", "특가", "초특가", "핫딜",
+    "인기", "베스트", "1+1", "2+1", "3+1", "세일", "할인", "정품", "최저가",
+    "단독", "이벤트", "사은품", "적립금", "쿠폰", "프로모션", "광고", "협찬",
+    "재입고", "품절임박", "수량한정",
+}
+
+
+def strip_promo_words(words: List[str]) -> List[str]:
+    return [w for w in words if w not in BANNED_PROMO_WORDS]
+
 # 동의어/유의어 그룹 — 같은 그룹 안에서는 최초 등장 단어(보통 keyword) 하나만 채택.
 # "자동우산"/"골프우산"처럼 실제 구분 정보가 붙은 복합어는 그룹의 "정확히 동일한 단어"가
 # 아니므로 걸러지지 않고 유지됨 (부분일치가 아니라 완전일치로만 판정하는 게 핵심).
@@ -44,15 +58,39 @@ def _synonym_key(word: str) -> str:
     return word
 
 
-def optimize_name(keyword: str, raw_title: str, max_len: int = MAX_NAME_LEN) -> str:
+# 카테고리별 무드/상황 어휘 — 2030 여성 타겟 클릭률을 위해 상품명 맨 끝에 최대 1개만 붙임.
+# 매칭 안 되는 카테고리는 억지로 붙이지 않음(기본 폴백 없음). category는 도매매 분류 경로
+# 문자열(예: "생활>수납/정리>정리함")이라 키를 부분일치(in)로 찾는다.
+MOOD_WORDS = {
+    "뷰티소품": "홈셀프케어",
+    "네일케어": "셀프네일",
+    "헤어스타일링": "홈스타일링",
+    "헤어케어": "홈케어",
+    "헤어액세서리": "데일리스타일링",
+    "수납/정리용품": "원룸수납",
+    "발건강용품": "홈케어",
+    "좌욕/좌훈용품": "홈셀프케어",
+    "여성언더웨어/잠옷": "홈웨어룩",
+    "주얼리": "데일리주얼리",
+}
+
+
+def _find_mood_word(category: str) -> str:
+    for key, word in MOOD_WORDS.items():
+        if key in category:
+            return word
+    return ""
+
+
+def optimize_name(keyword: str, raw_title: str, category: str = "", max_len: int = MAX_NAME_LEN) -> str:
     """
-    동의어 중복 제거 + 키워드 앞배치 + 단어경계 절단.
+    동의어 중복 제거 + 키워드 앞배치 + 무드어휘 1개(선택) + 단어경계 절단.
 
     예: keyword="우산", raw_title="우산 양산 양우산 자동우산 (인쇄가능) 3단자동우산 우양산 골프우산 ..."
         → "우산 자동우산 3단자동우산 골프우산 ..." (양산/양우산/우양산만 제거, 나머지는 유지)
     """
     raw_title = re.sub(r"\[.*?\]|\(.*?\)", "", raw_title).strip()
-    words = raw_title.split()
+    words = strip_promo_words(raw_title.split())
 
     chosen: List[str] = []
     seen_keys = set()
@@ -67,6 +105,12 @@ def optimize_name(keyword: str, raw_title: str, max_len: int = MAX_NAME_LEN) -> 
             continue
         seen_keys.add(key)
         chosen.append(w)
+
+    mood_word = _find_mood_word(category) if category else ""
+    if mood_word and mood_word not in chosen:
+        candidate = " ".join(chosen + [mood_word])
+        if len(candidate) <= max_len:
+            chosen.append(mood_word)
 
     return truncate_at_word_boundary(" ".join(chosen), max_len)
 

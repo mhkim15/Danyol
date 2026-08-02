@@ -117,7 +117,7 @@ def build_request_body(product: StoreProduct, status: str = "SUSPENSION") -> dic
                 "afterServiceTelephoneNumber": "010-0000-0000",
                 "afterServiceGuideContent": "구매 후 문의사항은 고객센터로 연락 바랍니다.",
             },
-            "originAreaInfo": {"originAreaCode": "03", "importer": "", "content": ""},
+            "originAreaInfo": _build_origin_area_info(product.origin_country),
             # 검색어 태그 — code 없이 text만 등록 (네이버 공식 가이드상 code 생략 가능,
             # code를 쓰려면 별도 '추천 태그 검색' API로 조회해야 하나 엔드포인트 미확인)
             "seoInfo": {"sellerTags": [{"text": t} for t in product.tags]},
@@ -135,6 +135,9 @@ def build_request_body(product: StoreProduct, status: str = "SUSPENSION") -> dic
             },
         },
     }
+    if product.options:
+        origin_product["optionInfo"] = _build_option_info(product.option_group_name, product.options)
+
     smartstore_channel_product = {
         "naverShoppingRegistration": True,
         "channelProductDisplayStatusType": "ON" if status == "SALE" else "SUSPENSION",
@@ -142,6 +145,31 @@ def build_request_body(product: StoreProduct, status: str = "SUSPENSION") -> dic
     return {
         "originProduct": origin_product,
         "smartstoreChannelProduct": smartstore_channel_product,
+    }
+
+
+def _build_option_info(group_name: str, options: list) -> dict:
+    """
+    옵션(색상/사이즈 등 단일 축) → 커머스 API v2 optionCombinations 구조.
+    주의: 실전 등록으로 검증되지 않은 구조 — 처음 쓸 때는 반드시 --dry-run으로
+    요청 바디를 먼저 확인하고, SUSPENSION 상태로 1건 등록해 스마트스토어센터에서
+    옵션이 정상 반영됐는지 눈으로 확인할 것.
+    옵션별 추가금액은 도매매 원가 차액(supPrice)을 그대로 씀 — 마진율은 기본
+    판매가에만 반영되고 옵션 추가금엔 마진이 안 붙는 단순화.
+    """
+    return {
+        "optionCombinationSortType": "CREATE",
+        "useStockManagement": True,
+        "optionCombinationGroupNames": {"optionGroupName1": group_name},
+        "optionCombinations": [
+            {
+                "optionName1": o["name"],
+                "stockQuantity": min(o.get("stock", 0), 9999),
+                "price": o.get("extra_price", 0),
+                "usable": True,
+            }
+            for o in options
+        ],
     }
 
 
@@ -163,6 +191,24 @@ def _build_delivery_info() -> dict:
         },
         "installation": False,
     }
+
+
+_DOMESTIC_MARKERS = ("국내", "국산", "한국", "대한민국", "korea")
+
+
+def _build_origin_area_info(origin_country: str) -> dict:
+    """
+    원산지 코드 결정. 국내산으로 확인된 경우에만 03(국산)을 쓴다.
+    해외산이거나 원산지가 미확인이면 pipeline에서 이미 등록을 건너뛰었어야 하므로,
+    여기까지 들어오면 잘못된 원산지 표시를 막기 위해 예외를 던진다
+    (수입산 상품을 국산으로 잘못 등록하면 원산지 표시법 위반 — 실제 코드 매핑표 없이
+    함부로 수입산 코드를 추측해 넣지 않음).
+    """
+    if origin_country and not any(m in origin_country.lower() for m in _DOMESTIC_MARKERS):
+        raise ValueError(
+            f"원산지 '{origin_country}'는 국내산으로 확인되지 않음 — 자동 등록 금지, 수동 확인 필요"
+        )
+    return {"originAreaCode": "03", "importer": "", "content": ""}
 
 
 def fetch_registered_product(product_id: str, access_token: str) -> dict:

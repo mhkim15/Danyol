@@ -22,9 +22,13 @@
   <h2>조회 결과 ({{ pairs|length }}건)</h2>
   {% for o, match in pairs %}
   <div class="panel" style="background:var(--paper);margin-bottom:10px;">
-    <div class="mono" style="font-size:12px;color:var(--ink-soft);">주문 {{ o.product_order_id }} {% if demo %}<span class="badge">샘플</span>{% endif %}</div>
-    <div style="margin:4px 0;">{{ o.product_name }} {{ o.option_name }} × {{ o.quantity }} — {{ "{:,}".format(o.unit_price) }}원</div>
-    <div class="muted" style="font-size:13px;">{{ o.receiver_name }} ({{ o.receiver_tel }}) · {{ o.receiver_address }}</div>
+    <div class="row" style="align-items:flex-start;gap:24px;">
+      <div style="flex:2;min-width:260px;">
+        <div class="mono" style="font-size:12px;color:var(--ink-soft);">주문 {{ o.product_order_id }} {% if demo %}<span class="badge">샘플</span>{% endif %}</div>
+        <div style="margin:4px 0;">{{ o.product_name }} {{ o.option_name }} × {{ o.quantity }} — {{ "{:,}".format(o.unit_price) }}원</div>
+      </div>
+      <div class="muted" style="font-size:13px;flex:1;min-width:220px;">{{ o.receiver_name }} ({{ o.receiver_tel }}) · {{ o.receiver_address }}</div>
+    </div>
 
     {% if match %}
     <form method="post" action="{{ url_for('purchase_place') }}" style="margin-top:10px;background:var(--paper);border:1px solid var(--line);border-radius:6px;padding:10px 12px;">
@@ -37,8 +41,8 @@
       <input type="hidden" name="address1" value="{{ o.receiver_address1 }}">
       <input type="hidden" name="address2" value="{{ o.receiver_address2 }}">
       <input type="hidden" name="shop_name" value="{{ match.name }}">
-      <div class="muted" style="font-size:12.5px;margin-bottom:6px;">도매매 <span class="mono">{{ match.domemae_goods_no }}</span> · {{ o.quantity }}개 · {{ o.receiver_name }} ({{ o.receiver_tel }}) · {{ o.receiver_address1 }} {{ o.receiver_address2 }}</div>
-      <div class="row">
+      <div class="row" style="align-items:center;">
+        <div class="muted" style="font-size:12.5px;flex:2;min-width:280px;">도매매 <span class="mono">{{ match.domemae_goods_no }}</span> · {{ o.quantity }}개 · {{ o.receiver_name }} ({{ o.receiver_tel }}) · {{ o.receiver_address1 }} {{ o.receiver_address2 }}</div>
         <label style="margin:0;"><input type="checkbox" name="live"> 위 내용 확인함 — 실제로 발주</label>
         <button type="submit">발주 넣기</button>
         <a class="btn secondary" href="{{ url_for('purchase',
@@ -56,20 +60,20 @@
     </div>
     {% endif %}
 
-    <form method="post" action="{{ url_for('orders_dispatch') }}" class="row" style="margin-top:10px;">
+    <form method="post" action="{{ url_for('orders_dispatch') }}" class="row" style="margin-top:10px;align-items:flex-end;">
       <input type="hidden" name="product_order_id" value="{{ o.product_order_id }}">
-      <div style="flex:1;min-width:100px;">
+      <div style="flex:1;min-width:160px;">
         <label>택배사</label>
         <select name="company">
           <option>CJ대한통운</option><option>롯데택배</option><option>우체국택배</option>
           <option>한진택배</option><option>로젠택배</option>
         </select>
       </div>
-      <div style="flex:1;min-width:140px;">
+      <div style="flex:2;min-width:220px;">
         <label>송장번호</label>
         <input type="text" name="tracking_number" required>
       </div>
-      <button type="submit" style="align-self:flex-end;">발송처리</button>
+      <button type="submit">발송처리</button>
     </form>
   </div>
   {% else %}

@@ -7,6 +7,7 @@
 
 API 키: .env의 DOMEMAE_API_KEY (오픈마켓/플랫폼 연동 키)
 """
+import json
 import os
 import re
 from dataclasses import dataclass, field
@@ -38,6 +39,9 @@ class DomemaeProduct:
     images: list = field(default_factory=list)
     detail_image_url: str = ""
     description: str = ""
+    origin_country: str = ""   # 원산지 (도매매 detail.country) — 빈 값이면 미확인
+    option_group_name: str = ""  # 옵션 축 이름 (예: "색상") — 옵션 없으면 빈 값
+    options: list = field(default_factory=list)  # [{"name","extra_price","stock"}] — 단일 축만 지원
 
     @property
     def main_image(self) -> str:
@@ -224,6 +228,40 @@ def _parse_list_item(item: dict) -> DomemaeProduct:
     )
 
 
+def _parse_options(raw_select_opt) -> tuple:
+    """
+    selectOpt(JSON 문자열) → (옵션축 이름, [{"name","extra_price","stock"}]).
+    조합형(type=="combination")이면서 옵션 축이 정확히 1개일 때만 파싱하고,
+    그 외(옵션 없음/2축 이상 조합)는 ("", [])를 반환한다.
+    """
+    if not raw_select_opt:
+        return "", []
+    try:
+        opt = json.loads(raw_select_opt) if isinstance(raw_select_opt, str) else raw_select_opt
+    except Exception:
+        return "", []
+
+    opt_set = opt.get("set") or []
+    if opt.get("type") != "combination" or len(opt_set) != 1:
+        return "", []
+
+    group_name = opt_set[0].get("name", "")
+    options = []
+    for combo in (opt.get("data") or {}).values():
+        name = combo.get("name", "")
+        if not name:
+            continue
+        options.append({
+            "name": name,
+            "extra_price": _parse_price(combo.get("supPrice", 0)),
+            "stock": int(combo.get("qty", 0) or 0),
+        })
+    # 선택지가 1개뿐이면 실질적으로 옵션이 아님(예: "진레드색상만 출고가능")
+    if len(options) < 2:
+        return "", []
+    return group_name, options
+
+
 def _parse_view_item(data: dict) -> DomemaeProduct:
     """getItemView 응답의 domeggook 객체 → DomemaeProduct."""
     basis   = data.get("basis", {}) or {}
@@ -266,6 +304,12 @@ def _parse_view_item(data: dict) -> DomemaeProduct:
     # 제조국
     country = detail.get("country", "")
 
+    # 옵션 — selectOpt는 dict가 아니라 JSON을 담은 문자열로 내려옴 (실API 확인).
+    # 옵션 축(색상+사이즈 등)이 2개 이상인 조합형은 조합 폭발을 안전하게 매핑할
+    # 근거가 없어 지원하지 않음 — 단일 축(색상만 또는 사이즈만)만 옵션으로 등록하고,
+    # 그 외에는 옵션 없는 단일상품으로 취급 (기존 동작과 동일, 회귀 없음).
+    option_group_name, options = _parse_options(data.get("selectOpt", ""))
+
     return DomemaeProduct(
         goods_no=str(basis.get("no", "")),
         name=basis.get("title", ""),
@@ -279,6 +323,9 @@ def _parse_view_item(data: dict) -> DomemaeProduct:
         url=f"https://www.domeggook.com/main/goods/view.php?no={basis.get('no','')}",
         images=images,
         detail_image_url="",  # desc.contents에 HTML로 포함됨
+        origin_country=country,
+        option_group_name=option_group_name,
+        options=options,
         # desc.notice는 연휴/배송 공지 등 상품과 무관한 안내문이라 폴백으로 쓰면 안 됨
         # (2026-07-12 확인된 버그 수정 — 이전엔 contents 없으면 notice가 상세설명으로 들어갔음)
         description=desc_contents,

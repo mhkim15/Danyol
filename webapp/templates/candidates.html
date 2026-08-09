@@ -23,10 +23,9 @@
     ">
     <label for="category">카테고리</label>
     <select name="category" id="category">
-      <option value="주방용품">주방용품</option>
-      <option value="욕실용품">욕실용품</option>
-      <option value="생활용품">생활용품</option>
-      <option value="정리수납">정리수납</option>
+      {% for cat in target_categories %}
+      <option value="{{ cat }}">{{ cat }}</option>
+      {% endfor %}
       <option value="all">전체 비교 스캔</option>
     </select>
     <div class="row" style="margin-top:12px;">
@@ -38,28 +37,80 @@
 
 <div class="panel">
   <h2>후보 목록 ({{ candidates|length }}개, 점수순)</h2>
+  <p class="muted" style="font-size:12.5px;margin:-6px 0 14px;">
+    점수 높은 순으로 정렬돼 있습니다. 도매매 상품명을 누르면 미리보기가 열리고, 그 안에서 가격비교 · 등록까지 이어집니다.
+  </p>
   <div class="table-wrap">
   <table>
-    <tr><th>키워드</th><th>점수</th><th>레이시오</th><th>상품수</th><th>카테고리</th><th>액션</th></tr>
+    <tr>
+      <th style="width:14%;">키워드</th>
+      <th style="width:7%;">점수
+        <button type="button" class="tip-btn" data-tip-toggle>?<span class="tip-bubble">
+          <p><b>수요 × 진입가능성 × 수익성</b> 3축을 가중평균한 0~100점입니다.</p>
+          <ul>
+            <li><b>신규 틈새 발굴(트랙A)</b> — 수요35% + 진입가능성45% + 수익성20%<br>55점 이상 = 진입 권장 · 40점 이상 = 진입 가능</li>
+            <li><b>리메이크 후보(트랙B)</b> — 수요45% + 진입가능성35% + 수익성20%<br>60점 이상 = 리메이크 권장 · 40점 이상 = 리메이크 검토</li>
+          </ul>
+        </span></button>
+      </th>
+      <th style="width:9%;">마진율
+        <button type="button" class="tip-btn" data-tip-toggle>?<span class="tip-bubble">
+          <p><b>(판매가 − 도매가 − 수수료·배송비) ÷ 판매가</b></p>
+          <ul>
+            <li>판매가는 도매가에서 역산 — 목표마진율 20%와 최소이익 5,000원을 <b>동시에</b> 만족하는 선에서 정해집니다.</li>
+            <li>도매매에서 상품을 못 찾았으면(도매가 미조회) 계산 자체가 안 돼 "—"로 표시됩니다.</li>
+          </ul>
+        </span></button>
+      </th>
+      <th style="width:32%;">도매매 상품</th>
+      <th style="width:8%;">도매가</th>
+      <th style="width:10%;">확인여부
+        <button type="button" class="tip-btn" data-tip-toggle>?<span class="tip-bubble">
+          <p>도매매에서 찾은 상품이 이 키워드와 <b>같은 종류인지</b> 자동으로 확인됐는지 여부입니다.</p>
+          <ul>
+            <li><b>확인됨</b> — 상품명에 형태가 같다는 근거(예: 둘 다 "양말")가 있거나, 검색 키워드 전체가 상품명에 그대로 들어있는 경우.</li>
+            <li><b>불확실</b> — 그런 근거를 못 찾은 경우. 재료·부자재일 수 있어 실물 확인이 필요합니다.</li>
+          </ul>
+        </span></button>
+      </th>
+      <th style="width:10%;">카테고리</th>
+    </tr>
     {% for c in candidates %}
     <tr>
       <td>{{ c.keyword }}</td>
-      <td class="mono">{{ c.score }}</td>
-      <td class="mono">{{ c.golden_ratio }}</td>
-      <td class="mono">{{ "{:,}".format(c.product_count) }}</td>
-      <td class="muted">{{ c.category }}</td>
       <td>
-        <div class="row" style="gap:6px;">
-          <a class="btn secondary" style="padding:5px 10px;font-size:12px;" href="{{ url_for('candidates_preview', keyword=c.keyword) }}">미리보기</a>
-          <a class="btn secondary" style="padding:5px 10px;font-size:12px;" target="_blank" rel="noopener" href="https://search.shopping.naver.com/search/all?query={{ c.keyword | urlencode }}">네이버가 확인</a>
-          <a class="btn secondary" style="padding:5px 10px;font-size:12px;" target="_blank" rel="noopener" href="https://search.11st.co.kr/Search.tmall?kwd={{ c.keyword | urlencode }}">11번가 확인</a>
-          <form method="post" action="{{ url_for('register_candidate') }}" style="display:flex;gap:6px;align-items:center;">
-            <input type="hidden" name="keyword" value="{{ c.keyword }}">
-            <label style="display:inline;margin:0;font-size:11px;"><input type="checkbox" name="live"> 실등록</label>
-            <button type="submit" class="secondary" style="padding:5px 10px;font-size:12px;">바로등록</button>
-          </form>
-        </div>
+        <span class="score-badge {{ 'score-high' if c.score >= 55 else ('score-mid' if c.score >= 40 else 'score-low') }}">{{ c.score }}</span>
       </td>
+      <td class="mono" style="{{ 'color:var(--ok);font-weight:600;' if c.margin_rate and c.margin_rate >= 0.5 }}">
+        {{ "%.1f%%"|format(c.margin_rate * 100) if c.margin_rate else "—" }}
+      </td>
+      <td>
+        {% if c.supply_name %}
+          <a href="{{ url_for('candidates_preview', keyword=c.keyword) }}"
+             data-modal-url="{{ url_for('candidates_preview', keyword=c.keyword) }}&modal=1"
+             onclick="openPreviewModal(this.dataset.modalUrl); return false;"
+             style="color:var(--ink);font-size:12.5px;">{{ c.supply_name[:32] }}{{ "…" if c.supply_name|length > 32 }}</a>
+        {% else %}
+          <span class="muted" style="font-size:12px;">미조회</span>
+        {% endif %}
+      </td>
+      <td class="mono muted" style="font-size:12px;">{{ "{:,}원".format(c.est_cost_price) if c.est_cost_price else "—" }}</td>
+      <td>
+        {% if not c.supply_name %}
+          <span class="muted" style="font-size:12px;">—</span>
+        {% elif c.supply_matched %}
+          <span class="badge-ok">✓ 확인됨</span>
+        {% elif c.human_confirmed %}
+          <span class="badge-ok">✓ 실물확인 완료</span>
+        {% else %}
+          <span class="badge-warn">⚠ 불확실</span>
+          <form method="post" action="{{ url_for('confirm_match') }}" style="margin-top:3px;">
+            <input type="hidden" name="keyword" value="{{ c.keyword }}">
+            <button type="submit" class="secondary" style="padding:1px 5px;font-size:10px;">실물확인</button>
+          </form>
+        {% endif %}
+      </td>
+      <td class="muted">{{ c.category }}</td>
     </tr>
     {% endfor %}
   </table>

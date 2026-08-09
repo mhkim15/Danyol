@@ -206,16 +206,32 @@ def index():
 
 @app.route("/candidates")
 def candidates():
+    from bebrave.config import TARGET_CATEGORIES
     items = _load_json(SOURCING_LOG)
     items.sort(key=lambda c: c.get("score", 0), reverse=True)
-    return render_template("candidates.html", candidates=items)
+    return render_template("candidates.html", candidates=items, target_categories=TARGET_CATEGORIES)
+
+
+@app.route("/candidates/confirm_match", methods=["POST"])
+def confirm_match():
+    """도매매 매칭이 '불확실'로 뜬 후보를 사람이 실물/상세페이지 보고 승인 처리."""
+    keyword = request.form.get("keyword", "")
+    items = _load_json(SOURCING_LOG)
+    for c in items:
+        if c.get("keyword") == keyword:
+            c["human_confirmed"] = True
+            break
+    with open(SOURCING_LOG, "w", encoding="utf-8") as f:
+        json.dump(items, f, ensure_ascii=False, indent=2)
+    flash(f"'{keyword}' 실물확인 완료로 표시됨", "success")
+    return redirect(url_for("candidates"))
 
 
 @app.route("/candidates/discover", methods=["POST"])
 def discover_scan():
     category = request.form.get("category", "주방용품")
     try:
-        from bebrave.sourcing.analyzer import load_from_json, save_to_json
+        from bebrave.sourcing.analyzer import load_from_json, save_to_json, dedupe_by_supply
         existing = load_from_json(SOURCING_LOG)
         existing_kw = {c.keyword for c in existing}
         added = 0
@@ -229,10 +245,12 @@ def discover_scan():
                         existing.append(c)
                         existing_kw.add(c.keyword)
                         added += 1
+            existing, removed_dupes = dedupe_by_supply(existing)
             save_to_json(existing, SOURCING_LOG)
             ranking = ", ".join(f"{s.category}({s.opportunity_density:.0%})" for s in
                                  sorted(scores, key=lambda s: s.opportunity_density, reverse=True))
-            flash(f"전체 카테고리 스캔 완료 — 신규 후보 {added}개. 기회밀도: {ranking}", "success")
+            dupe_note = f", 동일상품 중복 {len(removed_dupes)}개 제거" if removed_dupes else ""
+            flash(f"전체 카테고리 스캔 완료 — 신규 후보 {added}개{dupe_note}. 기회밀도: {ranking}", "success")
         else:
             from bebrave.sourcing.discover import discover, to_product_candidates
             result = discover(category=category, limit=15)
@@ -241,8 +259,10 @@ def discover_scan():
                     existing.append(c)
                     existing_kw.add(c.keyword)
                     added += 1
+            existing, removed_dupes = dedupe_by_supply(existing)
             save_to_json(existing, SOURCING_LOG)
-            flash(f"'{category}' 스캔 완료 — 신규 후보 {added}개 추가됨", "success")
+            dupe_note = f", 동일상품 중복 {len(removed_dupes)}개 제거" if removed_dupes else ""
+            flash(f"'{category}' 스캔 완료 — 신규 후보 {added}개 추가됨{dupe_note}", "success")
     except Exception as e:
         flash(f"스캔 실패: {e}", "error")
     return redirect(url_for("candidates"))
@@ -250,23 +270,38 @@ def discover_scan():
 
 @app.route("/candidates/preview")
 def candidates_preview():
-    """상품명 최적화 · 태그 · 카테고리 · 마진을 실제 등록 전에 확인하는 미리보기."""
+    """상품명 최적화 · 태그 · 카테고리 · 마진을 실제 등록 전에 확인하는 미리보기.
+
+    ?modal=1로 호출하면 발굴후보 목록에서 모달로 띄우기 위해 레이아웃 없이
+    본문(preview_content.html)만 반환한다.
+    """
     keyword = request.args.get("keyword", "")
-    ctx = {"keyword": keyword}
+    is_modal = request.args.get("modal") == "1"
+    ctx = {"keyword": keyword, "modal": is_modal}
+
+    def _fail(message):
+        if is_modal:
+            return f'<div class="flash flash-error">{message}</div>', 200
+        flash(message, "error")
+        return redirect(url_for("candidates"))
+
     try:
-        from bebrave.sourcing.domemae import search_products, fetch_product_detail
+        from bebrave.sourcing.domemae import search_products, fetch_product_detail, find_matching_product
         from bebrave.margin.calculator import calculate as calc_margin
         from bebrave.smartstore.content import generate_product_content
         from bebrave.smartstore.category import get_category_id, describe_category
         from bebrave.smartstore.auth import get_access_token
         from bebrave.smartstore.pipeline import _decide_sale_price
 
-        result = search_products(keyword, limit=5)
+        result = search_products(keyword, limit=10)
         if not result.products:
-            flash(f"'{keyword}' 도매매 검색 결과 없음", "error")
-            return redirect(url_for("candidates"))
+            return _fail(f"'{keyword}' 도매매 검색 결과 없음")
 
-        p = result.cheapest or result.products[0]
+        # 최저가를 무조건 고르지 않고, discover()와 동일한 형태일치 검증을 거친다 —
+        # 그냥 최저가를 집으면 재료/부자재가 완제품으로 둔갑하는 문제가 있었다(2026-08).
+        p, matched = find_matching_product([keyword], result.products)
+        if p is None:
+            return _fail(f"'{keyword}' 도매매 매칭 후보 없음")
         if p.goods_no:
             try:
                 p = fetch_product_detail(p.goods_no)
@@ -298,11 +333,13 @@ def candidates_preview():
             margin_rate=margin.margin_rate,
             image_count=len(p.images),
             description_len=len(p.description),
+            supply_matched=matched,
         )
     except Exception as e:
-        flash(f"미리보기 생성 실패: {e}", "error")
-        return redirect(url_for("candidates"))
+        return _fail(f"미리보기 생성 실패: {e}")
 
+    if is_modal:
+        return render_template("preview_content.html", **ctx)
     return render_template("preview.html", **ctx)
 
 

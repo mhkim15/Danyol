@@ -1,5 +1,5 @@
 """최소 자가검증 — 프레임워크 없이 python3 -m bebrave.sourcing.test_discover_scoring 로 실행."""
-from .discover import _entry_score
+from .discover import _entry_score, _profit_score
 from ..margin.calculator import estimate_sale_price, calculate as calc_margin
 from ..config import TARGET_MARGIN, MIN_ABS_PROFIT
 
@@ -23,6 +23,14 @@ def test():
         assert result.margin_rate >= TARGET_MARGIN - 0.03, (cost, sale, result.margin_rate)
         # 저가 상품도 절대이익 하한(5,000원)을 실제로 넘겨야 한다 — 이게 이번 수정의 핵심.
         assert result.passes_abs_floor, (cost, sale, result.net_profit)
+
+    # 목표 통과 시 마진율 차이가 점수에 그대로 반영돼야 한다(71%와 87%가 더 이상 동점 X).
+    assert _profit_score(True, 0.865) > _profit_score(True, 0.715) > _profit_score(True, 0.21)
+    # 미조회(중립)·미달(고정 저점)은 기존 동작 유지.
+    assert _profit_score(False, 0.0) == 50
+    assert _profit_score(False, 0.15) == 20
+    # 100% 넘는 마진율도 100점을 넘지 않는다.
+    assert _profit_score(True, 1.5) == 100
 
     print("ok")
 

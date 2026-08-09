@@ -180,3 +180,29 @@ def save_to_json(candidates: list, path: Union[str, Path]) -> None:
     Path(path).parent.mkdir(parents=True, exist_ok=True)
     with open(path, "w", encoding="utf-8") as f:
         json.dump([c.to_dict() for c in candidates], f, ensure_ascii=False, indent=2)
+
+
+def dedupe_by_supply(candidates: List[ProductCandidate]) -> Tuple[List[ProductCandidate], List[ProductCandidate]]:
+    """
+    다른 키워드가 같은 도매매 상품에 매칭되는 경우(동의어 키워드가 흔함,
+    예: '빨래세제'/'세탁세제') 그대로 두면 같은 물건이 다른 이름으로 두 번
+    등록된다. 상품코드(goods_no) 기준으로 묶고, 코드가 없으면 상품명 완전
+    일치로 대체 판단해 점수가 가장 높은 키워드 하나만 남긴다(2026-08).
+
+    Returns: (남길 후보, 제거된 후보)
+    """
+    groups: dict = {}
+    unmatched = []
+    for c in candidates:
+        key = c.supply_goods_no or (c.supply_name if c.supply_name else None)
+        if key is None:
+            unmatched.append(c)
+            continue
+        groups.setdefault(key, []).append(c)
+
+    kept, removed = list(unmatched), []
+    for group in groups.values():
+        group.sort(key=lambda c: c.score, reverse=True)
+        kept.append(group[0])
+        removed.extend(group[1:])
+    return kept, removed

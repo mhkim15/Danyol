@@ -90,6 +90,47 @@
 
   .badge-ok { display: inline-block; font-family: var(--mono); font-size: 10.5px; padding: 2px 7px; border-radius: 99px; background: var(--ok-bg); color: var(--ok); }
   .badge-err { display: inline-block; font-family: var(--mono); font-size: 10.5px; padding: 2px 7px; border-radius: 99px; background: var(--err-bg); color: var(--err); font-weight: 600; }
+  .badge-warn { display: inline-block; font-family: var(--mono); font-size: 10.5px; padding: 2px 7px; border-radius: 99px; background: var(--warn-bg); color: var(--warn); font-weight: 600; }
+
+  /* 컬럼 헤더 등에 붙는 "?" 아이콘 — 누르면 기준 설명이 뜬다(클릭식, 호버 아님) */
+  .tip-btn {
+    display: inline-flex; align-items: center; justify-content: center;
+    width: 15px; height: 15px; border-radius: 50%; background: var(--accent-soft);
+    color: var(--ink-soft); font-size: 10px; font-weight: 700; border: none; cursor: pointer;
+    margin-left: 4px; vertical-align: middle; padding: 0; position: relative;
+  }
+  .tip-btn:hover { background: var(--accent); color: #fff; }
+  .tip-bubble {
+    display: none; position: absolute; left: 0; top: 130%;
+    background: var(--ink); color: #fff; font-size: 11.5px; font-weight: 400;
+    text-transform: none; letter-spacing: normal; text-align: left;
+    padding: 10px 12px; border-radius: 7px; white-space: normal; width: 290px;
+    line-height: 1.5; z-index: 20; box-shadow: 0 4px 14px rgba(18,21,26,0.18);
+  }
+  .tip-btn.open .tip-bubble { display: block; }
+  .tip-bubble p { margin: 0 0 6px; }
+  .tip-bubble ul { margin: 0; padding-left: 16px; }
+  .tip-bubble li { margin-bottom: 4px; }
+  .tip-bubble li:last-child { margin-bottom: 0; }
+  .tip-bubble b { color: #fff; }
+
+  /* 상세 미리보기용 모달 */
+  dialog#modal {
+    border: none; border-radius: 14px; padding: 0; width: min(1020px, 92vw);
+    max-height: 86vh; box-shadow: 0 20px 60px rgba(18,21,26,0.25);
+  }
+  dialog#modal::backdrop { background: rgba(18,21,26,0.45); }
+  .modal-head {
+    position: sticky; top: 0; display: flex; justify-content: flex-end;
+    padding: 10px 12px 0; background: var(--panel);
+  }
+  .modal-close {
+    background: none; border: none; color: var(--ink-soft); font-size: 20px;
+    cursor: pointer; padding: 4px 8px; line-height: 1;
+  }
+  .modal-close:hover { color: var(--ink); }
+  .modal-body { padding: 0 22px 22px; overflow-y: auto; }
+  .modal-loading { padding: 40px 0; text-align: center; color: var(--ink-muted); font-size: 13px; }
   .score-badge { display: inline-block; font-family: var(--mono); font-size: 10.5px; font-weight: 700; padding: 2px 7px; border-radius: 99px; margin-right: 4px; }
   .score-high { background: var(--ok-bg); color: var(--ok); }
   .score-mid { background: var(--money-bg); color: var(--money); }
@@ -206,5 +247,33 @@
     {% block content %}{% endblock %}
   </div>
 </div>
+
+<dialog id="modal">
+  <div class="modal-head"><button type="button" class="modal-close" onclick="document.getElementById('modal').close()" aria-label="닫기">&times;</button></div>
+  <div class="modal-body" id="modalBody"><div class="modal-loading">불러오는 중…</div></div>
+</dialog>
+
+<script>
+  // 헤더 등의 "?" 버튼 — 클릭하면 설명이 뜨고, 바깥을 누르거나 다른 버튼을 누르면 닫힌다.
+  document.addEventListener('click', function (e) {
+    var btn = e.target.closest('[data-tip-toggle]');
+    document.querySelectorAll('.tip-btn.open').forEach(function (b) {
+      if (b !== btn) b.classList.remove('open');
+    });
+    if (btn) { btn.classList.toggle('open'); e.stopPropagation(); }
+  });
+
+  // 목록에서 상품을 눌렀을 때 페이지 이동 없이 미리보기를 모달로 띄운다.
+  function openPreviewModal(url) {
+    var dialog = document.getElementById('modal');
+    var body = document.getElementById('modalBody');
+    body.innerHTML = '<div class="modal-loading">불러오는 중…</div>';
+    dialog.showModal();
+    fetch(url)
+      .then(function (r) { return r.text(); })
+      .then(function (html) { body.innerHTML = html; })
+      .catch(function () { body.innerHTML = '<div class="flash flash-error">불러오지 못했습니다. 새로고침 후 다시 시도해주세요.</div>'; });
+  }
+</script>
 </body>
 </html>

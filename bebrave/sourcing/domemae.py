@@ -123,7 +123,9 @@ _FORM_WORDS = {
     "에센스", "세럼", "스크럽", "소금", "입욕제", "패치", "패드",
     "필링", "가글", "미스트", "분무기",
     # 도구/기기
-    "기", "제거기", "마사지기", "브러쉬", "브러시", "롤러", "타올",
+    # 글자 하나짜리 "기"는 뺀다 — "~기"로 끝나는 모든 단어(예: 만들기)에
+    # 부분일치로 걸려서 무관한 상품을 "형태 일치"로 오판정했다(2026-08 발견).
+    "제거기", "마사지기", "브러쉬", "브러시", "롤러", "타올",
     "타월", "수세미", "장갑", "집게", "클립", "밴드", "보호대",
     "교정기", "스톤", "나이프", "바렌", "줄", "가위", "핀셋", "덧신",
     "양말", "괄사", "폼롤러", "볼", "스케일러", "빗", "안대", "쿠션",
@@ -149,16 +151,32 @@ def _matched_candidates(
     products: List["DomemaeProduct"],
     min_overlap: int = 1,
 ) -> List["DomemaeProduct"]:
-    """네이버 상위 상품명과 '제형/형태 신호'가 겹치는 도매매 후보 전체(가격순)."""
+    """네이버 상위 상품명과 '제형/형태 신호'가 겹치는 도매매 후보 전체(가격순).
+
+    형태 사전(_FORM_WORDS)은 뷰티/셀프케어 어휘 위주라 다른 카테고리(문구,
+    반려동물, 인테리어 등)는 실제로 맞는 상품도 사전에 없는 단어라 못 잡는
+    경우가 대부분이었다(2026-08 실측: 불확실 판정의 78%가 여기 해당).
+    검색 키워드 자체가 상품명에 그대로 들어있으면 — 그 자체로 사전 없이도
+    믿을 만한 증거이므로 — 형태 단어 매칭과 별개로 추가 인정한다.
+    """
     naver_tokens = set()
     for t in naver_titles:
         naver_tokens |= _tokenize(t)
     naver_forms = _form_signals(naver_tokens)
+    keyword_text = "".join(naver_titles).replace(" ", "")
+    # "~만들기/재료/DIY"류는 완제품이 아니라 재료·키트 상품명에 그 문구가 그대로
+    # 들어가는 경우가 흔해서(예: "팔찌만들기"가 "비즈팔찌만들기 끈"에 포함) 키워드
+    # 그대로 포함 규칙에서 제외한다 — "우레탄 줄" 오탐 사례(2026-08).
+    _is_craft_keyword = any(s in keyword_text for s in ("만들기", "재료", "DIY", "diy"))
 
-    matched = [
-        p for p in products
-        if len(naver_forms & _form_signals(_tokenize(p.name))) >= min_overlap
-    ]
+    def _is_match(p: "DomemaeProduct") -> bool:
+        if len(naver_forms & _form_signals(_tokenize(p.name))) >= min_overlap:
+            return True
+        if not _is_craft_keyword and len(keyword_text) >= 2 and keyword_text in p.name.replace(" ", ""):
+            return True
+        return False
+
+    matched = [p for p in products if _is_match(p)]
     return sorted(matched, key=lambda p: p.supply_price)
 
 

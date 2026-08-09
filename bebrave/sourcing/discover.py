@@ -139,10 +139,15 @@ def _entry_score(
 
 
 def _profit_score(margin_passes: bool, margin_rate: float) -> int:
-    """수익성 축 (0~100): 마진 목표 통과 여부. 도매가 미조회 시 중립(50점)."""
+    """수익성 축 (0~100): 도매가 미조회 시 중립(50점), 목표 미달이면 20점 고정.
+    목표 통과 시엔 실제 마진율을 그대로 점수로 반영(%를 점수로) — 71%와 87%를
+    똑같이 만점 처리하던 이분법을 없애고 마진 차이가 순위에 실제로 반영되게 함(2026-08).
+    """
     if margin_rate <= 0:
         return 50  # 아직 도매가/마진 미조회 — 판단 보류(중립)
-    return 100 if margin_passes else 20
+    if not margin_passes:
+        return 20
+    return min(100, round(margin_rate * 100))
 
 
 # 트랙별 3축 가중치 — 합 1.0
@@ -232,6 +237,7 @@ class DiscoveryResult:
     margin_passes: bool                           # 목표 마진율(20%) + 절대이익 하한 동시 달성 여부
     trend_index: float = 0.0
     error: str = ""
+    supply_goods_no: str = ""                     # 도매매 상품코드 — 동일 상품 중복 제거용
     top_titles: List[str] = field(default_factory=list)  # 네이버 상위 상품명 (타입매칭용)
     supply_match_uncertain: bool = False          # True면 도매매 상품 타입 일치 미확인
     entry_price: float = 0.0                      # 신규셀러 예상 진입가 (마진 계산 기준가)
@@ -498,6 +504,7 @@ def discover(
                 if p:
                     r.supply_price = p.supply_price
                     r.supply_name = p.name
+                    r.supply_goods_no = p.goods_no
                     r.supply_match_uncertain = not matched
                     supply_matched = matched
                     if not r.entry_price:
@@ -565,6 +572,10 @@ def to_product_candidates(results: List[DiscoveryResult]) -> List[ProductCandida
             ),
             est_sale_price=int(r.avg_naver_price) if r.avg_naver_price else 0,
             est_cost_price=r.supply_price,
+            supply_name=r.supply_name,
+            supply_goods_no=r.supply_goods_no,
+            margin_rate=r.margin_rate,
+            supply_matched=(not r.supply_match_uncertain) if r.supply_price else None,
         )
         c.score = r.score
         candidates.append(c)

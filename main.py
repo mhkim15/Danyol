@@ -280,6 +280,8 @@ def cmd_sourcing(args: argparse.Namespace) -> None:
                 if r.recommendation in ("진입 권장", "진입 가능", "리메이크 권장", "리메이크 검토")
             ]
             if recommended:
+                from bebrave.sourcing.analyzer import dedupe_by_supply
+
                 candidates = load_from_json(SOURCING_LOG)
                 existing = {c.keyword for c in candidates}
                 new_candidates = to_product_candidates(recommended)
@@ -289,8 +291,10 @@ def cmd_sourcing(args: argparse.Namespace) -> None:
                         candidates.append(c)
                         existing.add(c.keyword)
                         added += 1
+                candidates, removed_dupes = dedupe_by_supply(candidates)
                 save_to_json(candidates, SOURCING_LOG)
-                print(f"  sourcing_log.json 저장: {added}개 추가 (트랙A 진입권장/가능 + 트랙B 리메이크권장/검토 기준)\n")
+                dupe_note = f", 동일상품 중복 {len(removed_dupes)}개 제거" if removed_dupes else ""
+                print(f"  sourcing_log.json 저장: {added}개 추가{dupe_note} (트랙A 진입권장/가능 + 트랙B 리메이크권장/검토 기준)\n")
             else:
                 print("  저장할 후보 없음\n")
         elif args.dry_run:

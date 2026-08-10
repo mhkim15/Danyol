@@ -28,10 +28,12 @@ from .auth import get_access_token
 from .category import get_category_id
 from .content import generate_product_content
 from .models import StoreProduct
-from .register import _DOMESTIC_MARKERS, build_request_body, register_product
+from .register import build_request_body, register_product
 
 _TARGET_MARGIN = float(os.environ.get("TARGET_MARGIN", "0.20"))
 _MIN_MARGIN = float(os.environ.get("MIN_MARGIN", "0.15"))
+
+from ..config import MAX_LISTING_STOCK
 
 
 def run(
@@ -158,10 +160,17 @@ def run(
             print(f"  [건너뜀] 최소 마진율({_MIN_MARGIN:.0%}) 미달")
             continue
 
-        if domemae_p.origin_country and not any(
-            m in domemae_p.origin_country.lower() for m in _DOMESTIC_MARKERS
-        ):
-            print(f"  [건너뜀] 원산지 '{domemae_p.origin_country}' — 국내산 아님, 원산지 코드 매핑 미지원이라 자동 등록 금지")
+        # 원산지 — 네이버 코드표에서 실제 코드를 찾을 수 있어야 등록한다.
+        # 예전엔 "국내산인지"만 검사하고 정작 코드는 03(=상세설명에 표시)을 박아넣고 있었다
+        # (2026-08-10 발견 — 주석엔 03이 국산이라고 적혀 있었으나 실제 03은 다른 값).
+        # 이제 도매매 원산지("수입산_아시아_중국")를 코드로 변환하고, 못 찾으면 등록을 막는다.
+        from .origin import resolve_origin_code
+        origin_code = resolve_origin_code(domemae_p.origin_country, get_access_token())
+        if not origin_code:
+            print(
+                f"  [건너뜀] 원산지 '{domemae_p.origin_country or '(미표기)'}' — "
+                "네이버 원산지 코드표에서 찾지 못함, 잘못된 원산지 표시를 막기 위해 등록 금지"
+            )
             continue
 
         # 리스팅 품질 체크 — 사진 1장뿐이거나 설명이 짧으면 최저가만 보고 고른
@@ -194,6 +203,26 @@ def run(
         from .category import describe_category
         print(f"\n[3] 카테고리 ID: {cat_id} ({describe_category(cat_id, token)})")
 
+        # ── Step 3.5: 이미지를 네이버 서버로 옮기기 ─────────────────────────
+        # 상세설명 HTML 안의 사진이 도매매 CDN 주소를 그대로 가리키고 있었다
+        # (2026-08-10 등록 상품 조회로 확인 — cdn1.domeggook.com 3장). 공급사가 상품을
+        # 내리면 우리 상세페이지 사진이 통째로 사라진다. 대표/추가 이미지만 옮기고
+        # 상세설명은 놔뒀던 게 원인이라, 콘텐츠를 만들기 **전에** 전부 옮기고 주소를
+        # 바꿔치기한 뒤 그 주소로 상세설명을 만든다.
+        # dry-run에서는 실제 업로드를 하지 않으므로 미리보기엔 도매매 주소가 그대로 보인다.
+        if not dry_run:
+            from .images import upload_images
+            originals = [u for u in domemae_p.images if u][:10]
+            uploaded = upload_images(originals, token)
+            if not uploaded:
+                print("  [건너뜀] 이미지 업로드 실패 — 등록 가능한 이미지 없음")
+                continue
+            url_map = dict(zip(originals, uploaded))
+            domemae_p.images = [url_map.get(u, u) for u in domemae_p.images]
+            for old, new in url_map.items():
+                domemae_p.description = domemae_p.description.replace(old, new)
+            print(f"\n[3.5] 이미지 {len(uploaded)}장을 네이버 서버로 업로드")
+
         # ── Step 4: AI 콘텐츠 생성 ────────────────────────────────────────
         print(f"\n[4] 상품 콘텐츠 생성 중...")
         content = generate_product_content(kw, domemae_p, sale_price)
@@ -206,17 +235,21 @@ def run(
             name=content["name"],
             leaf_category_id=cat_id,
             sale_price=sale_price,
-            stock_quantity=min(domemae_p.stock, 999),
+            stock_quantity=min(domemae_p.stock, MAX_LISTING_STOCK),
             detail_content=content["detail_content"],
             representative_image=domemae_p.main_image,
             optional_images=domemae_p.images[1:4],
             supply_price=domemae_p.supply_price,
             margin_rate=margin.margin_rate,
             domemae_goods_no=domemae_p.goods_no,
+            domemae_category=domemae_p.category,
             supplier=domemae_p.supplier,
             keyword=kw,
             tags=content.get("tags", []),
             origin_country=domemae_p.origin_country,
+            origin_code=origin_code,
+            manufacturer=domemae_p.manufacturer,
+            model=domemae_p.model,
             option_group_name=domemae_p.option_group_name,
             options=domemae_p.options,
         )
@@ -225,27 +258,16 @@ def run(
             # ── dry-run: 등록 바디 출력 ────────────────────────────────
             print(f"\n[dry-run] 등록 요청 바디 미리보기:")
             import json as _json
-            body = build_request_body(store_product, status=status)
+            body = build_request_body(store_product, status=status, access_token=token)
             print(_json.dumps(body, ensure_ascii=False, indent=2)[:1000])
             print(f"\n  {store_product.summary()}")
             registered.append(store_product)
             continue
 
-        # ── Step 6: 커머스 API 토큰 + 이미지 업로드 + 상품 등록 ───────────
+        # ── Step 6: 상품 등록 ─────────────────────────────────────────────
+        # 이미지는 Step 3.5에서 이미 네이버 주소로 바꿔뒀다 (대표/추가/상세설명 전부)
         print(f"\n[5] 스마트스토어 상품 등록 중...")
         try:
-            token = get_access_token()
-
-            from .images import upload_images
-            all_images = [store_product.representative_image] + store_product.optional_images
-            all_images = [u for u in all_images if u]
-            uploaded = upload_images(all_images, token)
-            if not uploaded:
-                raise RuntimeError("이미지 업로드 실패 — 등록 가능한 이미지 없음")
-            store_product.representative_image = uploaded[0]
-            store_product.optional_images = uploaded[1:]
-            print(f"  이미지 {len(uploaded)}개 업로드 완료")
-
             product_id = register_product(store_product, token, status=status)
             store_product.naver_product_id = product_id
             print(f"  등록 완료! 상품 ID: {product_id}  상태: {status}")

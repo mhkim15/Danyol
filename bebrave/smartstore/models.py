@@ -19,10 +19,14 @@ class StoreProduct:
     supply_price: int = 0              # 도매가 (내부 기록, 등록 요청에 미포함)
     margin_rate: float = 0.0           # 계산된 마진율
     domemae_goods_no: str = ""         # 도매매 상품번호 (추적용)
+    domemae_category: str = ""         # 도매매 카테고리 경로 — 상품정보제공고시 유형 결정에 사용
     supplier: str = ""                 # 공급사명
     keyword: str = ""                  # 소싱 키워드
     tags: List[str] = field(default_factory=list)  # 검색어 태그 (SEO)
     origin_country: str = ""           # 원산지 (도매매 원본값, 빈 값이면 미확인)
+    origin_code: str = ""              # 네이버 원산지 코드 (origin.resolve_origin_code 결과) — 빈 값이면 등록 불가
+    manufacturer: str = ""             # 제조사 (도매매 detail.manufacturer) — 빈 값이면 미확인
+    model: str = ""                    # 제조사 모델명 (도매매 detail.model) — 빈 값이면 미확인
     option_group_name: str = ""        # 옵션 축 이름 (예: "색상") — 빈 값이면 옵션 없음
     options: List[dict] = field(default_factory=list)  # [{"name","extra_price","stock"}]
     registered_date: str = field(default_factory=lambda: date.today().isoformat())

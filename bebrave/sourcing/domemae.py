@@ -39,7 +39,9 @@ class DomemaeProduct:
     images: list = field(default_factory=list)
     detail_image_url: str = ""
     description: str = ""
-    origin_country: str = ""   # 원산지 (도매매 detail.country) — 빈 값이면 미확인
+    origin_country: str = ""   # 원산지 (도매매 detail.country, 예 "수입산_아시아_중국") — 빈 값이면 미확인
+    manufacturer: str = ""     # 제조사 (도매매 detail.manufacturer) — 공급사 ID와 다름
+    model: str = ""            # 제조사 모델명 (도매매 detail.model) — "해당없음"으로 올 수 있음
     option_group_name: str = ""  # 옵션 축 이름 (예: "색상") — 옵션 없으면 빈 값
     options: list = field(default_factory=list)  # [{"name","extra_price","stock"}] — 단일 축만 지원
 
@@ -319,8 +321,14 @@ def _parse_view_item(data: dict) -> DomemaeProduct:
     parent_names = [e.get("name", "") for e in (cat_d.get("parents") or {}).get("elem", [])]
     category = ">".join([n for n in (parent_names + [current_name]) if n])
 
-    # 제조국
+    # 제조국 — "수입산_아시아_중국" 형태. 네이버 원산지 코드 매핑은 smartstore/origin.py 담당
     country = detail.get("country", "")
+
+    # 제조사·모델명 — 공급사 ID(seller.id)와 별개로 detail에 실제 값이 들어온다.
+    # 예전엔 이 필드를 안 읽고 공급사 ID("lnd2023")를 제조사로 등록하고 있었음(2026-08-10 발견).
+    # "해당없음"처럼 값이 없다는 뜻의 문자열이 오기도 하므로 호출부에서 걸러 쓸 것.
+    manufacturer = str(detail.get("manufacturer", "") or "").strip()
+    model = str(detail.get("model", "") or "").strip()
 
     # 옵션 — selectOpt는 dict가 아니라 JSON을 담은 문자열로 내려옴 (실API 확인).
     # 옵션 축(색상+사이즈 등)이 2개 이상인 조합형은 조합 폭발을 안전하게 매핑할
@@ -342,6 +350,8 @@ def _parse_view_item(data: dict) -> DomemaeProduct:
         images=images,
         detail_image_url="",  # desc.contents에 HTML로 포함됨
         origin_country=country,
+        manufacturer=manufacturer,
+        model=model,
         option_group_name=option_group_name,
         options=options,
         # desc.notice는 연휴/배송 공지 등 상품과 무관한 안내문이라 폴백으로 쓰면 안 됨

@@ -17,6 +17,8 @@ venv/
 
 # 캐시/로그성 데이터 (재생성되거나 개인 실행 이력)
 data/naver_categories_cache.json
+data/naver_origin_areas_cache.json
+data/naver_notice_specs_cache.json
 data/sourcing_log.json
 data/registered_products.json
 data/tracked_products.json

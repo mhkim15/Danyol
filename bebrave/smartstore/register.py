@@ -17,6 +17,7 @@ except ImportError:
     _HAS_REQUESTS = False
 
 from .models import StoreProduct
+from .notice import CS_PHONE_NUMBER, build_provided_notice
 
 _BASE_URL = "https://api.commerce.naver.com/external"
 
@@ -41,7 +42,7 @@ def register_product(
     if not _HAS_REQUESTS:
         raise NotImplementedError("pip3 install requests 후 재시도하세요.")
 
-    body = build_request_body(product, status=status)
+    body = build_request_body(product, status=status, access_token=access_token)
     headers = {
         "Authorization": f"Bearer {access_token}",
         "Content-Type": "application/json;charset=UTF-8",
@@ -74,30 +75,56 @@ def register_product(
     return product_id
 
 
-def _force_suspend(product_id: str, access_token: str) -> None:
-    headers = {
-        "Authorization": f"Bearer {access_token}",
-        "Content-Type": "application/json;charset=UTF-8",
-    }
+def update_registered_product(product_id: str, access_token: str, mutate) -> None:
+    """
+    등록된 상품을 조회 → mutate(body)로 필요한 부분만 고침 → 전체를 다시 전송.
+
+    네이버 상품 수정 API는 부분 갱신을 지원하지 않는다. 요청에 포함하지 않은 항목은
+    삭제되므로, 바꿀 값만 보내면 나머지 정보가 통째로 날아간다. 그래서 반드시 현재
+    상태를 조회해서 그 위에 수정을 얹어 보내야 한다 (2026-08-10 공식 문서 확인).
+
+    mutate는 조회한 요청 바디(dict)를 받아 제자리에서 고치는 함수.
+    """
+    if not _HAS_REQUESTS:
+        raise NotImplementedError("pip3 install requests 후 재시도하세요.")
+
     current = fetch_registered_product(product_id, access_token)
-    current["originProduct"]["statusType"] = "SUSPENSION"
-    if "smartstoreChannelProduct" in current:
-        current["smartstoreChannelProduct"]["channelProductDisplayStatusType"] = "SUSPENSION"
+    mutate(current)
 
     resp = requests.put(
         f"{_BASE_URL}/v2/products/origin-products/{product_id}",
-        headers=headers,
+        headers={
+            "Authorization": f"Bearer {access_token}",
+            "Content-Type": "application/json;charset=UTF-8",
+        },
         json=current,
         timeout=15,
     )
     if resp.status_code != 200:
+        raise RuntimeError(f"상품 수정 실패 [{resp.status_code}]: {resp.text[:300]}")
+
+
+def _set_suspended(body: dict) -> None:
+    body["originProduct"]["statusType"] = "SUSPENSION"
+    if "smartstoreChannelProduct" in body:
+        body["smartstoreChannelProduct"]["channelProductDisplayStatusType"] = "SUSPENSION"
+
+
+def _force_suspend(product_id: str, access_token: str) -> None:
+    try:
+        update_registered_product(product_id, access_token, _set_suspended)
+    except RuntimeError as e:
         raise RuntimeError(
-            f"판매중지 강제전환 실패 [{resp.status_code}]: {resp.text[:300]} "
+            f"판매중지 강제전환 실패: {e} "
             f"— 상품 ID {product_id}가 SALE 상태로 남아있을 수 있으니 스마트스토어센터에서 직접 확인 필요"
         )
 
 
-def build_request_body(product: StoreProduct, status: str = "SUSPENSION") -> dict:
+def build_request_body(
+    product: StoreProduct,
+    status: str = "SUSPENSION",
+    access_token: str = "",
+) -> dict:
     """StoreProduct → 커머스 API v2 요청 바디 변환 (originProduct/smartstoreChannelProduct 구조)."""
     origin_product = {
         "statusType": status,
@@ -114,25 +141,17 @@ def build_request_body(product: StoreProduct, status: str = "SUSPENSION") -> dic
         "deliveryInfo": _build_delivery_info(),
         "detailAttribute": {
             "afterServiceInfo": {
-                "afterServiceTelephoneNumber": "010-0000-0000",
+                "afterServiceTelephoneNumber": CS_PHONE_NUMBER,
                 "afterServiceGuideContent": "구매 후 문의사항은 고객센터로 연락 바랍니다.",
             },
-            "originAreaInfo": _build_origin_area_info(product.origin_country),
+            "originAreaInfo": _build_origin_area_info(product),
             # 검색어 태그 — code 없이 text만 등록 (네이버 공식 가이드상 code 생략 가능,
             # code를 쓰려면 별도 '추천 태그 검색' API로 조회해야 하나 엔드포인트 미확인)
             "seoInfo": {"sellerTags": [{"text": t} for t in product.tags]},
             "minorPurchasable": True,
-            "productInfoProvidedNotice": {
-                "productInfoProvidedNoticeType": "ETC",
-                "etc": {
-                    "itemName": product.name,
-                    # 도매매 공급사 ID(예: seoul7rsoe)는 실제 제조사명이 아니므로 넣지 않음
-                    # (2026-07-12 SEO 가이드 대조 중 발견된 버그 — 이전엔 supplier를 그대로 넣었음)
-                    "modelName": product.domemae_goods_no or "상세페이지 참조",
-                    "manufacturer": "상세페이지 참조",
-                    "customerServicePhoneNumber": "010-0000-0000",
-                },
-            },
+            # 상품정보제공고시 — 카테고리에 맞는 유형을 골라 그 유형의 항목을 빠짐없이 채운다.
+            # 예전엔 전 상품을 ETC로 고정하고 항목도 일부만 채우고 있었음 (notice.py 참고).
+            "productInfoProvidedNotice": build_provided_notice(product, access_token),
         },
     }
     if product.options:
@@ -193,22 +212,34 @@ def _build_delivery_info() -> dict:
     }
 
 
-_DOMESTIC_MARKERS = ("국내", "국산", "한국", "대한민국", "korea")
-
-
-def _build_origin_area_info(origin_country: str) -> dict:
+def _build_origin_area_info(product: StoreProduct) -> dict:
     """
-    원산지 코드 결정. 국내산으로 확인된 경우에만 03(국산)을 쓴다.
-    해외산이거나 원산지가 미확인이면 pipeline에서 이미 등록을 건너뛰었어야 하므로,
-    여기까지 들어오면 잘못된 원산지 표시를 막기 위해 예외를 던진다
-    (수입산 상품을 국산으로 잘못 등록하면 원산지 표시법 위반 — 실제 코드 매핑표 없이
-    함부로 수입산 코드를 추측해 넣지 않음).
+    원산지 정보 생성. pipeline이 origin.resolve_origin_code로 미리 찾아둔 코드를 쓴다.
+
+    이전 버전은 originAreaCode를 "03"으로 고정하고 주석에 "03(국산)"이라 적어뒀는데,
+    실제 코드표상 03은 "상세설명에 표시"였다(2026-08-10 확인). 국산은 00, 수입산은
+    02 하위 코드. 코드가 비어 있으면 원산지를 특정하지 못한 것이므로 등록을 막는다.
     """
-    if origin_country and not any(m in origin_country.lower() for m in _DOMESTIC_MARKERS):
+    if not product.origin_code:
         raise ValueError(
-            f"원산지 '{origin_country}'는 국내산으로 확인되지 않음 — 자동 등록 금지, 수동 확인 필요"
+            f"원산지 코드 미확정 (도매매 원본값: '{product.origin_country or '(미표기)'}') — "
+            "잘못된 원산지 표시를 막기 위해 등록 금지"
         )
-    return {"originAreaCode": "03", "importer": "", "content": ""}
+    info = {"originAreaCode": product.origin_code, "content": ""}
+    # 수입산(02 계열)에만 수입사를 채운다 — 도매매가 주는 제조사를 수입사로 갈음
+    if product.origin_code.startswith("02") and _clean(product.manufacturer):
+        info["importer"] = _clean(product.manufacturer)
+    return info
+
+
+# 도매매가 "값 없음"을 뜻하는 문자열로 채워 보내는 경우가 있어 실제 값과 구분한다
+_PLACEHOLDER_VALUES = {"해당없음", "없음", "미상", "-", "n/a", "na"}
+
+
+def _clean(value: str) -> str:
+    """도매매 필드에서 '해당없음' 같은 자리표시자를 걸러낸 실제 값. 없으면 빈 문자열."""
+    v = str(value or "").strip()
+    return "" if v.lower() in _PLACEHOLDER_VALUES else v
 
 
 def fetch_registered_product(product_id: str, access_token: str) -> dict:

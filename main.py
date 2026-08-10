@@ -569,6 +569,21 @@ def cmd_margin(args: argparse.Namespace) -> None:
     print(f"\n{result.summary()}\n")
 
 
+def cmd_sync(args: argparse.Namespace) -> None:
+    """등록 상품을 도매매와 대조 — 품절/재고/도매가 변동 확인."""
+    _load_env()  # TODO(#17): 명령마다 개별 호출하는 구조라 새 명령에서 빠뜨리기 쉬움
+    from bebrave.smartstore.sync import sync_all, print_results
+
+    apply = getattr(args, "apply", False)
+    token = ""
+    if apply:
+        from bebrave.smartstore.auth import get_access_token
+        token = get_access_token()
+
+    results = sync_all(access_token=token, dry_run=not apply)
+    print_results(results, dry_run=not apply)
+
+
 def cmd_report(args: argparse.Namespace) -> None:
     from bebrave.report import weekly_summary
     print(weekly_summary())
@@ -717,6 +732,14 @@ def main() -> None:
     reg_p.add_argument("--output", default="", help="결과 저장 경로 (기본: data/registered_products.json)")
     reg_p.add_argument("--force", action="store_true", help="부실 리스팅 경고(사진 1장/설명 부족/저해상도)가 있어도 등록 강행")
 
+    # ── sync ──────────────────────────────────────────────
+    sync_p = subparsers.add_parser(
+        "sync",
+        help="등록 상품을 도매매와 대조 — 품절이면 판매중지, 재고 조정, 도매가 변동 경고",
+    )
+    sync_p.add_argument("--apply", action="store_true",
+                        help="실제로 스마트스토어에 반영 (기본은 미리보기만)")
+
     # ── report ────────────────────────────────────────────
     subparsers.add_parser("report", help="주간 체크리스트")
 
@@ -749,6 +772,8 @@ def main() -> None:
             purchase_parser.print_help()
         else:
             cmd_purchase(args)
+    elif args.command == "sync":
+        cmd_sync(args)
     elif args.command == "margin":
         cmd_margin(args)
     elif args.command == "report":

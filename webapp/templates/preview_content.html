@@ -5,7 +5,7 @@
   <label>도매매 원본</label>
   <div class="mono" style="padding:8px 10px;background:var(--paper);border-radius:6px;color:var(--ink-soft);">{{ raw_name }}</div>
   {% if not supply_matched %}
-  <p style="color:#c73;font-size:13px;margin-top:6px;">⚠ 이 키워드와 형태가 같은 상품인지 자동 확인 못함 — 재료/부자재일 수 있으니 실물·상세페이지 확인 후 등록하세요.</p>
+  <p style="color:var(--warn);font-size:13px;margin-top:6px;">⚠ 이 키워드와 형태가 같은 상품인지 자동 확인 못함 — 재료/부자재일 수 있으니 실물·상세페이지 확인 후 등록하세요.</p>
   {% endif %}
   <label for="name_override">최적화 후 (동의어 제거 + SEO 규칙 적용) — 직접 수정 가능</label>
   <input type="text" id="name_override" form="register-form" name="name_override" value="{{ optimized_name }}" maxlength="100" class="mono">

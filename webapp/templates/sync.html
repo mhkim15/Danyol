@@ -5,11 +5,16 @@
 <p class="muted" style="margin:-10px 0 16px;font-size:13px;">
   등록 상품을 도매매와 대조합니다. 품절이면 판매중지, 재고가 줄었으면 재고 하향, 도매가가 올라 최소마진 미달이면 경고만(판매가 인상은 사람이 판단).
 </p>
+{% if not demo %}
+<div class="row" style="margin:-6px 0 14px;">
+  <a class="btn secondary" href="{{ url_for('sync_demo') }}">샘플 데이터로 화면 확인</a>
+</div>
+{% endif %}
 
 <div class="panel">
   <div class="table-wrap">
   <table>
-    <tr><th>상품</th><th>판정</th><th>내용</th></tr>
+    <tr><th>상품</th><th>판정</th><th>내용</th><th></th></tr>
     {% for r in results %}
     <tr>
       <td>{{ r.name }}</td>
@@ -17,9 +22,18 @@
         <span class="{{ {'판매중지':'badge-err','재고조정':'badge-warn','마진경고':'badge-warn','확인실패':'badge-err','이상없음':'badge-ok'}.get(r.action, 'badge') }}">{{ r.action }}</span>
       </td>
       <td class="muted">{{ r.detail }}</td>
+      <td>
+        {% if r.suggested_price %}
+        <form method="post" action="{{ url_for('sync_apply_price') }}">
+          <input type="hidden" name="naver_product_id" value="{{ r.naver_product_id }}">
+          <input type="hidden" name="new_price" value="{{ r.suggested_price }}">
+          <button type="submit" class="secondary" style="padding:5px 10px;font-size:12px;">{{ "{:,}".format(r.suggested_price) }}원으로 변경</button>
+        </form>
+        {% endif %}
+      </td>
     </tr>
     {% else %}
-    <tr><td colspan="3" class="muted">등록된 상품이 없습니다</td></tr>
+    <tr><td colspan="4" class="muted">등록된 상품이 없습니다</td></tr>
     {% endfor %}
   </table>
   </div>

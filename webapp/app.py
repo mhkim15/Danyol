@@ -725,6 +725,22 @@ def sync_view():
     return render_template("sync.html", results=results, need_count=need_count)
 
 
+@app.route("/sync/demo")
+def sync_demo():
+    from bebrave.smartstore.sync import SyncResult, ACTION_OK, ACTION_STOCK, ACTION_MARGIN_WARN, ACTION_SUSPEND
+    demo_results = [
+        SyncResult("1", "실리콘주걱 대코 브라이트", ACTION_OK, "재고 1,200개, 도매가 2,300원"),
+        SyncResult("2", "우산 양산 양우산 자동우산", ACTION_MARGIN_WARN,
+                   "도매가 3,190→4,200원(+1,010) 마진 8.2% < 최소 15% — 현재가 4,600원, 목표마진 회복가 6,900원 참고",
+                   suggested_price=6900),
+        SyncResult("3", "캠핑용 접이식 미니 테이블", ACTION_STOCK, "재고 50→3개로 조정", new_stock=3),
+        SyncResult("4", "품절된 상품", ACTION_SUSPEND, "도매매 품절 — 판매중지"),
+    ]
+    flash("샘플 데이터입니다 — 실제 동기화 결과가 아닙니다.", "success")
+    return render_template("sync.html", results=demo_results,
+                            need_count=len([r for r in demo_results if r.action != ACTION_OK]), demo=True)
+
+
 @app.route("/sync/apply", methods=["POST"])
 def sync_apply():
     from bebrave.smartstore.auth import get_access_token
@@ -742,6 +758,42 @@ def sync_apply():
             )
     except Exception as e:
         flash(f"동기화 반영 실패: {e}", "error")
+    return redirect(url_for("sync_view"))
+
+
+@app.route("/sync/apply_price", methods=["POST"])
+def sync_apply_price():
+    """마진경고 건의 권장가를 실제 판매가로 반영. sync.py는 판정만 하고 자동으로
+    안 올리므로(노출순위 영향), 사람이 이 버튼을 눌러야만 바뀐다."""
+    pid = request.form.get("naver_product_id", "")
+    new_price = int(request.form.get("new_price", 0))
+    registered = _load_json(REGISTERED_PRODUCTS)
+    record = next((p for p in registered if str(p.get("naver_product_id", "")) == pid), None)
+    if not record or not new_price:
+        flash("적용 대상을 찾을 수 없습니다.", "error")
+        return redirect(url_for("sync_view"))
+
+    try:
+        from bebrave.smartstore.auth import get_access_token
+        from bebrave.smartstore.register import update_registered_product
+        from bebrave.margin.calculator import calculate as calc_margin
+
+        def _mutate(body):
+            body["originProduct"]["salePrice"] = new_price
+
+        token = get_access_token()
+        update_registered_product(pid, token, _mutate)
+
+        old_price = record.get("sale_price", 0)
+        record["sale_price"] = new_price
+        m = calc_margin(sale_price=new_price, cost_price=record.get("supply_price", 0),
+                         free_shipping=(new_price >= 30_000))
+        record["margin_rate"] = round(m.margin_rate, 4)
+        with open(REGISTERED_PRODUCTS, "w", encoding="utf-8") as f:
+            json.dump(registered, f, ensure_ascii=False, indent=2)
+        flash(f"판매가 변경: {old_price:,}원 → {new_price:,}원 (마진 {m.margin_rate:.1%})", "success")
+    except Exception as e:
+        flash(f"가격 변경 실패: {e}", "error")
     return redirect(url_for("sync_view"))
 
 
@@ -839,6 +891,34 @@ def settlement_sync_cases():
     return redirect(url_for("settlement_view"))
 
 
+@app.route("/cashflow")
+def cashflow_view():
+    from bebrave.report import cash_events
+    events = cash_events()
+    ending_balance = events[-1]["balance"] if events else 0
+    return render_template("cashflow.html", events=events, ending_balance=ending_balance)
+
+
+@app.route("/cashflow/demo")
+def cashflow_demo():
+    from bebrave.report.cashflow import cash_events
+    today = date.today()
+    purchase_items = [
+        {"status": "ordered", "updated_at": (today - timedelta(days=5)).isoformat(),
+         "product_name": "실리콘주걱 대코 브라이트", "spent_amount": 4600},
+        {"status": "dispatched", "updated_at": (today - timedelta(days=3)).isoformat(),
+         "product_name": "우산 양산 양우산 자동우산", "spent_amount": 6380},
+    ]
+    settlements = [
+        {"settle_date": (today - timedelta(days=1)).isoformat(), "settle_amount": 4100, "product_order_id": "PO-1"},
+        {"settle_date": (today + timedelta(days=2)).isoformat(), "settle_amount": 5700, "product_order_id": "PO-2"},
+    ]
+    events = cash_events(purchase_items, settlements)
+    flash("샘플 데이터입니다 — 실제 현금흐름이 아닙니다.", "success")
+    return render_template("cashflow.html", events=events,
+                            ending_balance=events[-1]["balance"] if events else 0, demo=True)
+
+
 @app.route("/reconcile")
 def reconcile_view():
     from bebrave.report.reconcile import reconcile, suggest_fee_rate
@@ -900,6 +980,20 @@ def performance():
             pass  # 실시간 조회 실패해도 로컬 채점만으로 진행
         p["quality"] = score_listing(record, live_detail)
 
+    from bebrave.report.name_changes import load_name_changes, compare_before_after
+    from bebrave.report import load_sales_orders, suggest_replacements
+    changes = load_name_changes()
+    if changes:
+        sales_records = load_sales_orders()
+        for p in results:
+            p["name_change"] = compare_before_after(p["naver_product_id"], sales_records, changes)
+
+    candidates = _load_json(SOURCING_LOG)
+    for p in results:
+        if p["status"].startswith("무판매"):
+            record = by_id.get(p["naver_product_id"], {})
+            p["replacements"] = suggest_replacements(record.get("keyword", ""), candidates, registered)
+
     return render_template("performance.html", performance=results)
 
 
@@ -955,7 +1049,11 @@ def performance_reoptimize_name():
         record["name"] = new_name
         with open(REGISTERED_PRODUCTS, "w", encoding="utf-8") as f:
             json.dump(registered, f, ensure_ascii=False, indent=2)
-        flash(f"상품명 변경: '{old_name}' → '{new_name}'", "success")
+
+        from bebrave.report.name_changes import record_name_change
+        record_name_change(pid, old_name, new_name)
+
+        flash(f"상품명 변경: '{old_name}' → '{new_name}' — 앞으로의 판매 실적을 이전과 비교합니다", "success")
     except Exception as e:
         flash(f"이름 재최적화 실패: {e}", "error")
     return redirect(url_for("performance"))
@@ -1083,7 +1181,28 @@ def purchase_queue_view():
     ready = [i for i in items if i["status"] == STATUS_READY]
     hold = [i for i in items if i["status"] == STATUS_HOLD]
     done = [i for i in items if i["status"] not in (STATUS_READY, STATUS_HOLD)]
-    return render_template("purchase_queue.html", ready=ready, hold=hold, done=done, error=error)
+
+    # 이머니 잔액 — ready 건이 있을 때만 확인(로그인 호출 비용이 있어 빈 큐에서는 생략).
+    # 필요 금액은 도매가×수량 기준(실제 이머니에서 빠지는 값) — 판매가가 아니다.
+    emoney = None
+    emoney_error = None
+    if ready:
+        needed = 0
+        for i in ready:
+            supply_price = _lookup_supply_price(i["matched_goods_no"])
+            if supply_price is not None:
+                needed += supply_price * i["quantity"]
+        try:
+            from bebrave.sourcing.domemae_order import login, fetch_emoney_balance
+            session_data = login()
+            emoney = fetch_emoney_balance(session_data["sId"])
+            emoney["needed"] = needed
+            emoney["short"] = needed > emoney["cash"]
+        except Exception as e:
+            emoney_error = str(e)
+
+    return render_template("purchase_queue.html", ready=ready, hold=hold, done=done, error=error,
+                            emoney=emoney, emoney_error=emoney_error)
 
 
 @app.route("/purchase/queue/demo")
@@ -1119,7 +1238,9 @@ def purchase_queue_demo():
     ready = [i for i in demo_items if i["status"] == "ready"]
     hold = [i for i in demo_items if i["status"] == "hold"]
     done = [i for i in demo_items if i["status"] not in ("ready", "hold")]
-    return render_template("purchase_queue.html", ready=ready, hold=hold, done=done, error=None, demo=True)
+    demo_emoney = {"total": 15000, "cash": 15000, "card": 0, "point": 320, "needed": 9890, "short": False}
+    return render_template("purchase_queue.html", ready=ready, hold=hold, done=done, error=None,
+                            emoney=demo_emoney, emoney_error=None, demo=True)
 
 
 @app.route("/purchase/bulk_place", methods=["POST"])

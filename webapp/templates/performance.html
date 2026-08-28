@@ -13,7 +13,15 @@
     <tr><th>상품명</th><th>등록경과</th><th>주문건수</th><th>매출</th><th>순수익</th><th>상태</th><th>진단</th><th></th></tr>
     {% for p in performance %}
     <tr>
-      <td>{{ p.name }}</td>
+      <td>
+        {{ p.name }}
+        {% if p.name_change %}
+        <div class="muted" style="font-size:11.5px;margin-top:3px;">
+          이름변경({{ p.name_change.changed_at }}) 전 {{ p.name_change.before_orders }}건/{{ "{:,}".format(p.name_change.before_revenue) }}원
+          → 후 {{ p.name_change.after_orders }}건/{{ "{:,}".format(p.name_change.after_revenue) }}원
+        </div>
+        {% endif %}
+      </td>
       <td class="muted">{{ p.days_since_registered if p.days_since_registered is not none else '-' }}일</td>
       <td class="mono">{{ p.order_count }}건</td>
       <td class="mono">{{ "{:,}".format(p.revenue) }}원</td>
@@ -44,6 +52,11 @@
             <button type="submit" class="secondary" style="padding:5px 10px;font-size:12px;">판매중지</button>
           </form>
         </div>
+        {% if p.replacements %}
+        <div class="muted" style="font-size:11.5px;margin-top:6px;">
+          교체 후보: {% for c in p.replacements %}<a href="{{ url_for('candidates_preview', keyword=c.keyword) }}">{{ c.keyword }}({{ c.score }}점)</a>{% if not loop.last %}, {% endif %}{% endfor %}
+        </div>
+        {% endif %}
         {% endif %}
       </td>
     </tr>

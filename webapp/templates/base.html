@@ -275,6 +275,7 @@
     <div class="nav-links">
       <a href="{{ url_for('settlement_view') }}" class="{{ 'active' if request.endpoint in ('settlement_view','settlement_sync_cases') }}">정산 캘린더</a>
       <a href="{{ url_for('reconcile_view') }}" class="{{ 'active' if request.endpoint == 'reconcile_view' }}">매출↔정산 대사</a>
+      <a href="{{ url_for('cashflow_view') }}" class="{{ 'active' if request.endpoint == 'cashflow_view' }}">운전자본 흐름</a>
     </div>
     <p class="nav-group">부가기능</p>
     <div class="nav-links">

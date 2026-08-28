@@ -107,6 +107,44 @@ def login(
     return data
 
 
+def fetch_emoney_balance(sId: str, api_key: str = "", user_id: str = "") -> dict:
+    """
+    도매매 이머니 잔액 조회 — 발주 대기열의 필요 금액과 대조해 이머니 부족을
+    미리 경고하는 용도(2026-08 추가). 발주 실행 시점에 잔액 부족으로 실패하면
+    발송 지연으로 이어지므로, 실행 전에 미리 아는 게 값어치가 있다.
+
+    공식 문서: openapi.domeggook.com "회원자산내역조회"(mode=getMyAsset, ver 1.0, 2026-08 확인).
+      POST https://www.domeggook.com/ssl/api/?ver=1.0&mode=getMyAsset&aid=&id=&sId=&om=json
+    응답: domeggook.data.currEmoney.total(이머니 총합), .cash(현금성, 실사용 가능분),
+      .card(카드성 — 미사용, 항상 0), domeggook.data.currPoint(포인트).
+
+    Returns: {"total": int, "cash": int, "card": int, "point": int}
+    """
+    if not _HAS_REQUESTS:
+        raise NotImplementedError("pip3 install requests 후 재시도하세요.")
+
+    key = api_key or os.environ.get("DOMEMAE_ORDER_API_KEY", "") or os.environ.get("DOMEMAE_API_KEY", "")
+    uid = user_id or os.environ.get("DOMEMAE_USER_ID", "")
+
+    resp = requests.post(_BASE, data={
+        "ver": "1.0", "mode": "getMyAsset",
+        "aid": key, "id": uid, "sId": sId, "om": "json",
+    }, timeout=10)
+    resp.raise_for_status()
+    data = resp.json().get("domeggook", {})
+    if data.get("result") not in (None, "true"):
+        raise RuntimeError(f"이머니 조회 실패: {data}")
+
+    asset = data.get("data", {}) or {}
+    emoney = asset.get("currEmoney", {}) or {}
+    return {
+        "total": int(emoney.get("total", 0) or 0),
+        "cash": int(emoney.get("cash", 0) or 0),
+        "card": int(emoney.get("card", 0) or 0),
+        "point": int(asset.get("currPoint", 0) or 0),
+    }
+
+
 def fetch_order_tracking(order_no: str, sId: str, api_key: str = "", user_id: str = "") -> dict:
     """
     도매매 발주건의 배송 상태(택배사/송장번호) 조회.

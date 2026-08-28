@@ -21,7 +21,7 @@ from pathlib import Path
 from typing import List, Optional
 
 from ..config import MIN_MARGIN
-from ..margin.calculator import calculate
+from ..margin.calculator import calculate, estimate_sale_price
 from ..sourcing.domemae import fetch_product_detail
 from .register import update_registered_product
 
@@ -42,6 +42,7 @@ class SyncResult:
     action: str
     detail: str
     new_stock: Optional[int] = None   # ACTION_STOCK일 때 반영할 재고 수량
+    suggested_price: Optional[int] = None  # ACTION_MARGIN_WARN일 때 목표마진 회복 참고가(자동 반영 안 함)
 
     def line(self) -> str:
         mark = {
@@ -90,10 +91,13 @@ def check_product(record: dict) -> SyncResult:
                       free_shipping=(sale_price >= 30_000))
         moved = p.supply_price - old_cost
         if not m.passes_min:
+            # 판매가를 자동으로 올리지는 않는다(노출 순위·구매전환에 영향) — 참고용 권장가만 계산해 보여준다.
+            suggested = estimate_sale_price(p.supply_price)
             return SyncResult(
                 pid, name, ACTION_MARGIN_WARN,
                 f"도매가 {old_cost:,}→{p.supply_price:,}원({moved:+,}) "
-                f"마진 {m.margin_rate:.1%} < 최소 {MIN_MARGIN:.0%} — 판매가 재검토 필요",
+                f"마진 {m.margin_rate:.1%} < 최소 {MIN_MARGIN:.0%} — 현재가 {sale_price:,}원, 목표마진 회복가 {suggested:,}원 참고",
+                suggested_price=suggested,
             )
         return SyncResult(
             pid, name, ACTION_OK,

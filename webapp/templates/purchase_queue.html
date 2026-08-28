@@ -12,6 +12,17 @@
 </div>
 {% endif %}
 
+{% if emoney %}
+<div class="panel" style="background:{{ 'var(--err-bg)' if emoney.short else 'var(--paper)' }};">
+  <div class="row" style="align-items:center;">
+    <span class="{{ 'badge-err' if emoney.short else 'badge-ok' }}">{{ '이머니 부족' if emoney.short else '이머니 충분' }}</span>
+    <span style="flex:1;">필요 {{ "{:,}".format(emoney.needed) }}원 (도매가 기준) / 사용가능 이머니 {{ "{:,}".format(emoney.cash) }}원</span>
+  </div>
+</div>
+{% elif emoney_error %}
+<div class="panel muted" style="font-size:12.5px;">이머니 잔액 확인 실패: {{ emoney_error }}</div>
+{% endif %}
+
 <div class="section">
   <p class="eyebrow">바로 발주 가능 ({{ ready|length }}건)</p>
   {% if not ready %}

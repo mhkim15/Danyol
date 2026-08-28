@@ -79,14 +79,21 @@ class ProductTracker:
         `bebrave.smartstore.orders.ProductOrder` 리스트를 받아 판매된 상품의
         last_sold_date를 오늘 날짜로 갱신. 갱신된 상품 수를 반환.
 
-        주문의 product_name으로 매칭 (스마트스토어 주문 API는 productOrderId만 주고
-        원본 소싱 상품과 연결할 명시적 키가 없어, 이름 매칭이 현재로선 가장 안전한 방법).
+        주문의 product_id(스마트스토어 상품ID)가 있으면 그걸로 확정 매칭하고,
+        없을 때만 이름 부분일치로 폴백한다 (2026-08 — product_id를 주문조회에서
+        받아오기 시작하면서 이름매칭보다 우선하도록 변경. 파싱 필드명은 실주문으로
+        아직 검증 안 됨 — 안 잡히면 이름매칭으로 자동 폴백되니 동작엔 지장 없음).
         """
         today = date.today().isoformat()
         updated = 0
         for order in orders:
-            for p in self.products:
-                if p.name and p.name in order.product_name:
-                    p.last_sold_date = today
-                    updated += 1
+            order_pid = getattr(order, "product_id", "")
+            matched = None
+            if order_pid:
+                matched = next((p for p in self.products if p.product_id and p.product_id == order_pid), None)
+            if matched is None:
+                matched = next((p for p in self.products if p.name and p.name in order.product_name), None)
+            if matched:
+                matched.last_sold_date = today
+                updated += 1
         return updated

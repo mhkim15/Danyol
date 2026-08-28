@@ -39,6 +39,10 @@ class ProductOrder:
     product_order_id: str
     order_id: str
     product_name: str
+    product_id: str = ""           # 스마트스토어 원상품 ID (originProductNo) — registered_products.json의
+                                    # naver_product_id와 대조해 도매매 발주 상품을 확정 매칭하는 데 씀.
+                                    # 필드명이 실제 응답에서 무엇으로 오는지 실주문으로 아직 검증 안 됨 —
+                                    # 후보 필드명 여러 개를 시도해서 파싱한다 (아래 fetch_order_detail 참고).
     option_name: str = ""
     quantity: int = 1
     unit_price: int = 0
@@ -53,6 +57,8 @@ class ProductOrder:
     receiver_address2: str = ""
     delivery_memo: str = ""
     ordered_at: str = ""
+    claim_type: str = ""            # CANCEL / RETURN / EXCHANGE 등 — status_type="CLAIM_REQUESTED" 조회시만 값 있음
+    claim_reason: str = ""          # 반품/취소 사유 — 필드명 실주문으로 미검증, 없으면 빈 문자열
 
     def summary(self) -> str:
         return (
@@ -80,7 +86,15 @@ def fetch_new_orders(
 ) -> List[ProductOrder]:
     """
     최근 N시간 내 특정 상태(기본 PAYED=결제완료, 신규주문=발주 대기)로 바뀐 주문 목록 조회.
-    반품/취소 집계에는 status_type="RETURNED"/"CANCELED"로 호출.
+
+    "RETURNED"/"CANCELED"는 실제로는 유효하지 않은 값이다 (2026-08 실호출로 확인 —
+    400 "lastChangedType 필드의 정확한 타입이 입력되지 않았습니다"). 네이버 커머스
+    API는 취소/반품/교환을 개별 상태가 아니라 "CLAIM_REQUESTED"(클레임 접수) 하나로
+    묶어서 내려주고, 그 안에서 무슨 클레임인지는 응답의 claimType 필드로 구분한다
+    (공식 문서 apicenter.commerce.naver.com/docs 확인 필요 — GitHub
+    commerce-api-naver/commerce-api Discussion #587, #1431로 간접 확인, 실주문
+    검증 전이라 claimType 실제 값은 여전히 미확정).
+    반품/취소 집계에는 status_type="CLAIM_REQUESTED"로 호출하고 claim_type으로 구분할 것.
 
     2단계로 동작:
       1) last-changed-statuses 로 최근 상태변경된 productOrderId 목록 취득
@@ -156,6 +170,12 @@ def fetch_order_detail(
             product_order_id=str(content.get("productOrderId", "")),
             order_id=str(order.get("orderId", "")),
             product_name=content.get("productName", ""),
+            product_id=str(
+                content.get("productId")
+                or content.get("originProductNo")
+                or content.get("channelProductNo")
+                or ""
+            ),
             option_name=content.get("productOption", ""),
             quantity=int(content.get("quantity", 1) or 1),
             unit_price=int(content.get("unitPrice", 0) or 0),
@@ -170,6 +190,14 @@ def fetch_order_detail(
             receiver_address2=delivery.get("detailAddress", ""),
             delivery_memo=delivery.get("deliveryMemo", ""),
             ordered_at=order.get("orderDate", ""),
+            claim_type=content.get("claimType", ""),
+            claim_reason=(
+                content.get("claimReason")
+                or content.get("cancelReason")
+                or content.get("returnReason")
+                or (content.get("claim", {}) or {}).get("claimReason", "")
+                or ""
+            ),
         ))
     return orders
 

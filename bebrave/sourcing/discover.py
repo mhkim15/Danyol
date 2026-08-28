@@ -35,7 +35,7 @@ from ..config import (
 )
 from ..margin.calculator import calculate as calc_margin, estimate_sale_price
 from .competition import CompetitionResult, fetch_competition
-from .domemae import search_products, find_matching_product
+from .domemae import search_products, find_matching_product, find_all_matches
 from .keyword_tool import KeywordData, discover_keywords
 from .models import ProductCandidate
 from .trend import TrendResult, fetch_trend
@@ -103,13 +103,16 @@ def _demand_score(monthly_search: int, trend: TrendResult, keyword_data: Optiona
     return max(0, min(100, score))
 
 
+_SELLER_COUNT_COMMODITY_FLOOR = 5  # 형태 일치 도매매 공급사가 이 이상이면 "누구나 쉽게 구하는 상품"으로 봄
+
 def _entry_score(
     tier: str,
     track: str,
     supply_matched: Optional[bool] = None,
+    supply_seller_count: int = 0,
 ) -> int:
     """
-    진입가능성 축 (0~100): 경쟁지수tier(트랙 A만) + 도매매 매칭.
+    진입가능성 축 (0~100): 경쟁지수tier(트랙 A만) + 도매매 매칭 + 공급사 파편도.
 
     tier: _supply_tier()가 comp_idx로 산출한 tight/normal/loose. 원래는 등록
     상품수 구간이었으나 그 데이터 소스(쇼핑검색 API)가 폐지돼 comp_idx 기반으로
@@ -125,6 +128,14 @@ def _entry_score(
     다른 카테고리는 실제로 맞는 상품도 "확인 실패"로 뜨는 경우가 흔함을
     실측으로 확인했다(2026-08) — 사전 커버리지 부족을 진입 난이도 감점으로
     잘못 해석하고 있었다.
+
+    supply_seller_count: 폐지된 네이버 판매처 파편화(unique_seller_ratio) 대신
+    쓰는 대체 신호. 네이버 쪽 경쟁자 수는 더 이상 못 보지만, "도매매에서 같은
+    형태 상품을 파는 공급사가 몇 곳인가"는 여전히 조회 가능하고, 위탁셀러 입장
+    에서는 이게 실질적인 진입장벽에 더 가깝다 — 공급사가 많을수록 나도 쉽게
+    소싱하지만 남들도 똑같이 쉽게 소싱해 금방 레드오션이 된다. 그래서 낮을수록
+    가점이 아니라 "5곳 이상이면" 소폭 감점만 준다(과신 방지 — 상관관계가
+    실측 검증된 지표는 아니다).
     """
     if track == "A":
         score = {"tight": 80, "normal": 55, "loose": 25}.get(tier, 0)
@@ -134,6 +145,8 @@ def _entry_score(
 
     if supply_matched is True:
         score += 15
+    if supply_seller_count >= _SELLER_COUNT_COMMODITY_FLOOR:
+        score -= 10
 
     return max(0, min(100, score))
 
@@ -164,6 +177,7 @@ def _score_from_axes(
     margin_rate: float = 0.0,
     track: str = "A",
     supply_matched: Optional[bool] = None,
+    supply_seller_count: int = 0,
 ) -> int:
     """수요×진입가능성×수익성 3축 가중평균 점수 (0~100점) — 원시값 기반."""
     if monthly_search > 0:
@@ -173,7 +187,7 @@ def _score_from_axes(
 
     weights = _TRACK_B_WEIGHTS if track == "B" else _TRACK_A_WEIGHTS
     demand = _demand_score(monthly_search, trend, keyword_data, track)
-    entry = _entry_score(tier, track, supply_matched=supply_matched)
+    entry = _entry_score(tier, track, supply_matched=supply_matched, supply_seller_count=supply_seller_count)
     profit = _profit_score(margin_passes, margin_rate)
 
     total = demand * weights["demand"] + entry * weights["entry"] + profit * weights["profit"]
@@ -242,10 +256,9 @@ class DiscoveryResult:
     supply_match_uncertain: bool = False          # True면 도매매 상품 타입 일치 미확인
     entry_price: float = 0.0                      # 신규셀러 예상 진입가 (마진 계산 기준가)
     track: str = "A"                              # "A"=신규 틈새 발굴 / "B"=리메이크 후보
-    price_spread: float = 0.0                     # 항상 0 — 상품수 API와 함께 폐지
-    unique_seller_ratio: float = 0.0               # 항상 0 — 상품수 API와 함께 폐지
-    has_seller_data: bool = False                  # 항상 False — 상품수 API와 함께 폐지
     comp_idx: str = ""                             # 검색광고 경쟁지수 (낮음/중간/높음)
+    supply_seller_count: int = 0                   # 도매매에서 형태 일치 상품을 파는 공급사 수(중복 제거) —
+                                                    # 많을수록 소싱은 쉽지만 남들도 같은 상품을 쉽게 구해 차별화가 어렵다
 
     def one_line(self) -> str:
         trend_ko = {"up": "상승", "stable": "안정", "down": "하락"}.get(self.trend_direction, "-")
@@ -277,6 +290,9 @@ class DiscoveryResult:
         if self.supply_price:
             match_flag = "  ⚠ 상품타입 일치 미확인 — 실물 수동확인 필수" if self.supply_match_uncertain else ""
             lines.append(f"  도매가   : {self.supply_price:,}원  ({self.supply_name[:30]}){match_flag}")
+            if self.supply_seller_count:
+                commodity_flag = "  (흔한 상품 — 차별화 어려울 수 있음)" if self.supply_seller_count >= 5 else ""
+                lines.append(f"  공급사   : 도매매 내 {self.supply_seller_count}곳에서 동일 형태 판매{commodity_flag}")
             if self.margin_rate:
                 margin_flag = "✓ 목표달성" if self.margin_passes else "△ 목표미달(마진 또는 절대이익 부족)"
                 lines.append(f"  마진율   : {self.margin_rate:.1%}  (진입가 {self.entry_price:,.0f}원 기준)  {margin_flag}")
@@ -470,9 +486,6 @@ def discover(
                 top_titles=competition.top_titles,
                 entry_price=competition.entry_price,
                 track=track,
-                price_spread=competition.price_spread,
-                unique_seller_ratio=competition.unique_seller_ratio,
-                has_seller_data=bool(competition.top_mall_names),
                 comp_idx=comp_idx,
             )
             result._trend = trend
@@ -501,6 +514,10 @@ def discover(
                 # 상품명을 조회할 수 없음) — 검색 키워드 자체를 타입매칭 기준으로
                 # 대체한다.
                 p, matched = find_matching_product([r.keyword], domemae_result.products)
+                # 형태 일치하는 후보 전체에서 고유 공급사 수를 센다 — 폐지된 네이버
+                # 판매처 파편화 지표 대신 쓰는 대체 신호(_entry_score 참고).
+                same_form = find_all_matches([r.keyword], domemae_result.products, top_n=50)
+                r.supply_seller_count = len({c.supplier for c in same_form if c.supplier})
                 if p:
                     r.supply_price = p.supply_price
                     r.supply_name = p.name
@@ -539,6 +556,7 @@ def discover(
                     trend=r._trend, keyword_data=r._kd,
                     margin_passes=r.margin_passes, margin_rate=r.margin_rate,
                     track=track, supply_matched=supply_matched,
+                    supply_seller_count=r.supply_seller_count,
                 )
 
         for r in results:

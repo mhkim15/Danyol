@@ -3,6 +3,10 @@
 {% block content %}
 <h1>등록된 상품</h1>
 
+<form method="post" action="{{ url_for('registered_check_all') }}" style="margin-bottom:12px;">
+  <button type="submit" class="secondary">전체 실시간 상태 확인</button>
+</form>
+
 <div class="panel">
   <div class="table-wrap">
   <table>

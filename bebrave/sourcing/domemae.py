@@ -267,12 +267,13 @@ def _parse_options(raw_select_opt) -> tuple:
 
     group_name = opt_set[0].get("name", "")
     options = []
-    for combo in (opt.get("data") or {}).values():
+    for code, combo in (opt.get("data") or {}).items():
         name = combo.get("name", "")
         if not name:
             continue
         options.append({
             "name": name,
+            "code": code,  # 발주 API(item[goods_no] 필드)에 그대로 넘길 옵션코드 — 이전엔 버려지고 있었음
             "extra_price": _parse_price(combo.get("supPrice", 0)),
             "stock": int(combo.get("qty", 0) or 0),
         })

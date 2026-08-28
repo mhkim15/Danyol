@@ -2,6 +2,11 @@
 {% block title %}판매추적{% endblock %}
 {% block content %}
 <h1>판매추적</h1>
+{% if not demo %}
+<div class="row" style="margin:0 0 14px;">
+  <a class="btn secondary" href="{{ url_for('tracker_demo') }}">샘플 데이터로 화면 확인</a>
+</div>
+{% endif %}
 
 <div class="panel">
   <h2>주문 데이터로 판매일 동기화</h2>

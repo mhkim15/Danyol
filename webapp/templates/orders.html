@@ -13,6 +13,7 @@
     <button type="submit" style="align-self:flex-end;">조회</button>
   </form>
   <div class="row" style="margin-top:10px;">
+    <a class="btn secondary" href="{{ url_for('purchase_queue_view') }}">발주 대기열 보기</a>
     <a class="btn secondary" href="{{ url_for('orders_demo') }}">샘플 데이터로 화면 확인 (API 안 될 때)</a>
   </div>
 </div>
@@ -20,7 +21,7 @@
 {% if checked %}
 <div class="panel">
   <h2>조회 결과 ({{ pairs|length }}건)</h2>
-  {% for o, match in pairs %}
+  {% for o, match, method, option_code in pairs %}
   <div class="panel" style="background:var(--paper);margin-bottom:10px;">
     <div class="row" style="align-items:flex-start;gap:24px;">
       <div style="flex:2;min-width:260px;">
@@ -30,10 +31,11 @@
       <div class="muted" style="font-size:13px;flex:1;min-width:220px;">{{ o.receiver_name }} ({{ o.receiver_tel }}) · {{ o.receiver_address }}</div>
     </div>
 
-    {% if match %}
+    {% if method == "id" %}
     <form method="post" action="{{ url_for('purchase_place') }}" style="margin-top:10px;background:var(--paper);border:1px solid var(--line);border-radius:6px;padding:10px 12px;">
       <input type="hidden" name="return_to" value="orders">
       <input type="hidden" name="goods_no" value="{{ match.domemae_goods_no }}">
+      <input type="hidden" name="option_code" value="{{ option_code or '' }}">
       <input type="hidden" name="qty" value="{{ o.quantity }}">
       <input type="hidden" name="receiver_name" value="{{ o.receiver_name }}">
       <input type="hidden" name="phone" value="{{ o.receiver_tel }}">
@@ -42,21 +44,31 @@
       <input type="hidden" name="address2" value="{{ o.receiver_address2 }}">
       <input type="hidden" name="shop_name" value="{{ match.name }}">
       <div class="row" style="align-items:center;">
-        <div class="muted" style="font-size:12.5px;flex:2;min-width:280px;">도매매 <span class="mono">{{ match.domemae_goods_no }}</span> · {{ o.quantity }}개 · {{ o.receiver_name }} ({{ o.receiver_tel }}) · {{ o.receiver_address1 }} {{ o.receiver_address2 }}</div>
+        <span class="badge-ok">상품ID 확정매칭</span>
+        <div class="muted" style="font-size:12.5px;flex:2;min-width:280px;">도매매 <span class="mono">{{ match.domemae_goods_no }}</span>{% if option_code %} · 옵션 <span class="mono">{{ option_code }}</span>{% endif %} · {{ o.quantity }}개 · {{ o.receiver_name }} ({{ o.receiver_tel }}) · {{ o.receiver_address1 }} {{ o.receiver_address2 }}</div>
         <label style="margin:0;"><input type="checkbox" name="live"> 위 내용 확인함 — 실제로 발주</label>
         <button type="submit">발주 넣기</button>
         <a class="btn secondary" href="{{ url_for('purchase',
-            goods_no=match.domemae_goods_no, qty=o.quantity,
+            goods_no=match.domemae_goods_no, option_code=option_code or '', qty=o.quantity,
             receiver_name=o.receiver_name, phone=o.receiver_tel,
             zipcode=o.receiver_zipcode, address1=o.receiver_address1, address2=o.receiver_address2,
             shop_name=match.name) }}" style="font-size:12px;padding:9px 12px;">수정해서 발주</a>
       </div>
     </form>
+    {% elif method == "name" %}
+    <div class="row" style="margin-top:10px;align-items:center;">
+      <span class="badge-warn">이름만 일치 — 확인 필요</span>
+      <a class="btn secondary" href="{{ url_for('purchase',
+          goods_no=match.domemae_goods_no, qty=o.quantity, receiver_name=o.receiver_name, phone=o.receiver_tel,
+          zipcode=o.receiver_zipcode, address1=o.receiver_address1, address2=o.receiver_address2,
+          shop_name=match.name) }}">'{{ match.name }}'로 추정 — 확인 후 발주</a>
+    </div>
     {% else %}
-    <div class="row" style="margin-top:10px;">
+    <div class="row" style="margin-top:10px;align-items:center;">
+      <span class="badge-err">매칭 실패</span>
       <a class="btn secondary" href="{{ url_for('purchase',
           qty=o.quantity, receiver_name=o.receiver_name, phone=o.receiver_tel,
-          zipcode=o.receiver_zipcode, address1=o.receiver_address1, address2=o.receiver_address2) }}">발주하기 (상품 자동매칭 실패 — 상품번호 직접 입력 필요)</a>
+          zipcode=o.receiver_zipcode, address1=o.receiver_address1, address2=o.receiver_address2) }}">발주하기 (상품번호 직접 입력 필요)</a>
     </div>
     {% endif %}
 

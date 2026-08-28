@@ -589,6 +589,50 @@ def cmd_report(args: argparse.Namespace) -> None:
     print(weekly_summary())
 
 
+def cmd_fix_cs_phone(args: argparse.Namespace) -> None:
+    """
+    이미 등록된 상품의 A/S 연락처를 CS_PHONE_NUMBER(.env)로 소급 수정.
+    코드만 고치고 기등록 상품은 그대로 더미번호(010-0000-0000)로 남아있던
+    문제 — 새 상품 등록 로직만 고쳐서는 이미 나간 상품에 반영 안 됨.
+    """
+    _load_env()
+    import json
+    from pathlib import Path
+    from bebrave.smartstore.auth import get_access_token
+    from bebrave.smartstore.notice import CS_PHONE_NUMBER
+    from bebrave.smartstore.register import update_registered_product
+
+    if CS_PHONE_NUMBER == "010-0000-0000":
+        print("[중단] .env에 CS_PHONE_NUMBER가 설정돼 있지 않습니다 — 더미번호로 덮어쓰는 걸 방지하기 위해 실행하지 않습니다.")
+        return
+
+    path = Path("data/registered_products.json")
+    if not path.exists():
+        print("등록 상품 없음.")
+        return
+    with open(path, encoding="utf-8") as f:
+        products = json.load(f)
+
+    apply = getattr(args, "apply", False)
+    token = get_access_token() if apply else ""
+
+    for p in products:
+        pid = p.get("naver_product_id", "")
+        if not pid:
+            continue
+        print(f"{'[적용]' if apply else '[미리보기]'} {p.get('name', pid)} (상품ID {pid}) → A/S연락처 {CS_PHONE_NUMBER}")
+        if apply:
+            def _set_phone(body: dict) -> None:
+                body["originProduct"]["detailAttribute"]["afterServiceInfo"]["afterServiceTelephoneNumber"] = CS_PHONE_NUMBER
+            try:
+                update_registered_product(pid, token, _set_phone)
+            except Exception as e:
+                print(f"  [오류] {e}")
+
+    if not apply:
+        print("\n실제 반영하려면 --apply 를 붙이세요.")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(
         prog="bebrave",
@@ -743,6 +787,13 @@ def main() -> None:
     # ── report ────────────────────────────────────────────
     subparsers.add_parser("report", help="주간 체크리스트")
 
+    # ── fix-cs-phone ──────────────────────────────────────
+    fix_phone_p = subparsers.add_parser(
+        "fix-cs-phone",
+        help="기등록 상품의 A/S 연락처를 .env의 CS_PHONE_NUMBER로 소급 수정",
+    )
+    fix_phone_p.add_argument("--apply", action="store_true", help="실제로 반영 (기본은 미리보기만)")
+
     args = parser.parse_args()
 
     if args.command == "sourcing":
@@ -778,6 +829,8 @@ def main() -> None:
         cmd_margin(args)
     elif args.command == "report":
         cmd_report(args)
+    elif args.command == "fix-cs-phone":
+        cmd_fix_cs_phone(args)
     else:
         parser.print_help()
 

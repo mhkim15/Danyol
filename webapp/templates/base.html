@@ -254,17 +254,27 @@
     <div class="brand"><span class="brand-mark" aria-hidden="true">F</span><span>Friday</span></div>
     <div class="nav-links">
       <a href="{{ url_for('index') }}" class="{{ 'active' if request.endpoint == 'index' }}">홈</a>
+      <a href="{{ url_for('health_view') }}" class="{{ 'active' if request.endpoint == 'health_view' }}">헬스체크</a>
     </div>
     <p class="nav-group">상품</p>
     <div class="nav-links">
       <a href="{{ url_for('candidates') }}" class="{{ 'active' if request.endpoint in ('candidates','candidates_preview') }}">발굴 후보</a>
       <a href="{{ url_for('registered') }}" class="{{ 'active' if request.endpoint == 'registered' }}">등록 상품</a>
+      <a href="{{ url_for('sync_view') }}" class="{{ 'active' if request.endpoint in ('sync_view','sync_apply') }}">재고·가격 동기화</a>
       <a href="{{ url_for('tracker') }}" class="{{ 'active' if request.endpoint == 'tracker' }}">판매추적</a>
+      <a href="{{ url_for('performance') }}" class="{{ 'active' if request.endpoint == 'performance' }}">판매 성과</a>
     </div>
     <p class="nav-group">주문</p>
     <div class="nav-links">
       <a href="{{ url_for('orders') }}" class="{{ 'active' if request.endpoint in ('orders','orders_check','orders_demo') }}">주문 확인</a>
-      <a href="{{ url_for('purchase') }}" class="{{ 'active' if request.endpoint == 'purchase' }}">도매매 발주</a>
+      <a href="{{ url_for('purchase_queue_view') }}" class="{{ 'active' if request.endpoint == 'purchase_queue_view' }}">발주 대기열</a>
+      <a href="{{ url_for('purchase') }}" class="{{ 'active' if request.endpoint == 'purchase' }}">수동 발주 (매칭실패용)</a>
+      <a href="{{ url_for('cs') }}" class="{{ 'active' if request.endpoint == 'cs' }}">CS (반품·문의)</a>
+    </div>
+    <p class="nav-group">정산</p>
+    <div class="nav-links">
+      <a href="{{ url_for('settlement_view') }}" class="{{ 'active' if request.endpoint in ('settlement_view','settlement_sync_cases') }}">정산 캘린더</a>
+      <a href="{{ url_for('reconcile_view') }}" class="{{ 'active' if request.endpoint == 'reconcile_view' }}">매출↔정산 대사</a>
     </div>
     <p class="nav-group">부가기능</p>
     <div class="nav-links">

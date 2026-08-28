@@ -1,0 +1,73 @@
+{% extends "base.html" %}
+{% block title %}CS{% endblock %}
+{% block content %}
+<h1>CS</h1>
+{% if not demo %}
+<div class="row" style="margin:-6px 0 14px;">
+  <a class="btn secondary" href="{{ url_for('cs_demo') }}">샘플 데이터로 화면 확인</a>
+</div>
+{% endif %}
+
+<div class="section">
+  <p class="eyebrow">반품 · 취소</p>
+  <p class="muted" style="margin:-4px 0 12px;font-size:13px;">
+    최근 {{ hours }}시간 내 상태변경 건. 반품 승인·환불 등 실제 처리는 스마트스토어센터에서 —
+    여기는 조회 전용이다 (판단이 필요한 작업이라 자동화 대상에서 제외).
+  </p>
+
+  {% if error %}
+  <div class="panel" style="background:var(--err-bg);color:var(--err);">조회 실패: {{ error }}</div>
+  {% endif %}
+
+  <div class="panel">
+    <div class="table-wrap">
+    <table>
+      <tr><th>일시</th><th>상품</th><th>수량</th><th>유형</th><th>사유</th><th>주문자</th></tr>
+      {% for o in claims %}
+      <tr>
+        <td class="muted mono" style="font-size:11.5px;">{{ o.ordered_at }}</td>
+        <td>{{ o.product_name }} {{ o.option_name }}</td>
+        <td class="mono">{{ o.quantity }}</td>
+        <td><span class="badge">{{ o.claim_type or o.status }}</span></td>
+        <td class="muted">{{ o.claim_reason or '사유 미제공' }}</td>
+        <td class="muted">{{ o.orderer_name }} ({{ o.orderer_tel }})</td>
+      </tr>
+      {% else %}
+      <tr><td colspan="6" class="muted">해당 기간 반품·취소 없음</td></tr>
+      {% endfor %}
+    </table>
+    </div>
+  </div>
+</div>
+
+<div class="section">
+  <p class="eyebrow">상품문의</p>
+  <p class="muted" style="margin:-4px 0 12px;font-size:13px;">
+    응답 필드명이 실주문·실문의로 아직 검증되지 않은 API라, 내용이 비어 보이면 필드명을 다시 확인해야 합니다.
+    답변은 스마트스토어센터에서 — 여기는 미답변 문의를 놓치지 않는 용도.
+  </p>
+
+  {% if inquiry_error %}
+  <div class="panel" style="background:var(--err-bg);color:var(--err);">조회 실패: {{ inquiry_error }}</div>
+  {% endif %}
+
+  <div class="panel">
+    <div class="table-wrap">
+    <table>
+      <tr><th>일시</th><th>상품</th><th>문의내용</th><th>작성자</th><th>답변상태</th></tr>
+      {% for q in inquiries %}
+      <tr>
+        <td class="muted mono" style="font-size:11.5px;">{{ q.created_date }}</td>
+        <td>{{ q.product_name }}</td>
+        <td>{{ q.content }}</td>
+        <td class="muted">{{ q.questioner_name }}</td>
+        <td><span class="{{ 'badge-ok' if q.answered else 'badge-err' }}">{{ '답변완료' if q.answered else '미답변' }}</span></td>
+      </tr>
+      {% else %}
+      <tr><td colspan="5" class="muted">해당 기간 상품문의 없음</td></tr>
+      {% endfor %}
+    </table>
+    </div>
+  </div>
+</div>
+{% endblock %}

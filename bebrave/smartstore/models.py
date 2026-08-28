@@ -45,6 +45,10 @@ class StoreProduct:
             "keyword": self.keyword,
             "registered_date": self.registered_date,
             "naver_product_id": self.naver_product_id,
+            # 발주 자동 매칭에 필요 — 옵션 상품은 option_group_name/options(code 포함)가
+            # 없으면 어떤 도매매 옵션코드로 발주해야 할지 알 수 없다 (2026-08 추가).
+            "option_group_name": self.option_group_name,
+            "options": self.options,
         }
 
     def summary(self) -> str:

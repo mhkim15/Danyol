@@ -25,12 +25,19 @@ def _load_registered() -> list:
         return json.load(f)
 
 
-def _match_registered(product_name: str, registered: list) -> dict:
+def _match_registered(order, registered: list) -> tuple:
+    """(등록상품, 매칭방법 'id'|'name'|'none'). 상품ID 매칭이 최우선 —
+    이름 부분일치만으로는 다른 상품인데 이름이 비슷해 원가를 잘못 가져올 수 있다."""
+    product_id = getattr(order, "product_id", "")
+    if product_id:
+        for p in registered:
+            if p.get("naver_product_id") and str(p["naver_product_id"]) == str(product_id):
+                return p, "id"
     for p in registered:
         name = p.get("name", "")
-        if name and (name in product_name or product_name in name):
-            return p
-    return {}
+        if name and (name in order.product_name or order.product_name in name):
+            return p, "name"
+    return {}, "none"
 
 
 def load_orders() -> list:
@@ -59,20 +66,22 @@ def record_orders(orders: list) -> int:
         if o.product_order_id in existing_ids:
             continue
         line_revenue = o.unit_price * o.quantity
-        matched = _match_registered(o.product_name, registered)
+        matched, method = _match_registered(o, registered)
         if matched:
             m = calc_margin(sale_price=o.unit_price, cost_price=matched.get("supply_price", 0))
             profit = m.net_profit * o.quantity
         else:
-            # 등록 상품과 매칭 안 되면 원가를 몰라 순수익 계산 불가 — 보수적으로 0 처리
-            # (ponytail: 매칭 실패시 순수익 0, 필요해지면 수동 원가입력 UI 추가)
-            profit = 0
+            # 등록 상품과 매칭 안 되면 원가를 몰라 순수익 계산 불가 — 0이 아니라 None(미상)으로
+            # 구분해야 한다. 0으로 두면 "매출은 있는데 이익이 0"이라는 잘못된 대시보드가 된다.
+            profit = None
         order_date = (o.ordered_at or "")[:10] or today.isoformat()
         existing.append({
             "product_order_id": o.product_order_id,
             "date": order_date,
             "revenue": line_revenue,
             "profit": profit,
+            "naver_product_id": matched.get("naver_product_id", "") if matched else "",
+            "match_method": method,
         })
         existing_ids.add(o.product_order_id)
         added += 1
@@ -83,9 +92,11 @@ def record_orders(orders: list) -> int:
 
 
 def month_series(records: list, year: int, month: int) -> list:
-    """선택된 연/월의 1일부터 말일까지 일별 매출/순수익/주문건수."""
+    """선택된 연/월의 1일부터 말일까지 일별 매출/순수익/주문건수.
+    profit이 None(원가 매칭 실패)인 주문은 순수익 합계에서 제외하고 uncertain_count로 따로 센다 —
+    매출은 잡히는데 이익이 0으로 보이는 착시를 막기 위함."""
     days_in_month = calendar.monthrange(year, month)[1]
-    daily = {d: {"revenue": 0, "profit": 0, "order_count": 0} for d in range(1, days_in_month + 1)}
+    daily = {d: {"revenue": 0, "profit": 0, "order_count": 0, "uncertain_count": 0} for d in range(1, days_in_month + 1)}
     for r in records:
         try:
             d = date.fromisoformat(r["date"])
@@ -94,9 +105,48 @@ def month_series(records: list, year: int, month: int) -> list:
         if d.year == year and d.month == month:
             b = daily[d.day]
             b["revenue"] += r["revenue"]
-            b["profit"] += r["profit"]
+            if r.get("profit") is None:
+                b["uncertain_count"] += 1
+            else:
+                b["profit"] += r["profit"]
             b["order_count"] += 1
     return [
         {"day": d, "date": f"{year:04d}-{month:02d}-{d:02d}", **daily[d]}
         for d in range(1, days_in_month + 1)
     ]
+
+
+def _demo() -> None:
+    """실행 가능한 자체 점검 — 매칭 우선순위와 미상(None) 처리만 검증 (파일 IO 없음)."""
+    from dataclasses import dataclass
+
+    @dataclass
+    class FakeOrder:
+        product_id: str
+        product_name: str
+
+    registered = [{"name": "실리콘주걱", "naver_product_id": "999", "supply_price": 1000}]
+
+    p, m = _match_registered(FakeOrder("999", "이름이바뀐상품"), registered)
+    assert m == "id" and p["name"] == "실리콘주걱", "ID 매칭 우선순위 실패"
+
+    p, m = _match_registered(FakeOrder("", "실리콘주걱"), registered)
+    assert m == "name", "이름 폴백 실패"
+
+    p, m = _match_registered(FakeOrder("", "전혀다른상품"), registered)
+    assert m == "none" and p == {}, "미매칭 판정 실패"
+
+    records = [
+        {"date": "2026-08-01", "revenue": 1000, "profit": 200},
+        {"date": "2026-08-01", "revenue": 500, "profit": None},  # 원가미상
+    ]
+    series = month_series(records, 2026, 8)
+    day1 = series[0]
+    assert day1["revenue"] == 1500 and day1["profit"] == 200 and day1["uncertain_count"] == 1, \
+        "미상 주문이 순수익에 섞이거나 매출에서 빠짐"
+
+    print("sales self-check OK")
+
+
+if __name__ == "__main__":
+    _demo()

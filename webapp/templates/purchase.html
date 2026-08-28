@@ -1,7 +1,11 @@
 {% extends "base.html" %}
-{% block title %}도매매 발주{% endblock %}
+{% block title %}수동 발주{% endblock %}
 {% block content %}
-<h1>도매매 발주</h1>
+<h1>수동 발주</h1>
+<p class="muted" style="margin:-10px 0 16px;font-size:13px;">
+  대부분의 주문은 <a href="{{ url_for('purchase_queue_view') }}">발주 대기열</a>에서 한 번에(일괄) 처리됩니다.
+  이 화면은 상품 매칭이 실패했거나(보류) 큐를 거치지 않고 상품번호를 직접 넣어 발주할 때만 씁니다.
+</p>
 
 <div class="panel" style="background:var(--err-bg);color:var(--err);">
   실제 결제(이머니 차감)가 발생합니다. 기본은 항상 미리보기(dry-run)이며, 아래 "실제로 발주 실행"을
@@ -11,12 +15,16 @@
 <div class="panel">
   <form method="post" action="{{ url_for('purchase_place') }}">
     <input type="hidden" name="return_to" value="purchase">
+    <input type="hidden" name="product_order_id" value="{{ product_order_id or '' }}">
     {% if goods_no %}
     <div class="flash flash-success">주문 화면에서 자동으로 채워졌습니다 — 내용 확인 후 발주하세요.</div>
     {% endif %}
 
     <label>도매매 상품번호</label>
     <input type="text" name="goods_no" value="{{ goods_no or '' }}" required>
+
+    <label>옵션코드 (단일옵션 상품은 비워두면 자동으로 00)</label>
+    <input type="text" name="option_code" value="{{ option_code or '' }}">
 
     <label>수량</label>
     <input type="number" name="qty" value="{{ qty or 1 }}" min="1">

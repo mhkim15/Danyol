@@ -28,8 +28,9 @@ CANDIDATE_CAP = 100         # 상품수 조회로 넘길 최대 후보 수 (쇼�
 # 판단하는 트랙. 트랙 A(신규 틈새 발굴)와 반대 축의 기준을 쓴다 (2026-07-29).
 REMAKE_MIN_SEARCH = 3_000     # 리메이크 고려 최소 월검색수 — 확실한 수요만 (트랙A RESEED_MIN_SEARCH보다 높게)
 REMAKE_SUPPLY_FLOOR = 500     # 이 미만이면 "이미 풀린 시장"이 아니라 틈새이므로 트랙B 대상에서 제외 (트랙 오분류 방지)
-REMAKE_PRICE_SPREAD_MIN = 0.4   # (최고가-최저가)/평균가 — 이 이상이면 가격대 스펙트럼 넓어 차별화 여지 있다고 판단
-REMAKE_SELLER_RATIO_MIN = 0.5   # 고유판매처수/상위노출수 — 이 이상이면 파편화된 시장(과점 아님)
+# REMAKE_PRICE_SPREAD_MIN/REMAKE_SELLER_RATIO_MIN(가격분산·판매처파편화 기준)은
+# 네이버 쇼핑검색 API 폐지로 그 데이터 자체가 안 나와서 제거함 (2026-08).
+# 대체 신호는 discover.py의 supply_seller_count(도매매 공급사 수) 참고.
 
 # ── 2026 수수료 체계 ──────────────────────────────────────
 ORDER_FEE = 0.0363          # 주문관리수수료 (일반 사업자)

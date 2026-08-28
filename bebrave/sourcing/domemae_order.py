@@ -107,6 +107,50 @@ def login(
     return data
 
 
+def fetch_order_tracking(order_no: str, sId: str, api_key: str = "", user_id: str = "") -> dict:
+    """
+    도매매 발주건의 배송 상태(택배사/송장번호) 조회.
+
+    공식 문서: openapi.domeggook.com "구매 주문서 상세 조회"(mode=getOrderView, ver 4.1,
+    2026-08 확인). place_order()의 setOrder API 가이드에는 없던 별도 엔드포인트다.
+      GET https://www.domeggook.com/ssl/api/?ver=4.1&mode=getOrderView&aid=&id=&sId=&for=buy&no=&om=json
+      no = 주문서번호에서 "OR" 접두어를 뺀 숫자만 — place_order()가 돌려주는
+      order.orderNo("OR1234567" 형식)에서 파생.
+    응답의 items.delivery 안에 companyName(택배사명)/company(코드)/code(송장번호)가
+    온다고 문서에 나와 있으나, items가 단일객체인지 배열인지의 실제 JSON 예시는
+    문서에 없어(설명 텍스트만 있음) 방어적으로 둘 다 처리한다 — 실주문으로 아직
+    검증 안 됐으니 첫 호출 결과는 반드시 눈으로 확인할 것.
+
+    Returns: {"company_name", "company_code", "tracking_number"} — 미확보시 빈 문자열.
+    """
+    if not _HAS_REQUESTS:
+        raise NotImplementedError("pip3 install requests 후 재시도하세요.")
+
+    key = api_key or os.environ.get("DOMEMAE_ORDER_API_KEY", "") or os.environ.get("DOMEMAE_API_KEY", "")
+    uid = user_id or os.environ.get("DOMEMAE_USER_ID", "")
+    no = order_no[2:] if order_no.upper().startswith("OR") else order_no
+
+    resp = requests.get(_BASE, params={
+        "ver": "4.1", "mode": "getOrderView",
+        "aid": key, "id": uid, "sId": sId,
+        "for": "buy", "no": no, "om": "json",
+    }, timeout=10)
+    resp.raise_for_status()
+    data = resp.json().get("domeggook", {})
+    if data.get("result") not in (None, "true", "SUCCESS"):
+        raise RuntimeError(f"도매매 주문조회 실패: {data}")
+
+    items = data.get("items", {})
+    item = items[0] if isinstance(items, list) and items else (items if isinstance(items, dict) else {})
+    delivery = item.get("delivery", {}) or {}
+
+    return {
+        "company_name": delivery.get("companyName", ""),
+        "company_code": delivery.get("company", ""),
+        "tracking_number": delivery.get("code", ""),
+    }
+
+
 def place_order(
     items: List[OrderItem],
     delivery: DeliveryInfo,

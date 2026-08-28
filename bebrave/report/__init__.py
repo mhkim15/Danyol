@@ -4,5 +4,12 @@ from .sales import (
     record_orders as record_sales_orders,
     month_series as sales_month_series,
 )
+from .performance import product_performance
+from .claims import load_claims, record_claims, return_rate
+from .health import check_store_health
 
-__all__ = ["weekly_summary", "load_sales_orders", "record_sales_orders", "sales_month_series"]
+__all__ = [
+    "weekly_summary", "load_sales_orders", "record_sales_orders", "sales_month_series",
+    "product_performance", "load_claims", "record_claims", "return_rate",
+    "check_store_health",
+]

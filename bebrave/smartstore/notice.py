@@ -14,6 +14,7 @@ API: GET https://api.commerce.naver.com/external/v1/products-for-provided-notice
 찾을 수 없는 것은 "상세페이지 참조"로 채운다 — 빈 값으로 두면 등록이 거부된다.
 """
 import json
+import os
 import time
 from pathlib import Path
 from typing import List, Optional
@@ -30,9 +31,13 @@ _CACHE_TTL_SECONDS = 30 * 24 * 3600
 
 _FALLBACK = "상세페이지 참조"
 
-# TODO(#1): 더미 연락처 — 판매 개시 전 실제 번호로 교체 필요.
-# 고시의 A/S 책임자·소비자 상담 번호와 afterServiceInfo가 같은 값을 써야 하므로 여기 모아둔다.
-CS_PHONE_NUMBER = "010-0000-0000"
+# .env의 CS_PHONE_NUMBER를 씀 — 미설정이면 더미값으로 폴백하되, 등록/소급수정 시
+# 항상 경고를 띄워서 실번호 없이 조용히 나가는 걸 막는다 (고시의 A/S 책임자·소비자
+# 상담번호와 afterServiceInfo가 같은 값을 써야 하므로 여기 한 곳에 모아둔다).
+_DUMMY_CS_PHONE_NUMBER = "010-0000-0000"
+CS_PHONE_NUMBER = os.environ.get("CS_PHONE_NUMBER", "") or _DUMMY_CS_PHONE_NUMBER
+if CS_PHONE_NUMBER == _DUMMY_CS_PHONE_NUMBER:
+    print("[경고] CS_PHONE_NUMBER 미설정 — 등록 상품에 더미 연락처(010-0000-0000)가 나갑니다. .env에 실제 번호를 넣으세요.")
 
 # 카테고리 경로에 이 단어가 들어가면 해당 고시유형으로 본다. 위에서부터 먼저 맞는 것을 쓰므로
 # 구체적인 것이 앞에 와야 한다. 확신이 없는 카테고리는 일부러 비워두고 ETC로 떨어뜨린다 —

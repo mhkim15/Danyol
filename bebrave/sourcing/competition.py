@@ -28,20 +28,6 @@ class CompetitionResult:
     top_titles: List[str] = field(default_factory=list)  # 상위 상품명 (도매매 타입매칭용)
     top_mall_names: List[str] = field(default_factory=list)  # 상위 상품 판매처명 (과점도 판단용)
 
-    @property
-    def price_spread(self) -> float:
-        """(최고가-최저가)/평균가 — 클수록 품질/가격대 스펙트럼이 넓어 리메이크로 파고들 여지."""
-        if not self.top_prices or self.avg_price <= 0:
-            return 0.0
-        return round((max(self.top_prices) - min(self.top_prices)) / self.avg_price, 4)
-
-    @property
-    def unique_seller_ratio(self) -> float:
-        """고유 판매처 수 ÷ 상위 노출 수 — 낮을수록 소수 판매처 과점(진입장벽 높음)."""
-        if not self.top_mall_names:
-            return 0.0
-        return round(len(set(self.top_mall_names)) / len(self.top_mall_names), 4)
-
     def summary(self) -> str:
         barrier_str = {
             "low": "약함 (경쟁지수 낮음, 진입 쉬움)",

@@ -132,7 +132,9 @@ def fetch_emoney_balance(sId: str, api_key: str = "", user_id: str = "") -> dict
     }, timeout=10)
     resp.raise_for_status()
     data = resp.json().get("domeggook", {})
-    if data.get("result") not in (None, "true"):
+    # 실호출로 확인(2026-08): 이 엔드포인트는 성공시 result="SUCCESS"를 준다 —
+    # login()/fetch_order_tracking()이 쓰는 "true"와 값이 다르다(엔드포인트마다 관례가 다름).
+    if data.get("result") not in (None, "true", "SUCCESS"):
         raise RuntimeError(f"이머니 조회 실패: {data}")
 
     asset = data.get("data", {}) or {}

@@ -2,13 +2,22 @@
 {% block title %}CS{% endblock %}
 {% block content %}
 <h1>CS</h1>
+
+{% set active_tab = request.args.get('tab', 'claims') %}
+{% set endpoint = 'cs_demo' if demo else 'cs' %}
+{% set unanswered = inquiries | selectattr('answered', 'equalto', false) | list | length %}
+<div class="tabs">
+  <a href="{{ url_for(endpoint, tab='claims') }}" class="{{ 'active' if active_tab == 'claims' }}">반품·취소 <span class="tab-count">{{ claims | length }}</span></a>
+  <a href="{{ url_for(endpoint, tab='inquiries') }}" class="{{ 'active' if active_tab == 'inquiries' }}">상품문의{% if unanswered %} <span class="tab-count">{{ unanswered }}</span>{% endif %}</a>
+</div>
+
 {% if not demo %}
 <div class="row" style="margin:-6px 0 14px;">
   <a class="btn secondary" href="{{ url_for('cs_demo') }}">샘플 데이터로 화면 확인</a>
 </div>
 {% endif %}
 
-<div class="section">
+<div class="section"{% if active_tab != 'claims' %} style="display:none;"{% endif %}>
   <p class="eyebrow">반품 · 취소</p>
   <p class="muted" style="margin:-4px 0 12px;font-size:13px;">
     최근 {{ hours }}시간 내 상태변경 건. 반품 승인·환불 등 실제 처리는 스마트스토어센터에서 —
@@ -40,7 +49,7 @@
   </div>
 </div>
 
-<div class="section">
+<div class="section"{% if active_tab != 'inquiries' %} style="display:none;"{% endif %}>
   <p class="eyebrow">상품문의</p>
   <p class="muted" style="margin:-4px 0 12px;font-size:13px;">
     응답 필드명이 실주문·실문의로 아직 검증되지 않은 API라, 내용이 비어 보이면 필드명을 다시 확인해야 합니다.

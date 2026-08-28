@@ -1,0 +1,122 @@
+{% extends "base.html" %}
+{% block title %}상품 관리{% endblock %}
+{% block content %}
+<h1>상품 관리</h1>
+<p class="muted" style="margin:-10px 0 16px;font-size:13px;">
+  등록상품·재고동기화·판매추적·판매성과를 한 표로 합쳤습니다. 도매매 재고는 방문마다 실시간 조회하지 않고
+  아래 "지금 확인"을 눌렀을 때만 갱신됩니다.
+</p>
+
+<div class="tabs">
+  <a href="{{ url_for('products_view', tab='all') }}" class="{{ 'active' if tab == 'all' }}">전체 <span class="tab-count">{{ total }}</span></a>
+  <a href="{{ url_for('products_view', tab='action') }}" class="{{ 'active' if tab == 'action' }}">조치 필요{% if action_count %} <span class="tab-count">{{ action_count }}</span>{% endif %}</a>
+  <a href="{{ url_for('products_view', tab='ok') }}" class="{{ 'active' if tab == 'ok' }}">정상판매중</a>
+</div>
+
+<div class="row" style="margin:-6px 0 14px;align-items:center;">
+  <form method="post" action="{{ url_for('products_refresh_stock') }}">
+    <button type="submit" class="secondary">지금 확인 (도매매 재고·마진 + 네이버 판매상태)</button>
+  </form>
+  {% if sync_checked_at %}
+  <span class="muted" style="font-size:12px;">{{ sync_checked_at.replace('T', ' ') }} 확인</span>
+  {% else %}
+  <span class="muted" style="font-size:12px;">아직 확인 안 됨 — 재고상태가 "미확인"으로 보입니다</span>
+  {% endif %}
+</div>
+
+<div class="panel">
+  <div class="table-wrap">
+  <table>
+    <tr><th>상품명</th><th>판매가</th><th>재고상태</th><th>주문건수</th><th>매출</th><th>순수익</th><th>진단점수</th><th>상태</th><th></th></tr>
+    {% for p in rows %}
+    <tr>
+      <td>
+        {{ p.name }}
+        {% if p.name_change %}
+        <div class="muted" style="font-size:11.5px;margin-top:3px;">
+          이름변경({{ p.name_change.changed_at }}) 전 {{ p.name_change.before_orders }}건/{{ "{:,}".format(p.name_change.before_revenue) }}원
+          → 후 {{ p.name_change.after_orders }}건/{{ "{:,}".format(p.name_change.after_revenue) }}원
+        </div>
+        {% endif %}
+      </td>
+      <td class="mono">{{ "{:,}".format(p.sale_price) }}원<div class="muted" style="font-size:11px;">마진 {{ "%.1f"|format(p.margin_rate * 100) }}%</div></td>
+      <td>
+        {% if p.sync %}
+        <span class="{{ {'판매중지':'badge-err','재고조정':'badge-warn','마진경고':'badge-warn','확인실패':'badge-err','이상없음':'badge-ok'}.get(p.sync.action, 'badge') }}">{{ p.sync.action }}</span>
+        <p class="muted" style="font-size:11px;margin:3px 0 0;">{{ p.sync.detail }}</p>
+        {% else %}
+        <span class="muted mono">미확인</span>
+        {% endif %}
+        {% if p.live_status %}
+        <p class="muted" style="font-size:11px;margin:3px 0 0;">네이버 {{ p.live_status.display_status or p.live_status.status_type }} · 재고 {{ p.live_status.stock }}개</p>
+        {% endif %}
+      </td>
+      <td class="mono">{{ p.order_count }}건</td>
+      <td class="mono">{{ "{:,}".format(p.revenue) }}원</td>
+      <td class="mono">
+        {{ "{:,}".format(p.profit) }}원
+        {% if p.uncertain_count %}<span class="badge-warn" title="원가 매칭 실패 — 순수익 미포함">원가미상 {{ p.uncertain_count }}건</span>{% endif %}
+      </td>
+      <td>
+        {% if p.quality %}
+        <span class="{{ 'badge-ok' if p.quality.score >= 80 else ('badge-warn' if p.quality.score >= 50 else 'badge-err') }}" title="{{ '이미지·태그·상세설명까지 확인함' if p.quality.checked_live else '이름·마진만 확인 — 실시간 조회 실패' }}">
+          점수 {{ p.quality.score }}
+        </span>
+        {% if p.quality.issues %}<div class="muted" style="font-size:11.5px;margin-top:3px;">{{ p.quality.top_issue() }}</div>{% endif %}
+        {% else %}
+        <span class="muted">-</span>
+        {% endif %}
+      </td>
+      <td>
+        <span class="{{ 'badge-err' if p.needs_action else 'badge-ok' }}">{{ '조치 필요' if p.needs_action else '정상판매중' }}</span>
+        {% if p.reasons %}<p class="muted" style="font-size:11px;margin:3px 0 0;">{{ p.reasons|join(' · ') }}</p>{% endif %}
+      </td>
+      <td>
+        <div class="stack" style="gap:6px;">
+          {% if p.sync and p.sync.suggested_price %}
+          <form method="post" action="{{ url_for('sync_apply_price') }}">
+            <input type="hidden" name="naver_product_id" value="{{ p.naver_product_id }}">
+            <input type="hidden" name="new_price" value="{{ p.sync.suggested_price }}">
+            <button type="submit" class="secondary" style="padding:5px 10px;font-size:12px;">{{ "{:,}".format(p.sync.suggested_price) }}원으로 변경</button>
+          </form>
+          {% endif %}
+          {% if p.perf_status.startswith('무판매') %}
+          <form method="post" action="{{ url_for('performance_reoptimize_name') }}">
+            <input type="hidden" name="naver_product_id" value="{{ p.naver_product_id }}">
+            <button type="submit" class="secondary" style="padding:5px 10px;font-size:12px;">이름 재최적화</button>
+          </form>
+          <form method="post" action="{{ url_for('performance_suspend') }}">
+            <input type="hidden" name="naver_product_id" value="{{ p.naver_product_id }}">
+            <button type="submit" class="secondary" style="padding:5px 10px;font-size:12px;">판매중지</button>
+          </form>
+          {% if p.replacements %}
+          <div class="muted" style="font-size:11.5px;">
+            교체 후보: {% for c in p.replacements %}<a href="{{ url_for('candidates_preview', keyword=c.keyword) }}">{{ c.keyword }}({{ c.score }}점)</a>{% if not loop.last %}, {% endif %}{% endfor %}
+          </div>
+          {% endif %}
+          {% endif %}
+          {% if p.naver_product_id %}
+          <a class="btn secondary" style="padding:5px 10px;font-size:12px;" href="{{ url_for('registered_status', product_id=p.naver_product_id) }}">실시간 상태 확인</a>
+          {% endif %}
+        </div>
+      </td>
+    </tr>
+    {% else %}
+    <tr><td colspan="9" class="muted">해당 조건의 상품이 없습니다</td></tr>
+    {% endfor %}
+  </table>
+  </div>
+</div>
+
+{% set sync_need = rows | selectattr('sync') | selectattr('sync.action', 'ne', '이상없음') | list %}
+{% if sync_need %}
+<form method="post" action="{{ url_for('sync_apply') }}">
+  <div class="panel" style="background:var(--paper);">
+    <div class="row" style="align-items:center;">
+      <span class="muted" style="font-size:13px;flex:1;">재고·가격 조치 필요 {{ sync_need|length }}건 — 판매중지·재고조정을 스마트스토어에 실제로 반영합니다(마진경고는 반영할 게 없어 제외).</span>
+      <button type="submit">실제로 반영</button>
+    </div>
+  </div>
+</form>
+{% endif %}
+{% endblock %}

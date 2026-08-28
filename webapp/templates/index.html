@@ -1,7 +1,38 @@
 {% extends "base.html" %}
 {% block title %}홈{% endblock %}
 {% block content %}
-<h1>파이프라인 현황</h1>
+<h1>홈</h1>
+
+<div class="tabs">
+  <a href="{{ url_for('index') }}" class="{{ 'active' if tab == 'pipeline' }}">파이프라인 현황</a>
+  <a href="{{ url_for('index', tab='health') }}" class="{{ 'active' if tab == 'health' }}">헬스체크</a>
+</div>
+
+{% if tab == 'health' %}
+{% if not demo %}
+<div class="row" style="margin:-6px 0 14px;">
+  <a class="btn secondary" href="{{ url_for('health_demo') }}">샘플 데이터로 화면 확인</a>
+</div>
+{% endif %}
+<p class="muted" style="margin:-10px 0 16px;font-size:13px;">
+  새로 조사하는 화면이 아니라, 품절·마진붕괴·발송지연·미답변문의·반품률·무판매를
+  각자 흩어져 있던 판정에서 모아 심각도순으로 보여줍니다.
+</p>
+
+{% if not issues %}
+<div class="panel" style="background:var(--ok-bg);color:var(--ok);">이상 없음 — 지금 조치할 게 없습니다.</div>
+{% endif %}
+
+{% for i in issues %}
+<div class="panel" style="padding:12px 16px;display:flex;align-items:center;gap:12px;">
+  <span class="{{ 'badge-err' if i.severity == '긴급' else ('badge-warn' if i.severity == '주의' else 'badge') }}">{{ i.severity }}</span>
+  <span class="badge">{{ i.category }}</span>
+  <span style="flex:1;">{{ i.message }}</span>
+  {% if i.detail %}<span class="muted" style="font-size:12px;">{{ i.detail }}</span>{% endif %}
+</div>
+{% endfor %}
+
+{% else %}
 {% if not demo %}
 <div class="row" style="margin:-6px 0 14px;">
   <a class="btn secondary" href="{{ url_for('index_demo') }}">샘플 데이터로 화면 확인</a>
@@ -13,7 +44,7 @@
 <div class="section">
   <p class="eyebrow">주문 <span style="text-transform:none;letter-spacing:normal;font-weight:400;">· {{ checked_at }} 기준</span></p>
   <div class="stat-grid" style="grid-template-columns: repeat(3, 1fr);">
-    <a href="{{ url_for('purchase_queue_view') }}" class="stat-card link">
+    <a href="{{ url_for('orders', tab='ready') }}" class="stat-card link">
       <p class="stat-num {{ 'attn' if pending_orders else '' }}">{{ pending_orders if pending_orders is not none else '확인 필요' }}{{ '건' if pending_orders is not none else '' }}</p>
       <p class="stat-label">처리할 주문 — 발주 대기열로</p>
     </a>
@@ -92,7 +123,7 @@
       <p class="stat-num" style="color:{{ 'var(--err)' if watch_count else 'var(--ink)' }};">{{ watch_count }}개</p>
       <p class="stat-label">점검필요(3개월+ 미판매)</p>
     </div>
-    <a href="{{ url_for('tracker') }}" class="stat-card {{ 'link' if risky_count }}">
+    <a href="{{ url_for('products_view', tab='action') }}" class="stat-card {{ 'link' if risky_count }}">
       <p class="stat-num" style="color:{{ 'var(--err)' if risky_count else 'var(--ink)' }};">{{ risky_count }}개</p>
       <p class="stat-label">자동삭제위험(13개월+)</p>
       {% if risky_names %}<p class="stat-label" style="margin-top:4px;">{{ risky_names|join(', ') }}</p>{% endif %}
@@ -304,4 +335,5 @@
   });
 })();
 </script>
+{% endif %}
 {% endblock %}

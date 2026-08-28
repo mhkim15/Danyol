@@ -225,6 +225,17 @@
   .muted { color: var(--ink-soft); }
   .badge { display: inline-block; font-family: var(--mono); font-size: 10.5px; padding: 2px 7px; border-radius: 99px; background: var(--chip-bg); color: var(--chip-ink); }
 
+  .tabs { display: flex; gap: 4px; border-bottom: 1px solid var(--line); margin: -4px 0 20px; }
+  .tabs a {
+    text-decoration: none; color: var(--ink-soft); font-size: 13.5px; font-weight: 600;
+    padding: 10px 14px; border-bottom: 2px solid transparent; margin-bottom: -1px;
+    display: inline-flex; align-items: center; gap: 6px;
+  }
+  .tabs a:hover { color: var(--ink); }
+  .tabs a.active { color: var(--accent); border-bottom-color: var(--accent); }
+  .tabs .tab-count { font-family: var(--mono); font-size: 10.5px; background: var(--chip-bg); color: var(--chip-ink); border-radius: 99px; padding: 1px 7px; }
+  .tabs a.active .tab-count { background: var(--accent-soft); color: var(--accent); }
+
   .table-wrap { overflow-x: auto; }
   .stack { display: flex; flex-direction: column; gap: 8px; }
   .row { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }
@@ -253,29 +264,21 @@
   <nav class="sidebar">
     <div class="brand"><span class="brand-mark" aria-hidden="true">F</span><span>Friday</span></div>
     <div class="nav-links">
-      <a href="{{ url_for('index') }}" class="{{ 'active' if request.endpoint == 'index' }}">홈</a>
-      <a href="{{ url_for('health_view') }}" class="{{ 'active' if request.endpoint == 'health_view' }}">헬스체크</a>
+      <a href="{{ url_for('index') }}" class="{{ 'active' if request.endpoint in ('index','index_demo') }}">홈</a>
     </div>
     <p class="nav-group">상품</p>
     <div class="nav-links">
       <a href="{{ url_for('candidates') }}" class="{{ 'active' if request.endpoint in ('candidates','candidates_preview') }}">발굴 후보</a>
-      <a href="{{ url_for('registered') }}" class="{{ 'active' if request.endpoint == 'registered' }}">등록 상품</a>
-      <a href="{{ url_for('sync_view') }}" class="{{ 'active' if request.endpoint in ('sync_view','sync_apply') }}">재고·가격 동기화</a>
-      <a href="{{ url_for('tracker') }}" class="{{ 'active' if request.endpoint == 'tracker' }}">판매추적</a>
-      <a href="{{ url_for('performance') }}" class="{{ 'active' if request.endpoint == 'performance' }}">판매 성과</a>
+      <a href="{{ url_for('products_view') }}" class="{{ 'active' if request.endpoint in ('products_view','products_refresh_stock','registered_status','sync_apply','sync_apply_price','performance_suspend','performance_reoptimize_name') }}">상품 관리</a>
     </div>
     <p class="nav-group">주문</p>
     <div class="nav-links">
-      <a href="{{ url_for('orders') }}" class="{{ 'active' if request.endpoint in ('orders','orders_check','orders_demo') }}">주문 확인</a>
-      <a href="{{ url_for('purchase_queue_view') }}" class="{{ 'active' if request.endpoint == 'purchase_queue_view' }}">발주 대기열</a>
-      <a href="{{ url_for('purchase') }}" class="{{ 'active' if request.endpoint == 'purchase' }}">수동 발주 (매칭실패용)</a>
+      <a href="{{ url_for('orders') }}" class="{{ 'active' if request.endpoint in ('orders','orders_demo','purchase_bulk_place','purchase_place','purchase_sync_tracking','orders_dispatch') }}">주문·발주</a>
       <a href="{{ url_for('cs') }}" class="{{ 'active' if request.endpoint == 'cs' }}">CS (반품·문의)</a>
     </div>
     <p class="nav-group">정산</p>
     <div class="nav-links">
-      <a href="{{ url_for('settlement_view') }}" class="{{ 'active' if request.endpoint in ('settlement_view','settlement_sync_cases') }}">정산 캘린더</a>
-      <a href="{{ url_for('reconcile_view') }}" class="{{ 'active' if request.endpoint == 'reconcile_view' }}">매출↔정산 대사</a>
-      <a href="{{ url_for('cashflow_view') }}" class="{{ 'active' if request.endpoint == 'cashflow_view' }}">운전자본 흐름</a>
+      <a href="{{ url_for('settlement_view') }}" class="{{ 'active' if request.endpoint in ('settlement_view','settlement_demo','settlement_sync_cases') }}">정산</a>
     </div>
     <p class="nav-group">부가기능</p>
     <div class="nav-links">

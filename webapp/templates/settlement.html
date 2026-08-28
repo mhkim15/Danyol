@@ -2,15 +2,24 @@
 {% block title %}정산{% endblock %}
 {% block content %}
 <h1>정산 — 돈의 흐름</h1>
+
+<div class="tabs">
+  <a href="{{ url_for('settlement_view', tab='calendar') }}" class="{{ 'active' if tab == 'calendar' }}">정산 캘린더</a>
+  <a href="{{ url_for('settlement_view', tab='reconcile') }}" class="{{ 'active' if tab == 'reconcile' }}">매출↔정산 대사</a>
+  <a href="{{ url_for('settlement_view', tab='cashflow') }}" class="{{ 'active' if tab == 'cashflow' }}">운전자본 흐름</a>
+</div>
+
+{% if not demo %}
+<div class="row" style="margin:-6px 0 14px;">
+  <a class="btn secondary" href="{{ url_for('settlement_demo', tab=tab) }}">샘플 데이터로 화면 확인</a>
+</div>
+{% endif %}
+
+{% if tab == 'calendar' %}
 <p class="muted" style="margin:-10px 0 16px;font-size:13px;">
   이 화면은 이번 세션에 처음 연동한 정산 API를 씁니다 — 응답 필드가 실계정으로 완전히 검증되지 않았으니,
   숫자가 이상해 보이면 우선 의심하고 스마트스토어센터 정산내역과 대조해보세요.
 </p>
-{% if not demo %}
-<div class="row" style="margin:-6px 0 14px;">
-  <a class="btn secondary" href="{{ url_for('settlement_demo') }}">샘플 데이터로 화면 확인</a>
-</div>
-{% endif %}
 
 {% if error %}
 <div class="panel" style="background:var(--err-bg);color:var(--err);">일별 정산 조회 실패: {{ error }}</div>
@@ -20,9 +29,9 @@
   <div class="chart-toolbar">
     <p class="eyebrow" style="margin:0;">일별 정산 (정산예정일 기준)</p>
     <div class="month-nav">
-      <a href="{{ url_for('settlement_view', year=prev_year, month=prev_month) }}"><button type="button">‹</button></a>
+      <a href="{{ url_for('settlement_view', tab='calendar', year=prev_year, month=prev_month) }}"><button type="button">‹</button></a>
       <span class="month-label">{{ selected_year }}년 {{ selected_month }}월</span>
-      <a href="{{ url_for('settlement_view', year=next_year, month=next_month) if not next_disabled else '#' }}">
+      <a href="{{ url_for('settlement_view', tab='calendar', year=next_year, month=next_month) if not next_disabled else '#' }}">
         <button type="button" {{ 'disabled' if next_disabled }}>›</button>
       </a>
     </div>
@@ -68,7 +77,81 @@
   <form method="post" action="{{ url_for('settlement_sync_cases') }}" class="row" style="align-items:center;">
     <label style="margin:0;">최근<input type="number" name="days" value="14" min="1" max="31" style="width:70px;display:inline-block;margin:0 6px;">일 동기화</label>
     <button type="submit">건별 정산 동기화</button>
-    <a class="btn secondary" href="{{ url_for('reconcile_view') }}">매출↔정산 대사 보기</a>
+    <a class="btn secondary" href="{{ url_for('settlement_view', tab='reconcile') }}">매출↔정산 대사 보기</a>
   </form>
 </div>
+
+{% elif tab == 'reconcile' %}
+<p class="muted" style="margin:-10px 0 16px;font-size:13px;">
+  내가 계산한 매출과 실제 입금액(건별 정산)을 상품주문 단위로 대조합니다.
+  <a href="{{ url_for('settlement_view', tab='calendar') }}">정산 캘린더</a>에서 "건별 정산 동기화"를 먼저 눌러야 데이터가 쌓입니다.
+</p>
+
+{% if suggestion %}
+<div class="panel" style="background:var(--paper);">
+  <p class="eyebrow">실측 수수료율 제안 (표본 {{ suggestion.sample_count }}건)</p>
+  <div class="row" style="align-items:center;gap:24px;">
+    <div><span class="muted" style="font-size:12px;">현재 가정(config.py)</span><div class="mono" style="font-size:16px;">{{ "%.2f"|format(suggestion.assumed_rate * 100) }}%</div></div>
+    <div><span class="muted" style="font-size:12px;">실측 평균 공제율</span><div class="mono" style="font-size:16px;font-weight:700;">{{ "%.2f"|format(suggestion.measured_rate * 100) }}%</div></div>
+    <div><span class="muted" style="font-size:12px;">차이</span><div class="mono" style="font-size:16px;color:{{ 'var(--err)' if suggestion.diff > 0 else 'var(--ok)' }};">{{ "%+.2f"|format(suggestion.diff * 100) }}%p</div></div>
+  </div>
+  <p class="muted" style="font-size:12.5px;margin:10px 0 0;">
+    차이가 꾸준히 반복되면 bebrave/config.py의 SALES_FEE_MAX·CS_RESERVE를 이 실측값 방향으로 조정을 검토하세요 —
+    자동으로 바꾸지 않습니다(판매가 정책에 직결되는 값이라 사람이 판단할 일).
+  </p>
+</div>
+{% else %}
+<div class="panel muted">대사 표본이 5건 미만이라 수수료율 제안은 아직 안 나옵니다 (거래가 쌓이면 자동으로 표시됩니다).</div>
+{% endif %}
+
+<div class="panel">
+  <div class="table-wrap">
+  <table>
+    <tr><th>주문ID</th><th>매출</th><th>실정산액</th><th>공제액</th><th>공제율</th><th>정산유형</th></tr>
+    {% for r in results %}
+    <tr>
+      <td class="mono" style="font-size:11.5px;">{{ r.product_order_id }}</td>
+      <td class="mono">{{ "{:,}".format(r.revenue) }}원</td>
+      <td class="mono">{{ "{:,}".format(r.settle_amount) }}원</td>
+      <td class="mono">{{ "{:,}".format(r.deduction) }}원</td>
+      <td class="mono">{{ "%.1f"|format(r.deduction_rate * 100) if r.deduction_rate is not none else '-' }}%</td>
+      <td><span class="badge">{{ '빠른정산' if r.settle_type == 'QUICK_SETTLE_ORIGINAL' else ('일반정산' if r.settle_type == 'NORMAL_SETTLE_ORIGINAL' else r.settle_type or '-') }}</span></td>
+    </tr>
+    {% else %}
+    <tr><td colspan="6" class="muted">대사 가능한 건 없음 — 매출과 정산 데이터가 둘 다 있는 주문만 표시됩니다</td></tr>
+    {% endfor %}
+  </table>
+  </div>
+</div>
+
+{% else %}
+<p class="muted" style="margin:-10px 0 16px;font-size:13px;">
+  도매매에 먼저 나간 발주 지출과, 스마트스토어에서 나중에 들어올 정산예정을 날짜순으로 합쳐
+  누적 잔액을 봅니다. 정확한 미래 예측이 아니라 "지금 얼마가 묶여 있는지" 방향을 보는 용도입니다.
+</p>
+
+<div class="panel">
+  <p class="stat-num {{ 'attn' if ending_balance < 0 else 'money' }}">{{ "{:,}".format(ending_balance) }}원</p>
+  <p class="stat-label">현재까지 누적 잔액 (지출은 이미 나간 돈, 입금예정은 아직 안 들어온 돈 포함)</p>
+</div>
+
+<div class="panel">
+  <div class="table-wrap">
+  <table>
+    <tr><th>날짜</th><th>구분</th><th>내용</th><th>금액</th><th>누적잔액</th></tr>
+    {% for e in events %}
+    <tr>
+      <td class="mono">{{ e.date }}</td>
+      <td><span class="{{ 'badge-err' if e.type == '지출' else 'badge-ok' }}">{{ e.type }}</span></td>
+      <td>{{ e.label }}</td>
+      <td class="mono" style="color:{{ 'var(--err)' if e.amount < 0 else 'var(--ok)' }};">{{ "{:+,}".format(e.amount) }}원</td>
+      <td class="mono">{{ "{:,}".format(e.balance) }}원</td>
+    </tr>
+    {% else %}
+    <tr><td colspan="5" class="muted">발주 지출 또는 정산예정 데이터가 없습니다</td></tr>
+    {% endfor %}
+  </table>
+  </div>
+</div>
+{% endif %}
 {% endblock %}

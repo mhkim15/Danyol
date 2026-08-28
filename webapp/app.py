@@ -113,17 +113,7 @@ def _find_registered_product(order) -> tuple:
     return match_order_to_product(order, _load_json(REGISTERED_PRODUCTS))
 
 
-# ── 스토어 헬스체크 ───────────────────────────────────────────────────────
-
-@app.route("/health")
-def health_view():
-    """새로 조회하지 않고 흩어진 판정을 모으는 화면이지만, 내부적으로 sync_all·문의조회·
-    반품률·무판매 판정이 전부 도는 무거운 라우트라 홈 방문마다 자동 실행하지 않고
-    이 페이지를 열 때만 계산한다."""
-    from bebrave.report import check_store_health
-    issues = check_store_health()
-    return render_template("health.html", issues=issues)
-
+# ── 스토어 헬스체크 (2026-08 홈 탭으로 흡수 — index()의 tab='health' 분기 참고) ────
 
 @app.route("/health/demo")
 def health_demo():
@@ -137,13 +127,21 @@ def health_demo():
         HealthIssue(SEVERITY_INFO, "무판매", "캠핑용 접이식 미니 테이블 — 95일 경과"),
     ]
     flash("샘플 데이터입니다 — 실제 진단이 아닙니다.", "success")
-    return render_template("health.html", issues=issues, demo=True)
+    return render_template("index.html", tab="health", issues=issues, demo=True)
 
 
 # ── 홈 ────────────────────────────────────────────────────────────────────
 
 @app.route("/")
 def index():
+    tab = request.args.get("tab", "pipeline")
+    if tab == "health":
+        # 헬스체크는 sync_all·문의조회·반품률·무판매 판정이 전부 도는 무거운 라우트라
+        # 홈 방문마다 자동 실행하지 않고 이 탭을 열 때만 계산한다 (2026-08 홈에 흡수).
+        from bebrave.report import check_store_health
+        issues = check_store_health()
+        return render_template("index.html", tab="health", issues=issues)
+
     from bebrave.tracker.products import ProductTracker
     from bebrave.report import load_sales_orders, sales_month_series
 
@@ -223,6 +221,7 @@ def index():
 
     return render_template(
         "index.html",
+        tab="pipeline",
         candidate_count=len(candidates),
         recommended_count=len(recommended),
         registered_count=len(registered),
@@ -277,6 +276,7 @@ def index_demo():
     flash("샘플 데이터입니다 — 주문·매출·반품 수치는 실제가 아닙니다(발굴 후보·등록 상품은 실제 데이터).", "success")
     return render_template(
         "index.html",
+        tab="pipeline",
         candidate_count=len(candidates), recommended_count=len(recommended), registered_count=len(registered),
         top_candidates=recommended[:3],
         tracked_total=3, normal_count=1, watch_count=1, risky_count=1, risky_names=["자동삭제 위험 상품"],
@@ -481,56 +481,129 @@ def register_candidate():
     return redirect(url_for("candidates"))
 
 
-# ── 등록된 상품 ────────────────────────────────────────────────────────────
+# ── 상품 관리 (등록상품 + 재고동기화 + 판매추적 + 판매성과 통합) ──────────────────
 
 PRODUCT_STATUS_CACHE = DATA_DIR / "product_status_cache.json"
+PRODUCT_SYNC_CACHE = DATA_DIR / "product_sync_cache.json"
 
 
-@app.route("/registered")
-def registered():
+@app.route("/products")
+def products_view():
+    """등록상품(마스터) + 재고동기화(캐시) + 판매성과 + 판매추적 위험판정을 한 표로 합친다.
+    도매매 재고는 방문마다 실시간 조회하지 않고 캐시만 읽는다 — "지금 확인" 버튼을 눌러야 갱신됨
+    (등록상품 페이지의 PRODUCT_STATUS_CACHE 패턴 재사용, 2026-08 재설계)."""
+    from bebrave.smartstore.sync import ACTION_OK
     from bebrave.tracker.products import ProductTracker
+    from bebrave.config import AUTO_DELETE_MONTHS
 
-    items = _load_json(REGISTERED_PRODUCTS)
-    items.reverse()
+    tab = request.args.get("tab", "all")
+
+    registered = _load_json(REGISTERED_PRODUCTS)
+    registered.reverse()
+    perf_by_id = {p["naver_product_id"]: p for p in _performance_with_quality()}
     status_cache = _load_json(PRODUCT_STATUS_CACHE)
     status_by_id = {s["product_id"]: s for s in status_cache} if isinstance(status_cache, list) else {}
-    tracked_ids = {p.product_id for p in ProductTracker(TRACKED_PRODUCTS).products}
-    return render_template("registered.html", products=items, status_by_id=status_by_id, tracked_ids=tracked_ids)
+    sync_cache = _load_json(PRODUCT_SYNC_CACHE)
+    sync_by_id = {s["naver_product_id"]: s for s in sync_cache} if isinstance(sync_cache, list) else {}
+    sync_checked_at = sync_cache[0]["checked_at"] if sync_cache else None
+    tracked_by_id = {p.product_id: p for p in ProductTracker(TRACKED_PRODUCTS).products}
+
+    rows = []
+    for p in registered:
+        pid = str(p.get("naver_product_id", ""))
+        perf = perf_by_id.get(pid, {})
+        sync = sync_by_id.get(pid)
+        tracked = tracked_by_id.get(pid)
+        months_since_sold = tracked.months_since_sold() if tracked else None
+        auto_delete_risk = months_since_sold is not None and months_since_sold >= AUTO_DELETE_MONTHS
+
+        reasons = []
+        if sync and sync["action"] != ACTION_OK:
+            reasons.append(sync["action"])
+        if perf.get("status", "").startswith("무판매"):
+            reasons.append(perf["status"])
+        if auto_delete_risk:
+            reasons.append(f"자동삭제 위험({months_since_sold}개월 미판매)")
+
+        rows.append({
+            "naver_product_id": pid,
+            "name": p.get("name", ""),
+            "sale_price": p.get("sale_price", 0),
+            "margin_rate": p.get("margin_rate", 0),
+            "registered_date": p.get("registered_date", ""),
+            "live_status": status_by_id.get(pid),
+            "sync": sync,
+            "order_count": perf.get("order_count", 0),
+            "revenue": perf.get("revenue", 0),
+            "profit": perf.get("profit", 0),
+            "uncertain_count": perf.get("uncertain_count", 0),
+            "perf_status": perf.get("status", ""),
+            "quality": perf.get("quality"),
+            "name_change": perf.get("name_change"),
+            "replacements": perf.get("replacements"),
+            "auto_delete_risk": auto_delete_risk,
+            "needs_action": bool(reasons),
+            "reasons": reasons,
+        })
+
+    action_count = len([r for r in rows if r["needs_action"]])
+    if tab == "action":
+        rows = [r for r in rows if r["needs_action"]]
+    elif tab == "ok":
+        rows = [r for r in rows if not r["needs_action"]]
+
+    return render_template("products.html", rows=rows, tab=tab, total=len(registered),
+                            action_count=action_count, sync_checked_at=sync_checked_at)
 
 
-@app.route("/registered/check_all", methods=["POST"])
-def registered_check_all():
-    """상품마다 "실시간 상태"를 하나씩 누르지 않고, 목록조회 API 한 번으로 전체를 갱신.
-    (POST /v1/products/search — 실계정으로 응답 구조 미검증이라 실패 메시지를 그대로 보여준다.)"""
+@app.route("/products/refresh_stock", methods=["POST"])
+def products_refresh_stock():
+    """"지금 확인" 버튼 — 도매매 재고·마진 대조(판정만, 자동반영 없음) +
+    네이버 판매상태 전체조회(구 registered_check_all)를 한 번에 캐시에 저장."""
+    from datetime import datetime
+    from bebrave.smartstore.sync import sync_all, ACTION_OK
+
+    checked_at = datetime.now().isoformat(timespec="minutes")
     try:
-        from datetime import datetime
+        results = sync_all(dry_run=True)
+        cache = [{
+            "naver_product_id": r.naver_product_id, "name": r.name, "action": r.action,
+            "detail": r.detail, "new_stock": r.new_stock, "suggested_price": r.suggested_price,
+            "checked_at": checked_at,
+        } for r in results]
+        PRODUCT_SYNC_CACHE.parent.mkdir(parents=True, exist_ok=True)
+        with open(PRODUCT_SYNC_CACHE, "w", encoding="utf-8") as f:
+            json.dump(cache, f, ensure_ascii=False, indent=2)
+        need = len([r for r in results if r.action != ACTION_OK])
+        flash(f"재고·마진 확인 완료 — 조치 필요 {need}건 / 전체 {len(results)}건", "success")
+    except Exception as e:
+        flash(f"재고·마진 확인 실패: {e}", "error")
+
+    try:
         from bebrave.smartstore.auth import get_access_token
         from bebrave.smartstore.product_status import fetch_product_statuses, find_status_mismatches
 
         token = get_access_token()
         statuses = fetch_product_statuses(token)
-
-        checked_at = datetime.now().isoformat(timespec="minutes")
-        cache = [{
-            "product_id": s.product_id,
-            "status_type": s.status_type,
-            "display_status": s.status_type,
-            "stock": s.stock_quantity,
+        status_cache = [{
+            "product_id": s.product_id, "status_type": s.status_type,
+            "display_status": s.status_type, "stock": s.stock_quantity,
             "checked_at": checked_at,
         } for s in statuses]
         PRODUCT_STATUS_CACHE.parent.mkdir(parents=True, exist_ok=True)
         with open(PRODUCT_STATUS_CACHE, "w", encoding="utf-8") as f:
-            json.dump(cache, f, ensure_ascii=False, indent=2)
+            json.dump(status_cache, f, ensure_ascii=False, indent=2)
 
         mismatches = find_status_mismatches(_load_json(REGISTERED_PRODUCTS), statuses)
         if mismatches:
             names = ", ".join(f"{m['name'][:16]}({m['live_status']})" for m in mismatches[:3])
-            flash(f"전체 확인 완료 — {len(statuses)}건 중 {len(mismatches)}건 판매중 아님: {names}", "error")
+            flash(f"네이버 판매상태 확인 완료 — {len(statuses)}건 중 {len(mismatches)}건 판매중 아님: {names}", "error")
         else:
-            flash(f"전체 확인 완료 — {len(statuses)}건 모두 정상 판매중", "success")
+            flash(f"네이버 판매상태 확인 완료 — {len(statuses)}건 모두 정상 판매중", "success")
     except Exception as e:
-        flash(f"전체 상태 확인 실패: {e}", "error")
-    return redirect(url_for("registered"))
+        flash(f"네이버 판매상태 확인 실패: {e}", "error")
+
+    return redirect(url_for("products_view"))
 
 
 @app.route("/registered/status/<product_id>")
@@ -562,78 +635,131 @@ def registered_status(product_id):
         flash(f"상품 {product_id} 실시간 상태를 갱신했습니다", "success")
     except Exception as e:
         flash(f"상태 확인 실패: {e}", "error")
-    return redirect(url_for("registered"))
+    return redirect(url_for("products_view"))
 
 
-# ── 주문 ──────────────────────────────────────────────────────────────────
+# ── 주문·발주 (주문확인 + 발주대기열 + 수동발주 통합, 탭: ready/dispatch/manual/history) ──
+
+ORDER_TABS = ("ready", "dispatch", "manual", "history")
+
 
 @app.route("/orders")
 def orders():
-    return render_template("orders.html", pairs=None, checked=False)
+    """탭 4개: 처리할 주문(ready) | 발송 대기(ordered) | 수동 발주(hold+직접입력) | 전체 이력.
+    큐 조회(ready/hold/dispatch)는 방문마다 최근 72시간 주문을 실시간 대조한다
+    (구 발주 대기열 그대로 — 실제 발주가 걸린 화면이라 캐시로 늦추지 않음)."""
+    from bebrave.smartstore.purchase_queue import build_queue, load_queue, STATUS_READY, STATUS_HOLD, STATUS_ORDERED
+
+    tab = request.args.get("tab", "ready")
+    if tab not in ORDER_TABS:
+        tab = "ready"
+
+    error = None
+    try:
+        from bebrave.smartstore.auth import get_access_token
+        from bebrave.smartstore.orders import fetch_new_orders
+        token = get_access_token()
+        new_orders = fetch_new_orders(token, hours=24 * 3)
+        items = build_queue(new_orders)
+    except Exception as e:
+        error = str(e)
+        items = load_queue()
+
+    ready = [i for i in items if i["status"] == STATUS_READY]
+    hold = [i for i in items if i["status"] == STATUS_HOLD]
+    dispatch_wait = [i for i in items if i["status"] == STATUS_ORDERED]
+
+    # 이머니 잔액 — ready 건이 있을 때만 확인(로그인 호출 비용이 있어 빈 큐에서는 생략).
+    # 필요 금액은 도매가×수량 기준(실제 이머니에서 빠지는 값) — 판매가가 아니다.
+    emoney = None
+    emoney_error = None
+    if ready:
+        needed = 0
+        for i in ready:
+            supply_price = _lookup_supply_price(i["matched_goods_no"])
+            if supply_price is not None:
+                needed += supply_price * i["quantity"]
+        try:
+            from bebrave.sourcing.domemae_order import login, fetch_emoney_balance
+            session_data = login()
+            emoney = fetch_emoney_balance(session_data["sId"])
+            emoney["needed"] = needed
+            emoney["short"] = needed > emoney["cash"]
+        except Exception as e:
+            emoney_error = str(e)
+
+    history_pairs = None
+    history_hours = int(request.args.get("hours", 24))
+    if tab == "history":
+        history_pairs = []
+        try:
+            from bebrave.smartstore.auth import get_access_token
+            from bebrave.smartstore.orders import fetch_new_orders
+            from bebrave.smartstore.purchase_queue import _match_option_code
+            token = get_access_token()
+            hist_orders = fetch_new_orders(token, hours=history_hours)
+            for o in hist_orders:
+                match, method = _find_registered_product(o)
+                history_pairs.append((o, match, method, _match_option_code(match, o.option_name) if match else None))
+        except Exception as e:
+            error = str(e)
+
+    manual_prefill = {k: request.args.get(k, "") for k in
+                       ("goods_no", "option_code", "qty", "receiver_name", "phone", "zipcode", "address1", "address2",
+                        "shop_name", "product_order_id")}
+
+    return render_template(
+        "orders.html", tab=tab, ready=ready, hold=hold, dispatch_wait=dispatch_wait, error=error,
+        emoney=emoney, emoney_error=emoney_error, history_pairs=history_pairs, history_hours=history_hours,
+        **manual_prefill,
+    )
 
 
 @app.route("/orders/demo")
 def orders_demo():
-    """
-    커머스 API가 안 되는 상황(IP 미허용 등)에서도 화면 흐름을 눈으로 확인할 수 있도록
-    가짜 주문 데이터로 렌더링. 실제 API 호출은 전혀 하지 않음 — bebrave 쪽 API 연동
-    로직은 손대지 않고, 웹앱 화면단에만 있는 임시 확인용 기능 (2026-07-13 추가).
-    """
-    from bebrave.smartstore.orders import ProductOrder
-
-    demo_orders = [
-        ProductOrder(
-            product_order_id="DEMO-0001", order_id="DEMO-ORDER-01",
-            product_name="우산 양산 양우산 자동우산  3단자동우산 우양산 골프우",
-            option_name="", quantity=1, unit_price=4600, status="PAYED",
-            orderer_name="김철수", orderer_tel="010-1111-2222",
-            receiver_name="김철수", receiver_tel="010-1111-2222",
-            receiver_address="서울특별시 영등포구 국제금융로6길 30 101호",
-            receiver_zipcode="07328", receiver_address1="서울특별시 영등포구 국제금융로6길 30",
-            receiver_address2="101호", ordered_at="2026-07-13T09:12:00",
-        ),
-        ProductOrder(
-            product_order_id="DEMO-0002", order_id="DEMO-ORDER-02",
-            product_name="캠핑용 접이식 미니 테이블 야외 낚시 좌식상",
-            option_name="블랙", quantity=2, unit_price=15900, status="PAYED",
-            orderer_name="이영희", orderer_tel="010-3333-4444",
-            receiver_name="이영희", receiver_tel="010-3333-4444",
-            receiver_address="경기도 성남시 분당구 판교역로 235 5층",
-            receiver_zipcode="13529", receiver_address1="경기도 성남시 분당구 판교역로 235",
-            receiver_address2="5층", ordered_at="2026-07-13T10:03:00",
-        ),
+    """주문이 아직 없거나 API가 안 될 때도 화면 구조(체크박스·일괄발주·보류사유·발송처리)를
+    눈으로 확인할 수 있도록 가짜 데이터로 렌더링. 저장은 전혀 안 함."""
+    demo_items = [
+        {"product_order_id": "DEMO-Q1", "product_name": "실리콘주걱 대코 브라이트 미니볶음주걱 실리콘 이유식주걱",
+         "option_name": "", "quantity": 2, "unit_price": 3300, "matched_goods_no": "11013443",
+         "matched_option_code": None, "matched_name": "실리콘주걱 대코 브라이트 미니볶음주걱 실리콘 이유식주걱",
+         "receiver_name": "김철수", "receiver_tel": "010-1111-2222", "receiver_zipcode": "06000",
+         "receiver_address1": "서울시 강남구", "receiver_address2": "101호", "status": "ready", "hold_reason": ""},
+        {"product_order_id": "DEMO-Q2", "product_name": "우산 양산 양우산 자동우산  3단자동우산 우양산 골프우",
+         "option_name": "", "quantity": 1, "unit_price": 4600, "matched_goods_no": "13187678",
+         "matched_option_code": None, "matched_name": "우산 양산 양우산 자동우산  3단자동우산 우양산 골프우",
+         "receiver_name": "최지은", "receiver_tel": "010-7777-8888", "receiver_zipcode": "42000",
+         "receiver_address1": "대구시 수성구", "receiver_address2": "", "status": "ready", "hold_reason": ""},
+        {"product_order_id": "DEMO-Q3", "product_name": "캠핑용 접이식 미니 테이블", "option_name": "카키",
+         "quantity": 5, "unit_price": 13000, "matched_goods_no": "20000001", "matched_option_code": "02",
+         "matched_name": "캠핑용 접이식 미니 테이블", "receiver_name": "박민수", "receiver_tel": "010-5555-6666",
+         "receiver_zipcode": "48000", "receiver_address1": "부산시 해운대구", "receiver_address2": "",
+         "status": "hold", "hold_reason": "도매매 옵션 재고 부족 — '카키' 필요 5개, 재고 3개"},
+        {"product_order_id": "DEMO-Q4", "product_name": "완전 다른 상품 XYZ", "option_name": "",
+         "quantity": 1, "unit_price": 9900, "matched_goods_no": "", "matched_option_code": None,
+         "matched_name": "", "receiver_name": "한소망", "receiver_tel": "010-1212-3434",
+         "receiver_zipcode": "61900", "receiver_address1": "광주시 서구", "receiver_address2": "",
+         "status": "hold", "hold_reason": "도매매 상품 매칭 실패 — 수동 확인 필요"},
+        {"product_order_id": "DEMO-Q5", "product_name": "실리콘주걱 대코 브라이트 미니볶음주걱 실리콘 이유식주걱",
+         "option_name": "", "quantity": 1, "unit_price": 3300, "status": "ordered",
+         "hold_reason": "", "domemae_order_no": "OR9990001"},
     ]
-    from bebrave.smartstore.purchase_queue import _match_option_code
-    pairs = []
-    for o in demo_orders:
-        match, method = _find_registered_product(o)
-        pairs.append((o, match, method, _match_option_code(match, o.option_name) if match else None))
-    flash("샘플 데이터입니다 — 실제 주문이 아닙니다. API 연결되면 '조회' 버튼으로 실제 데이터를 확인하세요.", "success")
-    return render_template("orders.html", pairs=pairs, checked=True, demo=True)
-
-
-@app.route("/orders/check", methods=["POST"])
-def orders_check():
-    hours = int(request.form.get("hours", 24))
-    order_list = []
-    try:
-        from bebrave.smartstore.auth import get_access_token
-        from bebrave.smartstore.orders import fetch_new_orders
-
-        token = get_access_token()
-        order_list = fetch_new_orders(token, hours=hours)
-        if not order_list:
-            flash(f"최근 {hours}시간 내 신규 주문 없음", "success")
-    except Exception as e:
-        flash(f"주문 조회 실패: {e}", "error")
-
-    # 각 주문에 대해 도매매 상품번호를 미리 역추적해둠 — "발주하기" 링크에 사용
-    from bebrave.smartstore.purchase_queue import _match_option_code
-    pairs = []
-    for o in order_list:
-        match, method = _find_registered_product(o)
-        pairs.append((o, match, method, _match_option_code(match, o.option_name) if match else None))
-    return render_template("orders.html", pairs=pairs, checked=True)
+    tab = request.args.get("tab", "ready")
+    if tab not in ORDER_TABS:
+        tab = "ready"
+    flash("샘플 데이터입니다 — 실제 주문이 아닙니다. IP 허용목록·주문 발생 후 실제 데이터로 확인하세요.", "success")
+    ready = [i for i in demo_items if i["status"] == "ready"]
+    hold = [i for i in demo_items if i["status"] == "hold"]
+    dispatch_wait = [i for i in demo_items if i["status"] == "ordered"]
+    demo_emoney = {"total": 15000, "cash": 15000, "card": 0, "point": 320, "needed": 9890, "short": False}
+    manual_prefill = {k: "" for k in
+                       ("goods_no", "option_code", "qty", "receiver_name", "phone", "zipcode", "address1", "address2",
+                        "shop_name", "product_order_id")}
+    return render_template(
+        "orders.html", tab=tab, ready=ready, hold=hold, dispatch_wait=dispatch_wait, error=None,
+        emoney=demo_emoney, emoney_error=None, history_pairs=None, history_hours=24, demo=True,
+        **manual_prefill,
+    )
 
 
 @app.route("/orders/dispatch", methods=["POST"])
@@ -650,7 +776,7 @@ def orders_dispatch():
         flash(f"주문 {product_order_id} 발송처리 완료 (송장: {tracking_number})", "success")
     except Exception as e:
         flash(f"발송처리 실패: {e}", "error")
-    return redirect(url_for("orders"))
+    return redirect(url_for("orders", tab="dispatch"))
 
 
 # ── CS (반품·취소·상품문의) ────────────────────────────────────────────────
@@ -715,31 +841,7 @@ def cs_demo():
                             inquiries=demo_inquiries, inquiry_error=None, demo=True)
 
 
-# ── 재고·가격 동기화 ─────────────────────────────────────────────────────────
-
-@app.route("/sync")
-def sync_view():
-    from bebrave.smartstore.sync import sync_all, ACTION_OK
-    results = sync_all(dry_run=True)  # 판정만 — 도매매 조회만 하므로 토큰 불필요
-    need_count = len([r for r in results if r.action != ACTION_OK])
-    return render_template("sync.html", results=results, need_count=need_count)
-
-
-@app.route("/sync/demo")
-def sync_demo():
-    from bebrave.smartstore.sync import SyncResult, ACTION_OK, ACTION_STOCK, ACTION_MARGIN_WARN, ACTION_SUSPEND
-    demo_results = [
-        SyncResult("1", "실리콘주걱 대코 브라이트", ACTION_OK, "재고 1,200개, 도매가 2,300원"),
-        SyncResult("2", "우산 양산 양우산 자동우산", ACTION_MARGIN_WARN,
-                   "도매가 3,190→4,200원(+1,010) 마진 8.2% < 최소 15% — 현재가 4,600원, 목표마진 회복가 6,900원 참고",
-                   suggested_price=6900),
-        SyncResult("3", "캠핑용 접이식 미니 테이블", ACTION_STOCK, "재고 50→3개로 조정", new_stock=3),
-        SyncResult("4", "품절된 상품", ACTION_SUSPEND, "도매매 품절 — 판매중지"),
-    ]
-    flash("샘플 데이터입니다 — 실제 동기화 결과가 아닙니다.", "success")
-    return render_template("sync.html", results=demo_results,
-                            need_count=len([r for r in demo_results if r.action != ACTION_OK]), demo=True)
-
+# ── 재고·가격 동기화 (판정은 /products 캐시로 보여주고, 반영 액션만 여기 남김) ──────────
 
 @app.route("/sync/apply", methods=["POST"])
 def sync_apply():
@@ -756,9 +858,11 @@ def sync_apply():
                 "[비브레이브] 재고·가격 동기화 조치 발생\n" +
                 "\n".join(f"- {r.name[:30]}: {r.action} ({r.detail[:40]})" for r in problems[:5])
             )
+        if PRODUCT_SYNC_CACHE.exists():
+            PRODUCT_SYNC_CACHE.unlink()  # 반영 직후엔 캐시가 낡으므로 지우고 "지금 확인"으로 다시 채우게 함
     except Exception as e:
         flash(f"동기화 반영 실패: {e}", "error")
-    return redirect(url_for("sync_view"))
+    return redirect(url_for("products_view"))
 
 
 @app.route("/sync/apply_price", methods=["POST"])
@@ -771,7 +875,7 @@ def sync_apply_price():
     record = next((p for p in registered if str(p.get("naver_product_id", "")) == pid), None)
     if not record or not new_price:
         flash("적용 대상을 찾을 수 없습니다.", "error")
-        return redirect(url_for("sync_view"))
+        return redirect(url_for("products_view"))
 
     try:
         from bebrave.smartstore.auth import get_access_token
@@ -791,16 +895,20 @@ def sync_apply_price():
         record["margin_rate"] = round(m.margin_rate, 4)
         with open(REGISTERED_PRODUCTS, "w", encoding="utf-8") as f:
             json.dump(registered, f, ensure_ascii=False, indent=2)
+        if PRODUCT_SYNC_CACHE.exists():
+            PRODUCT_SYNC_CACHE.unlink()
         flash(f"판매가 변경: {old_price:,}원 → {new_price:,}원 (마진 {m.margin_rate:.1%})", "success")
     except Exception as e:
         flash(f"가격 변경 실패: {e}", "error")
-    return redirect(url_for("sync_view"))
+    return redirect(url_for("products_view"))
 
 
-# ── 정산 (돈의 흐름) ──────────────────────────────────────────────────────
+# ── 정산 (돈의 흐름) — 탭 3개(캘린더/대사/현금흐름), 로직은 각 탭 함수 그대로 ──────────
 
-@app.route("/settlement")
-def settlement_view():
+SETTLEMENT_TABS = ("calendar", "reconcile", "cashflow")
+
+
+def _settlement_calendar_ctx():
     import calendar as _cal
     from bebrave.smartstore.auth import get_access_token
     from bebrave.smartstore.settlement import fetch_daily_settlements, fetch_vat_cases, vat_amount
@@ -837,8 +945,7 @@ def settlement_view():
     next_month, next_year = (1, selected_year + 1) if selected_month == 12 else (selected_month + 1, selected_year)
     next_disabled = (next_year, next_month) > (today.year, today.month)
 
-    return render_template(
-        "settlement.html",
+    return dict(
         daily=daily, error=error, total_settle=total_settle, total_benefit=total_benefit,
         total_vat=total_vat, case_total=case_total, case_count=len(case_records),
         selected_year=selected_year, selected_month=selected_month,
@@ -847,27 +954,86 @@ def settlement_view():
     )
 
 
+def _settlement_reconcile_ctx():
+    from bebrave.report.reconcile import reconcile, suggest_fee_rate
+    results = reconcile()
+    results.sort(key=lambda r: r["product_order_id"], reverse=True)
+    suggestion = suggest_fee_rate(results)
+    return dict(results=results, suggestion=suggestion)
+
+
+def _settlement_cashflow_ctx():
+    from bebrave.report import cash_events
+    events = cash_events()
+    return dict(events=events, ending_balance=events[-1]["balance"] if events else 0)
+
+
+@app.route("/settlement")
+def settlement_view():
+    tab = request.args.get("tab", "calendar")
+    if tab not in SETTLEMENT_TABS:
+        tab = "calendar"
+    ctx = {"calendar": _settlement_calendar_ctx, "reconcile": _settlement_reconcile_ctx,
+           "cashflow": _settlement_cashflow_ctx}[tab]()
+    return render_template("settlement.html", tab=tab, **ctx)
+
+
 @app.route("/settlement/demo")
 def settlement_demo():
     from bebrave.smartstore.settlement import DailySettlement
+    from bebrave.report.reconcile import suggest_fee_rate
+    from bebrave.report.cashflow import cash_events
 
+    tab = request.args.get("tab", "calendar")
+    if tab not in SETTLEMENT_TABS:
+        tab = "calendar"
     today = date.today()
-    demo_daily = [
-        DailySettlement(settle_date="2026-08-05", settle_amount=42000, benefit_settle_amount=-1200),
-        DailySettlement(settle_date="2026-08-12", settle_amount=68000, benefit_settle_amount=-2000),
-        DailySettlement(settle_date="2026-08-19", settle_amount=35000, benefit_settle_amount=0),
-    ]
-    flash("샘플 데이터입니다 — 실제 정산이 아닙니다.", "success")
-    return render_template(
-        "settlement.html",
-        daily=demo_daily, error=None,
-        total_settle=sum(d.settle_amount for d in demo_daily),
-        total_benefit=sum(d.benefit_settle_amount for d in demo_daily),
-        total_vat=8500, case_total=131400, case_count=6,  # 건별과 일별은 원래 완전히 일치하지 않음(모듈 docstring 참고) — 일부러 다른 값
-        selected_year=today.year, selected_month=today.month,
-        prev_year=today.year, prev_month=today.month, next_year=today.year, next_month=today.month,
-        next_disabled=True, demo=True,
-    )
+
+    if tab == "reconcile":
+        demo_results = [
+            {"product_order_id": "DEMO-R1", "revenue": 10000, "settle_amount": 8950,
+             "deduction": 1050, "deduction_rate": 0.105, "settle_type": "NORMAL_SETTLE_ORIGINAL"},
+            {"product_order_id": "DEMO-R2", "revenue": 20000, "settle_amount": 17800,
+             "deduction": 2200, "deduction_rate": 0.11, "settle_type": "QUICK_SETTLE_ORIGINAL"},
+            {"product_order_id": "DEMO-R3", "revenue": 15000, "settle_amount": 13350,
+             "deduction": 1650, "deduction_rate": 0.11, "settle_type": "NORMAL_SETTLE_ORIGINAL"},
+            {"product_order_id": "DEMO-R4", "revenue": 8000, "settle_amount": 7120,
+             "deduction": 880, "deduction_rate": 0.11, "settle_type": "NORMAL_SETTLE_ORIGINAL"},
+            {"product_order_id": "DEMO-R5", "revenue": 12000, "settle_amount": 10680,
+             "deduction": 1320, "deduction_rate": 0.11, "settle_type": "QUICK_SETTLE_ORIGINAL"},
+        ]
+        ctx = dict(results=demo_results, suggestion=suggest_fee_rate(demo_results))
+    elif tab == "cashflow":
+        purchase_items = [
+            {"status": "ordered", "updated_at": (today - timedelta(days=5)).isoformat(),
+             "product_name": "실리콘주걱 대코 브라이트", "spent_amount": 4600},
+            {"status": "dispatched", "updated_at": (today - timedelta(days=3)).isoformat(),
+             "product_name": "우산 양산 양우산 자동우산", "spent_amount": 6380},
+        ]
+        settlements = [
+            {"settle_date": (today - timedelta(days=1)).isoformat(), "settle_amount": 4100, "product_order_id": "PO-1"},
+            {"settle_date": (today + timedelta(days=2)).isoformat(), "settle_amount": 5700, "product_order_id": "PO-2"},
+        ]
+        events = cash_events(purchase_items, settlements)
+        ctx = dict(events=events, ending_balance=events[-1]["balance"] if events else 0)
+    else:
+        demo_daily = [
+            DailySettlement(settle_date="2026-08-05", settle_amount=42000, benefit_settle_amount=-1200),
+            DailySettlement(settle_date="2026-08-12", settle_amount=68000, benefit_settle_amount=-2000),
+            DailySettlement(settle_date="2026-08-19", settle_amount=35000, benefit_settle_amount=0),
+        ]
+        ctx = dict(
+            daily=demo_daily, error=None,
+            total_settle=sum(d.settle_amount for d in demo_daily),
+            total_benefit=sum(d.benefit_settle_amount for d in demo_daily),
+            total_vat=8500, case_total=131400, case_count=6,
+            selected_year=today.year, selected_month=today.month,
+            prev_year=today.year, prev_month=today.month, next_year=today.year, next_month=today.month,
+            next_disabled=True,
+        )
+
+    flash("샘플 데이터입니다 — 실제 데이터가 아닙니다.", "success")
+    return render_template("settlement.html", tab=tab, demo=True, **ctx)
 
 
 @app.route("/settlement/sync_cases", methods=["POST"])
@@ -888,71 +1054,12 @@ def settlement_sync_cases():
         flash(f"건별 정산 동기화 완료 — 최근 {days}일 조회, {n}건 반영", "success")
     except Exception as e:
         flash(f"건별 정산 동기화 실패: {e}", "error")
-    return redirect(url_for("settlement_view"))
+    return redirect(url_for("settlement_view", tab="calendar"))
 
 
-@app.route("/cashflow")
-def cashflow_view():
-    from bebrave.report import cash_events
-    events = cash_events()
-    ending_balance = events[-1]["balance"] if events else 0
-    return render_template("cashflow.html", events=events, ending_balance=ending_balance)
+# ── 판매 성과 (진단점수·상태 판정 — /products가 이 결과를 표에 합쳐서 보여줌) ──────────
 
-
-@app.route("/cashflow/demo")
-def cashflow_demo():
-    from bebrave.report.cashflow import cash_events
-    today = date.today()
-    purchase_items = [
-        {"status": "ordered", "updated_at": (today - timedelta(days=5)).isoformat(),
-         "product_name": "실리콘주걱 대코 브라이트", "spent_amount": 4600},
-        {"status": "dispatched", "updated_at": (today - timedelta(days=3)).isoformat(),
-         "product_name": "우산 양산 양우산 자동우산", "spent_amount": 6380},
-    ]
-    settlements = [
-        {"settle_date": (today - timedelta(days=1)).isoformat(), "settle_amount": 4100, "product_order_id": "PO-1"},
-        {"settle_date": (today + timedelta(days=2)).isoformat(), "settle_amount": 5700, "product_order_id": "PO-2"},
-    ]
-    events = cash_events(purchase_items, settlements)
-    flash("샘플 데이터입니다 — 실제 현금흐름이 아닙니다.", "success")
-    return render_template("cashflow.html", events=events,
-                            ending_balance=events[-1]["balance"] if events else 0, demo=True)
-
-
-@app.route("/reconcile")
-def reconcile_view():
-    from bebrave.report.reconcile import reconcile, suggest_fee_rate
-    results = reconcile()
-    results.sort(key=lambda r: r["product_order_id"], reverse=True)
-    suggestion = suggest_fee_rate(results)
-    return render_template("reconcile.html", results=results, suggestion=suggestion)
-
-
-@app.route("/reconcile/demo")
-def reconcile_demo():
-    from bebrave.report.reconcile import suggest_fee_rate
-
-    demo_results = [
-        {"product_order_id": "DEMO-R1", "revenue": 10000, "settle_amount": 8950,
-         "deduction": 1050, "deduction_rate": 0.105, "settle_type": "NORMAL_SETTLE_ORIGINAL"},
-        {"product_order_id": "DEMO-R2", "revenue": 20000, "settle_amount": 17800,
-         "deduction": 2200, "deduction_rate": 0.11, "settle_type": "QUICK_SETTLE_ORIGINAL"},
-        {"product_order_id": "DEMO-R3", "revenue": 15000, "settle_amount": 13350,
-         "deduction": 1650, "deduction_rate": 0.11, "settle_type": "NORMAL_SETTLE_ORIGINAL"},
-        {"product_order_id": "DEMO-R4", "revenue": 8000, "settle_amount": 7120,
-         "deduction": 880, "deduction_rate": 0.11, "settle_type": "NORMAL_SETTLE_ORIGINAL"},
-        {"product_order_id": "DEMO-R5", "revenue": 12000, "settle_amount": 10680,
-         "deduction": 1320, "deduction_rate": 0.11, "settle_type": "QUICK_SETTLE_ORIGINAL"},
-    ]
-    suggestion = suggest_fee_rate(demo_results)
-    flash("샘플 데이터입니다 — 실제 대사 결과가 아닙니다.", "success")
-    return render_template("reconcile.html", results=demo_results, suggestion=suggestion, demo=True)
-
-
-# ── 판매 성과 ─────────────────────────────────────────────────────────────
-
-@app.route("/performance")
-def performance():
+def _performance_with_quality():
     from bebrave.report import product_performance
     from bebrave.smartstore.listing_quality import score_listing
 
@@ -994,7 +1101,7 @@ def performance():
             record = by_id.get(p["naver_product_id"], {})
             p["replacements"] = suggest_replacements(record.get("keyword", ""), candidates, registered)
 
-    return render_template("performance.html", performance=results)
+    return results
 
 
 @app.route("/performance/suspend", methods=["POST"])
@@ -1014,7 +1121,7 @@ def performance_suspend():
         flash(f"상품ID {pid} 판매중지 완료", "success")
     except Exception as e:
         flash(f"판매중지 실패: {e}", "error")
-    return redirect(url_for("performance"))
+    return redirect(url_for("products_view"))
 
 
 @app.route("/performance/reoptimize_name", methods=["POST"])
@@ -1027,7 +1134,7 @@ def performance_reoptimize_name():
     record = next((p for p in registered if str(p.get("naver_product_id", "")) == pid), None)
     if not record:
         flash("등록 기록을 찾을 수 없습니다.", "error")
-        return redirect(url_for("performance"))
+        return redirect(url_for("products_view"))
 
     old_name = record.get("name", "")
     try:
@@ -1038,7 +1145,7 @@ def performance_reoptimize_name():
         new_name = optimize_name(record.get("keyword", ""), old_name)
         if new_name == old_name:
             flash("이미 최적화된 이름입니다 — 바뀔 게 없습니다.", "success")
-            return redirect(url_for("performance"))
+            return redirect(url_for("products_view"))
 
         def _mutate(body):
             body["originProduct"]["name"] = new_name
@@ -1056,63 +1163,16 @@ def performance_reoptimize_name():
         flash(f"상품명 변경: '{old_name}' → '{new_name}' — 앞으로의 판매 실적을 이전과 비교합니다", "success")
     except Exception as e:
         flash(f"이름 재최적화 실패: {e}", "error")
-    return redirect(url_for("performance"))
+    return redirect(url_for("products_view"))
 
 
 # ── 판매추적 ──────────────────────────────────────────────────────────────
 
-@app.route("/tracker")
-def tracker():
-    from bebrave.tracker.products import ProductTracker
-    t = ProductTracker(TRACKED_PRODUCTS)
-    return render_template(
-        "tracker.html",
-        products=t.products,
-        stale=t.stale_products(),
-        risky=t.auto_delete_risk(),
-    )
-
-
-@app.route("/tracker/demo")
-def tracker_demo():
-    from bebrave.tracker.products import TrackedProduct
-    from datetime import date as _date
-
-    today = _date.today()
-    demo_products = [
-        TrackedProduct("D1", "정상판매중 상품", (today - timedelta(days=200)).isoformat(),
-                        last_sold_date=(today - timedelta(days=5)).isoformat()),
-        TrackedProduct("D2", "교체 검토 대상", (today - timedelta(days=200)).isoformat(),
-                        last_sold_date=(today - timedelta(days=100)).isoformat()),
-        TrackedProduct("D3", "자동삭제 위험 상품", (today - timedelta(days=420)).isoformat(),
-                        last_sold_date=(today - timedelta(days=400)).isoformat()),
-    ]
-    flash("샘플 데이터입니다 — 실제 추적 데이터가 아닙니다.", "success")
-    return render_template(
-        "tracker.html", products=demo_products,
-        stale=[p for p in demo_products if p.product_id in ("D2", "D3")],
-        risky=[p for p in demo_products if p.product_id == "D3"],
-        demo=True,
-    )
-
-
-@app.route("/tracker/add", methods=["POST"])
-def tracker_add():
-    from datetime import date
-    from bebrave.tracker.products import ProductTracker
-    t = ProductTracker(TRACKED_PRODUCTS)
-    t.add_or_update(
-        request.form.get("product_id", ""),
-        request.form.get("name", ""),
-        request.form.get("registered_date") or date.today().isoformat(),
-    )
-    t.save()
-    flash("추적 등록 완료", "success")
-    return redirect(url_for(request.form.get("return_to", "tracker")))
-
-
 @app.route("/tracker/sync", methods=["POST"])
 def tracker_sync():
+    """13개월 자동삭제 위험 배지(/products)의 근거인 last_sold_date를 최근 주문으로 갱신.
+    독립 판매추적 화면은 폐기됐지만(2026-08 재설계, 판매성과가 더 정확한 근거로 대체),
+    이 배지가 계속 최신 데이터를 반영하도록 동기화 자체는 남겨둔다."""
     try:
         from bebrave.tracker.products import ProductTracker
         from bebrave.smartstore.auth import get_access_token
@@ -1126,7 +1186,7 @@ def tracker_sync():
         flash(f"주문 {len(order_list)}건 조회 → {updated}개 상품 판매일 갱신", "success")
     except Exception as e:
         flash(f"동기화 실패: {e}", "error")
-    return redirect(url_for("tracker"))
+    return redirect(url_for("products_view"))
 
 
 # ── 주간 리포트 ────────────────────────────────────────────────────────────
@@ -1152,96 +1212,7 @@ def margin():
     return render_template("margin.html", result=result)
 
 
-# ── 도매매 발주 (실제 결제 — 확인 필수) ──────────────────────────────────────
-
-@app.route("/purchase")
-def purchase():
-    # 주문 페이지의 "이 주문 발주하기" 링크에서 쿼리 파라미터로 값을 넘겨받아 폼을 채움
-    prefill = {k: request.args.get(k, "") for k in
-               ("goods_no", "option_code", "qty", "receiver_name", "phone", "zipcode", "address1", "address2",
-                "shop_name", "product_order_id")}
-    return render_template("purchase.html", **prefill)
-
-
-@app.route("/purchase/queue")
-def purchase_queue_view():
-    from bebrave.smartstore.purchase_queue import build_queue, load_queue, STATUS_READY, STATUS_HOLD
-
-    error = None
-    try:
-        from bebrave.smartstore.auth import get_access_token
-        from bebrave.smartstore.orders import fetch_new_orders
-        token = get_access_token()
-        orders = fetch_new_orders(token, hours=24 * 3)
-        items = build_queue(orders)
-    except Exception as e:
-        error = str(e)
-        items = load_queue()
-
-    ready = [i for i in items if i["status"] == STATUS_READY]
-    hold = [i for i in items if i["status"] == STATUS_HOLD]
-    done = [i for i in items if i["status"] not in (STATUS_READY, STATUS_HOLD)]
-
-    # 이머니 잔액 — ready 건이 있을 때만 확인(로그인 호출 비용이 있어 빈 큐에서는 생략).
-    # 필요 금액은 도매가×수량 기준(실제 이머니에서 빠지는 값) — 판매가가 아니다.
-    emoney = None
-    emoney_error = None
-    if ready:
-        needed = 0
-        for i in ready:
-            supply_price = _lookup_supply_price(i["matched_goods_no"])
-            if supply_price is not None:
-                needed += supply_price * i["quantity"]
-        try:
-            from bebrave.sourcing.domemae_order import login, fetch_emoney_balance
-            session_data = login()
-            emoney = fetch_emoney_balance(session_data["sId"])
-            emoney["needed"] = needed
-            emoney["short"] = needed > emoney["cash"]
-        except Exception as e:
-            emoney_error = str(e)
-
-    return render_template("purchase_queue.html", ready=ready, hold=hold, done=done, error=error,
-                            emoney=emoney, emoney_error=emoney_error)
-
-
-@app.route("/purchase/queue/demo")
-def purchase_queue_demo():
-    """주문이 아직 없거나 API가 안 될 때도 화면 구조(체크박스·일괄발주·보류사유·발송처리)를
-    눈으로 확인할 수 있도록 가짜 데이터로 렌더링. 저장은 전혀 안 함 (orders_demo()와 동일한 취지)."""
-    demo_items = [
-        {"product_order_id": "DEMO-Q1", "product_name": "실리콘주걱 대코 브라이트 미니볶음주걱 실리콘 이유식주걱",
-         "option_name": "", "quantity": 2, "unit_price": 3300, "matched_goods_no": "11013443",
-         "matched_option_code": None, "matched_name": "실리콘주걱 대코 브라이트 미니볶음주걱 실리콘 이유식주걱",
-         "receiver_name": "김철수", "receiver_tel": "010-1111-2222", "receiver_zipcode": "06000",
-         "receiver_address1": "서울시 강남구", "receiver_address2": "101호", "status": "ready", "hold_reason": ""},
-        {"product_order_id": "DEMO-Q2", "product_name": "우산 양산 양우산 자동우산  3단자동우산 우양산 골프우",
-         "option_name": "", "quantity": 1, "unit_price": 4600, "matched_goods_no": "13187678",
-         "matched_option_code": None, "matched_name": "우산 양산 양우산 자동우산  3단자동우산 우양산 골프우",
-         "receiver_name": "최지은", "receiver_tel": "010-7777-8888", "receiver_zipcode": "42000",
-         "receiver_address1": "대구시 수성구", "receiver_address2": "", "status": "ready", "hold_reason": ""},
-        {"product_order_id": "DEMO-Q3", "product_name": "캠핑용 접이식 미니 테이블", "option_name": "카키",
-         "quantity": 5, "unit_price": 13000, "matched_goods_no": "20000001", "matched_option_code": "02",
-         "matched_name": "캠핑용 접이식 미니 테이블", "receiver_name": "박민수", "receiver_tel": "010-5555-6666",
-         "receiver_zipcode": "48000", "receiver_address1": "부산시 해운대구", "receiver_address2": "",
-         "status": "hold", "hold_reason": "도매매 옵션 재고 부족 — '카키' 필요 5개, 재고 3개"},
-        {"product_order_id": "DEMO-Q4", "product_name": "완전 다른 상품 XYZ", "option_name": "",
-         "quantity": 1, "unit_price": 9900, "matched_goods_no": "", "matched_option_code": None,
-         "matched_name": "", "receiver_name": "한소망", "receiver_tel": "010-1212-3434",
-         "receiver_zipcode": "61900", "receiver_address1": "광주시 서구", "receiver_address2": "",
-         "status": "hold", "hold_reason": "도매매 상품 매칭 실패 — 수동 확인 필요"},
-        {"product_order_id": "DEMO-Q5", "product_name": "실리콘주걱 대코 브라이트 미니볶음주걱 실리콘 이유식주걱",
-         "option_name": "", "quantity": 1, "unit_price": 3300, "status": "ordered",
-         "hold_reason": "", "domemae_order_no": "OR9990001"},
-    ]
-    flash("샘플 데이터입니다 — 실제 주문이 아닙니다. IP 허용목록·주문 발생 후 실제 데이터로 확인하세요.", "success")
-    ready = [i for i in demo_items if i["status"] == "ready"]
-    hold = [i for i in demo_items if i["status"] == "hold"]
-    done = [i for i in demo_items if i["status"] not in ("ready", "hold")]
-    demo_emoney = {"total": 15000, "cash": 15000, "card": 0, "point": 320, "needed": 9890, "short": False}
-    return render_template("purchase_queue.html", ready=ready, hold=hold, done=done, error=None,
-                            emoney=demo_emoney, emoney_error=None, demo=True)
-
+# ── 도매매 발주 (실제 결제 — 확인 필수, 페이지는 /orders로 통합됨) ─────────────────
 
 @app.route("/purchase/bulk_place", methods=["POST"])
 def purchase_bulk_place():
@@ -1257,20 +1228,20 @@ def purchase_bulk_place():
 
     if not targets:
         flash("선택된 발주 대상이 없습니다.", "error")
-        return redirect(url_for("purchase_queue_view"))
+        return redirect(url_for("orders", tab="ready"))
 
     if not live:
         preview = ", ".join(f"{i['product_name'][:16]}×{i['quantity']}" for i in targets[:5])
         more = f" 외 {len(targets)-5}건" if len(targets) > 5 else ""
         flash(f"[dry-run] {len(targets)}건 발주 예정 (실제 결제 안 함) — {preview}{more}. "
               f"실제로 넣으려면 '확인함' 체크 후 다시 실행하세요.", "success")
-        return redirect(url_for("purchase_queue_view"))
+        return redirect(url_for("orders", tab="ready"))
 
     try:
         session_data = login()
     except Exception as e:
         flash(f"도매매 로그인 실패 — 일괄 발주 중단: {e}", "error")
-        return redirect(url_for("purchase_queue_view"))
+        return redirect(url_for("orders", tab="ready"))
 
     ok, failed = 0, []
     for i in targets:
@@ -1298,7 +1269,7 @@ def purchase_bulk_place():
         msg += f", 실패 {len(failed)}건: " + "; ".join(failed[:3]) + (" 외" if len(failed) > 3 else "")
         _notify(f"[비브레이브] 일괄발주 실패 {len(failed)}건\n" + "\n".join(f"- {f}" for f in failed[:5]))
     flash(msg, "success" if not failed else "error")
-    return redirect(url_for("purchase_queue_view"))
+    return redirect(url_for("orders", tab="ready"))
 
 
 @app.route("/purchase/sync_tracking", methods=["POST"])
@@ -1317,7 +1288,7 @@ def purchase_sync_tracking():
         tracking = fetch_order_tracking(domemae_order_no, sId=session_data["sId"])
         if not tracking.get("tracking_number"):
             flash(f"주문 {product_order_id}: 아직 도매매 쪽 송장이 등록되지 않았습니다 — 잠시 후 다시 확인하세요.", "success")
-            return redirect(url_for("purchase_queue_view"))
+            return redirect(url_for("orders", tab="dispatch"))
 
         token = get_access_token()
         dispatch_order(product_order_id, tracking["tracking_number"], tracking.get("company_name", ""), token)
@@ -1325,7 +1296,7 @@ def purchase_sync_tracking():
         flash(f"주문 {product_order_id} 발송처리 완료 — {tracking.get('company_name','')} {tracking['tracking_number']}", "success")
     except Exception as e:
         flash(f"송장 확인/발송처리 실패: {e}", "error")
-    return redirect(url_for("purchase_queue_view"))
+    return redirect(url_for("orders", tab="dispatch"))
 
 
 @app.route("/purchase/place", methods=["POST"])
@@ -1341,8 +1312,10 @@ def purchase_place():
     shop_name = request.form.get("shop_name", "")
     product_order_id = request.form.get("product_order_id", "")
     live = request.form.get("live") == "on"
-    # 주문 카드에서 바로 발주한 경우 주문 페이지로, 발주 화면에서 보낸 경우 발주 화면으로 복귀
-    return_to = request.form.get("return_to", "purchase")
+    # 큐/이력에서 넘어온 경우 그 탭으로, 수동 발주 탭에서 직접 입력한 경우 수동 발주 탭으로 복귀
+    return_tab = request.form.get("return_to", "manual")
+    if return_tab not in ORDER_TABS:
+        return_tab = "manual"
 
     try:
         from bebrave.sourcing.domemae_order import OrderItem, OrderOption, DeliveryInfo, login, place_order
@@ -1357,7 +1330,7 @@ def purchase_place():
         if not live:
             flash("[dry-run] 아래 내용으로 발주 요청이 구성됩니다 (실제 결제 안 함) — 실제 발주는 체크박스를 켜고 눌러야 함", "success")
             place_order([item], delivery, sId="", dry_run=True)
-            return redirect(url_for(return_to))
+            return redirect(url_for("orders", tab=return_tab))
 
         session_data = login()
         result = place_order([item], delivery, sId=session_data["sId"], dry_run=False)
@@ -1373,7 +1346,7 @@ def purchase_place():
             from bebrave.smartstore.purchase_queue import mark_failed
             mark_failed(product_order_id, str(e))
         flash(f"발주 실패: {e}", "error")
-    return redirect(url_for(return_to))
+    return redirect(url_for("orders", tab=return_tab))
 
 
 if __name__ == "__main__":

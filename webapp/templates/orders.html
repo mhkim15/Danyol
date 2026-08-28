@@ -1,96 +1,273 @@
 {% extends "base.html" %}
-{% block title %}주문{% endblock %}
+{% block title %}주문·발주{% endblock %}
 {% block content %}
-<h1>주문</h1>
+<h1>주문·발주</h1>
 
-<div class="panel">
-  <h2>신규 주문 확인</h2>
-  <form method="post" action="{{ url_for('orders_check') }}" class="row">
-    <div style="flex:1;min-width:120px;">
-      <label for="hours">조회 범위 (시간)</label>
-      <input type="number" name="hours" id="hours" value="24">
-    </div>
-    <button type="submit" style="align-self:flex-end;">조회</button>
-  </form>
-  <div class="row" style="margin-top:10px;">
-    <a class="btn secondary" href="{{ url_for('purchase_queue_view') }}">발주 대기열 보기</a>
-    <a class="btn secondary" href="{{ url_for('orders_demo') }}">샘플 데이터로 화면 확인 (API 안 될 때)</a>
-  </div>
+{% if not demo %}
+<div class="row" style="margin:-6px 0 14px;">
+  <a class="btn secondary" href="{{ url_for('orders_demo', tab=tab) }}">샘플 데이터로 화면 확인 (주문 없을 때)</a>
+</div>
+{% endif %}
+
+{% if error %}
+<div class="panel" style="background:var(--err-bg);color:var(--err);">주문 조회 실패: {{ error }} — 저장된 이전 큐만 표시합니다.</div>
+{% endif %}
+
+{% set endpoint = 'orders_demo' if demo else 'orders' %}
+<div class="tabs">
+  <a href="{{ url_for(endpoint, tab='ready') }}" class="{{ 'active' if tab == 'ready' }}">처리할 주문 <span class="tab-count">{{ ready|length }}</span></a>
+  <a href="{{ url_for(endpoint, tab='dispatch') }}" class="{{ 'active' if tab == 'dispatch' }}">발송 대기{% if dispatch_wait %} <span class="tab-count">{{ dispatch_wait|length }}</span>{% endif %}</a>
+  <a href="{{ url_for(endpoint, tab='manual') }}" class="{{ 'active' if tab == 'manual' }}">수동 발주{% if hold %} <span class="tab-count">{{ hold|length }}</span>{% endif %}</a>
+  <a href="{{ url_for(endpoint, tab='history') }}" class="{{ 'active' if tab == 'history' }}">전체 이력</a>
 </div>
 
-{% if checked %}
-<div class="panel">
-  <h2>조회 결과 ({{ pairs|length }}건)</h2>
-  {% for o, match, method, option_code in pairs %}
-  <div class="panel" style="background:var(--paper);margin-bottom:10px;">
-    <div class="row" style="align-items:flex-start;gap:24px;">
-      <div style="flex:2;min-width:260px;">
-        <div class="mono" style="font-size:12px;color:var(--ink-soft);">주문 {{ o.product_order_id }} {% if demo %}<span class="badge">샘플</span>{% endif %}</div>
-        <div style="margin:4px 0;">{{ o.product_name }} {{ o.option_name }} × {{ o.quantity }} — {{ "{:,}".format(o.unit_price) }}원</div>
-      </div>
-      <div class="muted" style="font-size:13px;flex:1;min-width:220px;">{{ o.receiver_name }} ({{ o.receiver_tel }}) · {{ o.receiver_address }}</div>
+{# ── 처리할 주문 (바로 발주 가능) ─────────────────────────────────────────── #}
+<div{% if tab != 'ready' %} style="display:none;"{% endif %}>
+  {% if emoney %}
+  <div class="panel" style="background:{{ 'var(--err-bg)' if emoney.short else 'var(--paper)' }};">
+    <div class="row" style="align-items:center;">
+      <span class="{{ 'badge-err' if emoney.short else 'badge-ok' }}">{{ '이머니 부족' if emoney.short else '이머니 충분' }}</span>
+      <span style="flex:1;">필요 {{ "{:,}".format(emoney.needed) }}원 (도매가 기준) / 사용가능 이머니 {{ "{:,}".format(emoney.cash) }}원</span>
     </div>
+  </div>
+  {% elif emoney_error %}
+  <div class="panel muted" style="font-size:12.5px;">이머니 잔액 확인 실패: {{ emoney_error }}</div>
+  {% endif %}
 
-    {% if method == "id" %}
-    <form method="post" action="{{ url_for('purchase_place') }}" style="margin-top:10px;background:var(--paper);border:1px solid var(--line);border-radius:6px;padding:10px 12px;">
-      <input type="hidden" name="return_to" value="orders">
-      <input type="hidden" name="goods_no" value="{{ match.domemae_goods_no }}">
-      <input type="hidden" name="option_code" value="{{ option_code or '' }}">
-      <input type="hidden" name="qty" value="{{ o.quantity }}">
-      <input type="hidden" name="receiver_name" value="{{ o.receiver_name }}">
-      <input type="hidden" name="phone" value="{{ o.receiver_tel }}">
-      <input type="hidden" name="zipcode" value="{{ o.receiver_zipcode }}">
-      <input type="hidden" name="address1" value="{{ o.receiver_address1 }}">
-      <input type="hidden" name="address2" value="{{ o.receiver_address2 }}">
-      <input type="hidden" name="shop_name" value="{{ match.name }}">
+  {% if not ready %}
+  <div class="panel muted">없음</div>
+  {% else %}
+  <form method="post" action="{{ url_for('purchase_bulk_place') }}">
+    {% for i in ready %}
+    <div class="panel">
+      <div class="row" style="align-items:flex-start;gap:24px;">
+        <label style="display:flex;align-items:flex-start;gap:10px;flex:1;min-width:0;margin:0;">
+          <input type="checkbox" name="product_order_ids" value="{{ i.product_order_id }}" class="ready-check" checked style="margin-top:4px;">
+          <span style="flex:2;min-width:260px;display:inline-block;">
+            <span class="badge-ok">발주 준비됨</span>{% if demo %} <span class="badge">샘플</span>{% endif %}
+            <div style="margin:6px 0 2px;">{{ i.product_name }} {{ i.option_name }} × {{ i.quantity }} — {{ "{:,}".format(i.unit_price) }}원</div>
+            <div class="mono muted" style="font-size:12px;">도매매 {{ i.matched_goods_no }}{% if i.matched_option_code %} · 옵션 {{ i.matched_option_code }}{% endif %}</div>
+          </span>
+        </label>
+        <div class="muted" style="font-size:13px;flex:1;min-width:220px;">{{ i.receiver_name }} ({{ i.receiver_tel }}) · {{ i.receiver_address1 }} {{ i.receiver_address2 }}</div>
+        <a class="btn secondary" style="font-size:12px;padding:9px 12px;" href="{{ url_for(endpoint,
+            tab='manual', goods_no=i.matched_goods_no, option_code=i.matched_option_code or '', qty=i.quantity,
+            receiver_name=i.receiver_name, phone=i.receiver_tel, zipcode=i.receiver_zipcode,
+            address1=i.receiver_address1, address2=i.receiver_address2, shop_name=i.matched_name,
+            product_order_id=i.product_order_id) }}">따로 확인하고 발주</a>
+      </div>
+    </div>
+    {% endfor %}
+    <div class="panel" style="background:var(--paper);position:sticky;bottom:12px;">
+      {% if demo %}
+      <span class="muted" style="font-size:12.5px;">샘플 데이터라 제출은 비활성화했습니다 — 실제 화면에서는 여기 체크박스와 버튼으로 선택한 건을 한 번에 발주합니다.</span>
+      {% else %}
       <div class="row" style="align-items:center;">
-        <span class="badge-ok">상품ID 확정매칭</span>
-        <div class="muted" style="font-size:12.5px;flex:2;min-width:280px;">도매매 <span class="mono">{{ match.domemae_goods_no }}</span>{% if option_code %} · 옵션 <span class="mono">{{ option_code }}</span>{% endif %} · {{ o.quantity }}개 · {{ o.receiver_name }} ({{ o.receiver_tel }}) · {{ o.receiver_address1 }} {{ o.receiver_address2 }}</div>
-        <label style="margin:0;"><input type="checkbox" name="live"> 위 내용 확인함 — 실제로 발주</label>
-        <button type="submit">발주 넣기</button>
-        <a class="btn secondary" href="{{ url_for('purchase',
-            goods_no=match.domemae_goods_no, option_code=option_code or '', qty=o.quantity,
-            receiver_name=o.receiver_name, phone=o.receiver_tel,
-            zipcode=o.receiver_zipcode, address1=o.receiver_address1, address2=o.receiver_address2,
-            shop_name=match.name) }}" style="font-size:12px;padding:9px 12px;">수정해서 발주</a>
+        <label style="margin:0;font-size:13px;"><input type="checkbox" id="checkAll" checked onclick="document.querySelectorAll('.ready-check').forEach(c=>c.checked=this.checked)"> 전체선택</label>
+        <span class="muted" style="font-size:12.5px;flex:1;">체크한 건을 한 번에 발주합니다 — 로그인 1회로 순서대로 처리, 실패한 건만 보류에 남습니다.</span>
+        <label style="margin:0;"><input type="checkbox" name="live"> 확인함 — 실제로 발주</label>
+        <button type="submit">선택 {{ ready|length }}건 일괄 발주</button>
       </div>
-    </form>
-    {% elif method == "name" %}
-    <div class="row" style="margin-top:10px;align-items:center;">
-      <span class="badge-warn">이름만 일치 — 확인 필요</span>
-      <a class="btn secondary" href="{{ url_for('purchase',
-          goods_no=match.domemae_goods_no, qty=o.quantity, receiver_name=o.receiver_name, phone=o.receiver_tel,
-          zipcode=o.receiver_zipcode, address1=o.receiver_address1, address2=o.receiver_address2,
-          shop_name=match.name) }}">'{{ match.name }}'로 추정 — 확인 후 발주</a>
+      {% endif %}
     </div>
-    {% else %}
-    <div class="row" style="margin-top:10px;align-items:center;">
-      <span class="badge-err">매칭 실패</span>
-      <a class="btn secondary" href="{{ url_for('purchase',
-          qty=o.quantity, receiver_name=o.receiver_name, phone=o.receiver_tel,
-          zipcode=o.receiver_zipcode, address1=o.receiver_address1, address2=o.receiver_address2) }}">발주하기 (상품번호 직접 입력 필요)</a>
-    </div>
-    {% endif %}
+  </form>
+  {% endif %}
+</div>
 
-    <form method="post" action="{{ url_for('orders_dispatch') }}" class="row" style="margin-top:10px;align-items:flex-end;">
-      <input type="hidden" name="product_order_id" value="{{ o.product_order_id }}">
-      <div style="flex:1;min-width:160px;">
-        <label>택배사</label>
+{# ── 발송 대기 (도매매 발주완료, 송장/발송처리 필요) ────────────────────────────── #}
+<div{% if tab != 'dispatch' %} style="display:none;"{% endif %}>
+  <p class="muted" style="font-size:12.5px;margin:-4px 0 12px;">
+    "송장 자동확인"은 실주문으로 아직 검증 안 된 도매매 API를 씁니다 — 결과를 눈으로 확인하세요. 실패하면 아래에 직접 입력하세요.
+  </p>
+  {% if not dispatch_wait %}
+  <div class="panel muted">없음</div>
+  {% endif %}
+  {% for i in dispatch_wait %}
+  <div class="panel">
+    <span class="badge-ok">{{ i.status }}</span>{% if demo %} <span class="badge">샘플</span>{% endif %}
+    <span class="muted" style="font-size:13px;margin-left:8px;">{{ i.product_name }} — 도매매 주문번호 {{ i.get('domemae_order_no', '') }}</span>
+    <form method="post" action="{{ url_for('purchase_sync_tracking') }}" style="display:inline;margin-left:10px;">
+      <input type="hidden" name="product_order_id" value="{{ i.product_order_id }}">
+      <input type="hidden" name="domemae_order_no" value="{{ i.get('domemae_order_no', '') }}">
+      <button type="submit" style="padding:6px 12px;font-size:12px;">송장 자동확인</button>
+    </form>
+    <form method="post" action="{{ url_for('orders_dispatch') }}" class="row" style="margin-top:8px;align-items:flex-end;">
+      <input type="hidden" name="product_order_id" value="{{ i.product_order_id }}">
+      <div style="flex:1;min-width:140px;">
         <select name="company">
           <option>CJ대한통운</option><option>롯데택배</option><option>우체국택배</option>
           <option>한진택배</option><option>로젠택배</option>
         </select>
       </div>
-      <div style="flex:2;min-width:220px;">
-        <label>송장번호</label>
-        <input type="text" name="tracking_number" required>
+      <div style="flex:2;min-width:180px;">
+        <input type="text" name="tracking_number" placeholder="송장번호" required>
       </div>
-      <button type="submit">발송처리</button>
+      <button type="submit" style="padding:8px 14px;font-size:12px;">발송처리</button>
     </form>
   </div>
-  {% else %}
-  <div class="muted">신규 주문 없음</div>
   {% endfor %}
 </div>
-{% endif %}
+
+{# ── 수동 발주 (매칭실패·보류 + 직접입력) ───────────────────────────────────── #}
+<div{% if tab != 'manual' %} style="display:none;"{% endif %}>
+  <p class="muted" style="font-size:13px;margin:-4px 0 16px;">
+    대부분의 주문은 "처리할 주문" 탭에서 한 번에(일괄) 처리됩니다. 이 탭은 상품 매칭이 실패했거나(보류)
+    큐를 거치지 않고 상품번호를 직접 넣어 발주할 때만 씁니다.
+  </p>
+
+  {% if hold %}
+  <div class="section">
+    <p class="eyebrow">보류 — 사람 확인 필요 ({{ hold|length }}건)</p>
+    {% for i in hold %}
+    <details class="panel">
+      <summary style="cursor:pointer;">
+        <span class="badge-warn">{{ i.hold_reason }}</span>{% if demo %} <span class="badge">샘플</span>{% endif %}
+        <span style="margin-left:8px;">{{ i.product_name }} {{ i.option_name }} × {{ i.quantity }} — {{ "{:,}".format(i.unit_price) }}원</span>
+        <span class="muted" style="font-size:12.5px;margin-left:8px;">{{ i.receiver_name }} ({{ i.receiver_tel }}) · {{ i.receiver_address1 }} {{ i.receiver_address2 }}</span>
+      </summary>
+      <form method="post" action="{{ url_for('purchase_place') }}" style="margin-top:14px;">
+        <input type="hidden" name="return_to" value="manual">
+        <input type="hidden" name="product_order_id" value="{{ i.product_order_id }}">
+        <label>도매매 상품번호</label>
+        <input type="text" name="goods_no" value="{{ i.matched_goods_no or '' }}" required>
+        <label>옵션코드 (단일옵션 상품은 비워두면 자동으로 00)</label>
+        <input type="text" name="option_code" value="{{ i.matched_option_code or '' }}">
+        <label>수량</label>
+        <input type="number" name="qty" value="{{ i.quantity }}" min="1">
+        <label>수령인 이름</label>
+        <input type="text" name="receiver_name" value="{{ i.receiver_name }}" required>
+        <label>휴대전화</label>
+        <input type="text" name="phone" value="{{ i.receiver_tel }}" required>
+        <label>우편번호</label>
+        <input type="text" name="zipcode" value="{{ i.receiver_zipcode }}" required>
+        <label>주소1</label>
+        <input type="text" name="address1" value="{{ i.receiver_address1 }}" required>
+        <label>주소2</label>
+        <input type="text" name="address2" value="{{ i.receiver_address2 }}">
+        <label>쇼핑몰명/상호명 (필수 — 도매꾹 상표 노출 방지)</label>
+        <input type="text" name="shop_name" value="{{ i.matched_name or '' }}" required>
+        <div class="panel" style="background:var(--paper);margin-top:16px;">
+          <label style="margin-top:0;"><input type="checkbox" name="live"> 실제로 발주 실행 (체크 안 하면 미리보기만)</label>
+        </div>
+        <div class="row" style="margin-top:14px;">
+          <button type="submit">발주 요청 전송</button>
+        </div>
+      </form>
+    </details>
+    {% endfor %}
+  </div>
+  {% endif %}
+
+  <div class="section">
+    <p class="eyebrow">직접 입력 발주</p>
+    <div class="panel" style="background:var(--err-bg);color:var(--err);">
+      실제 결제(이머니 차감)가 발생합니다. 기본은 항상 미리보기(dry-run)이며, 아래 "실제로 발주 실행"을
+      체크하고 버튼을 눌러야만 실제로 결제됩니다 — 체크 전에는 몇 번 눌러도 안전합니다.
+    </div>
+    <div class="panel">
+      <form method="post" action="{{ url_for('purchase_place') }}">
+        <input type="hidden" name="return_to" value="manual">
+        <input type="hidden" name="product_order_id" value="{{ product_order_id or '' }}">
+        {% if goods_no %}
+        <div class="flash flash-success">다른 탭에서 자동으로 채워졌습니다 — 내용 확인 후 발주하세요.</div>
+        {% endif %}
+
+        <label>도매매 상품번호</label>
+        <input type="text" name="goods_no" value="{{ goods_no or '' }}" required>
+
+        <label>옵션코드 (단일옵션 상품은 비워두면 자동으로 00)</label>
+        <input type="text" name="option_code" value="{{ option_code or '' }}">
+
+        <label>수량</label>
+        <input type="number" name="qty" value="{{ qty or 1 }}" min="1">
+
+        <label>수령인 이름</label>
+        <input type="text" name="receiver_name" value="{{ receiver_name or '' }}" required>
+
+        <label>휴대전화 (010-0000-0000 형식)</label>
+        <input type="text" name="phone" value="{{ phone or '' }}" required>
+
+        <label>우편번호</label>
+        <input type="text" name="zipcode" value="{{ zipcode or '' }}" required>
+
+        <label>주소1</label>
+        <input type="text" name="address1" value="{{ address1 or '' }}" required>
+
+        <label>주소2</label>
+        <input type="text" name="address2" value="{{ address2 or '' }}">
+
+        <label>쇼핑몰명/상호명 (필수 — 도매꾹 상표 노출 방지)</label>
+        <input type="text" name="shop_name" value="{{ shop_name or '' }}" required>
+
+        <div class="panel" style="background:var(--paper);margin-top:16px;">
+          <label style="margin-top:0;"><input type="checkbox" name="live"> 실제로 발주 실행 (체크 안 하면 미리보기만)</label>
+        </div>
+
+        <div class="row" style="margin-top:14px;">
+          <button type="submit">발주 요청 전송</button>
+        </div>
+      </form>
+    </div>
+  </div>
+</div>
+
+{# ── 전체 이력 (디버깅·과거조회용, 구 주문확인) ───────────────────────────────── #}
+<div{% if tab != 'history' %} style="display:none;"{% endif %}>
+  <div class="panel">
+    <h2>신규 주문 조회</h2>
+    <form method="get" action="{{ url_for(endpoint) }}" class="row">
+      <input type="hidden" name="tab" value="history">
+      <div style="flex:1;min-width:120px;">
+        <label for="hours">조회 범위 (시간)</label>
+        <input type="number" name="hours" id="hours" value="{{ history_hours }}">
+      </div>
+      <button type="submit" style="align-self:flex-end;">조회</button>
+    </form>
+  </div>
+
+  {% if history_pairs is not none %}
+  <div class="panel">
+    <h2>조회 결과 ({{ history_pairs|length }}건)</h2>
+    {% for o, match, method, option_code in history_pairs %}
+    <div class="panel" style="background:var(--paper);margin-bottom:10px;">
+      <div class="row" style="align-items:flex-start;gap:24px;">
+        <div style="flex:2;min-width:260px;">
+          <div class="mono" style="font-size:12px;color:var(--ink-soft);">주문 {{ o.product_order_id }} {% if demo %}<span class="badge">샘플</span>{% endif %}</div>
+          <div style="margin:4px 0;">{{ o.product_name }} {{ o.option_name }} × {{ o.quantity }} — {{ "{:,}".format(o.unit_price) }}원</div>
+        </div>
+        <div class="muted" style="font-size:13px;flex:1;min-width:220px;">{{ o.receiver_name }} ({{ o.receiver_tel }}) · {{ o.receiver_address }}</div>
+      </div>
+      {% if method == "id" %}
+      <div class="row" style="margin-top:10px;align-items:center;">
+        <span class="badge-ok">상품ID 확정매칭</span>
+        <div class="muted" style="font-size:12.5px;flex:2;min-width:280px;">도매매 <span class="mono">{{ match.domemae_goods_no }}</span>{% if option_code %} · 옵션 <span class="mono">{{ option_code }}</span>{% endif %}</div>
+        <a class="btn secondary" href="{{ url_for(endpoint,
+            tab='manual', goods_no=match.domemae_goods_no, option_code=option_code or '', qty=o.quantity,
+            receiver_name=o.receiver_name, phone=o.receiver_tel,
+            zipcode=o.receiver_zipcode, address1=o.receiver_address1, address2=o.receiver_address2,
+            shop_name=match.name, product_order_id=o.product_order_id) }}" style="font-size:12px;padding:9px 12px;">수동 발주 탭에서 발주</a>
+      </div>
+      {% elif method == "name" %}
+      <div class="row" style="margin-top:10px;align-items:center;">
+        <span class="badge-warn">이름만 일치 — 확인 필요</span>
+        <a class="btn secondary" href="{{ url_for(endpoint,
+            tab='manual', goods_no=match.domemae_goods_no, qty=o.quantity, receiver_name=o.receiver_name, phone=o.receiver_tel,
+            zipcode=o.receiver_zipcode, address1=o.receiver_address1, address2=o.receiver_address2,
+            shop_name=match.name) }}">'{{ match.name }}'로 추정 — 확인 후 발주</a>
+      </div>
+      {% else %}
+      <div class="row" style="margin-top:10px;align-items:center;">
+        <span class="badge-err">매칭 실패</span>
+        <a class="btn secondary" href="{{ url_for(endpoint,
+            tab='manual', qty=o.quantity, receiver_name=o.receiver_name, phone=o.receiver_tel,
+            zipcode=o.receiver_zipcode, address1=o.receiver_address1, address2=o.receiver_address2) }}">발주하기 (상품번호 직접 입력 필요)</a>
+      </div>
+      {% endif %}
+    </div>
+    {% else %}
+    <div class="muted">신규 주문 없음</div>
+    {% endfor %}
+  </div>
+  {% endif %}
+</div>
 {% endblock %}

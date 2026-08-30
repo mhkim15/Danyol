@@ -100,6 +100,11 @@
   .todo-col { flex: 1; padding: 0 20px; min-width: 0; }
   .todo-col:first-child { padding-left: 0; }
   .todo-col:not(:first-child) { border-left: 1px solid var(--line); }
+  .todo-col-title {
+    display: flex; align-items: center; gap: 6px;
+    font-size: 15px; font-weight: 800; color: var(--ink); margin: 0 0 10px;
+  }
+  .todo-col-title svg { flex-shrink: 0; color: var(--accent); }
   .todo-line {
     display: flex; justify-content: space-between; align-items: center; gap: 10px;
     padding: 7px 0; text-decoration: none; color: inherit; font-size: 13px;

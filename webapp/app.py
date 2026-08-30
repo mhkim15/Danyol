@@ -180,10 +180,10 @@ def _todo_groups(registered: list, pending_orders, returns_count, inquiry_count)
 
     order_items = []
     if pending_orders:
-        order_items.append({"label": "발주 필요", "link": url_for("orders", tab="ready"), "n": pending_orders})
+        order_items.append({"label": "발주", "link": url_for("orders", tab="ready"), "n": pending_orders})
     dispatch_wait = len([i for i in load_queue() if i["status"] == STATUS_ORDERED])
     if dispatch_wait:
-        order_items.append({"label": "발송 필요", "link": url_for("orders", tab="dispatch"), "n": dispatch_wait})
+        order_items.append({"label": "발송", "link": url_for("orders", tab="dispatch"), "n": dispatch_wait})
     groups.append({"name": "주문", "rows": order_items})
 
     # 품절·재고조정·마진붕괴·무판매 판정은 health.py(캐시 기반, deep=False)와 공유한다 —
@@ -199,18 +199,18 @@ def _todo_groups(registered: list, pending_orders, returns_count, inquiry_count)
 
     product_items = []
     if supply_n:
-        product_items.append({"label": "재고 확인 필요", "link": url_for("products_view", tab="action"), "n": supply_n})
+        product_items.append({"label": "재고 확인", "link": url_for("products_view", tab="action"), "n": supply_n})
     if margin_n:
-        product_items.append({"label": "마진 확인 필요", "link": url_for("products_view", tab="action"), "n": margin_n})
+        product_items.append({"label": "마진 확인", "link": url_for("products_view", tab="action"), "n": margin_n})
     if no_sale_n:
-        product_items.append({"label": "품질 점검 필요", "link": url_for("products_view", tab="action"), "n": no_sale_n})
+        product_items.append({"label": "품질 점검", "link": url_for("products_view", tab="action"), "n": no_sale_n})
     groups.append({"name": "상품", "rows": product_items})
 
     cs_items = []
     if returns_count:
-        cs_items.append({"label": "반품·취소 확인 필요", "link": url_for("cs"), "n": returns_count})
+        cs_items.append({"label": "반품·취소", "link": url_for("cs"), "n": returns_count})
     if inquiry_count:
-        cs_items.append({"label": "답변 필요", "link": url_for("cs"), "n": inquiry_count})
+        cs_items.append({"label": "답변", "link": url_for("cs"), "n": inquiry_count})
     groups.append({"name": "고객응대", "rows": cs_items})
 
     settle_items = []
@@ -218,7 +218,7 @@ def _todo_groups(registered: list, pending_orders, returns_count, inquiry_count)
         from bebrave.report.reconcile import reconcile, suggest_fee_rate
         s = suggest_fee_rate(reconcile())
         if s and abs(s["diff"]) > 0.01:
-            settle_items.append({"label": f"수수료율 확인 필요 ({s['diff']:+.1%}p)",
+            settle_items.append({"label": f"수수료율 확인 ({s['diff']:+.1%}p)",
                                   "link": url_for("settlement_view", tab="reconcile"), "n": 1})
     except Exception:
         pass  # 표본 부족(5건 미만)이면 suggest_fee_rate가 None — 지어내지 않고 그냥 0건으로 둔다
@@ -334,14 +334,14 @@ def index_demo():
 
     demo_groups = [
         {"name": "주문", "count": 3, "rows": [
-            {"label": "발주 필요", "link": url_for("orders_demo", tab="ready"), "n": 2},
-            {"label": "발송 필요", "link": url_for("orders_demo", tab="dispatch"), "n": 1},
+            {"label": "발주", "link": url_for("orders_demo", tab="ready"), "n": 2},
+            {"label": "발송", "link": url_for("orders_demo", tab="dispatch"), "n": 1},
         ]},
         {"name": "상품", "count": 2, "rows": [
-            {"label": "품질 점검 필요", "link": url_for("products_view", tab="action"), "n": 2},
+            {"label": "품질 점검", "link": url_for("products_view", tab="action"), "n": 2},
         ]},
         {"name": "고객응대", "count": 1, "rows": [
-            {"label": "답변 필요", "link": url_for("cs"), "n": 1},
+            {"label": "답변", "link": url_for("cs"), "n": 1},
         ]},
         {"name": "정산", "count": 0, "rows": []},
     ]
@@ -907,7 +907,7 @@ def products_detail(product_id):
     if not record:
         return '<div class="flash flash-error">등록 기록을 찾을 수 없습니다.</div>', 404
 
-    ctx = {"record": record, "images": [], "tags": [], "detail_length": None,
+    ctx = {"record": record, "images": [], "tags": [], "detail_content": "",
            "stock": None, "status_type": None, "fetch_error": None}
     try:
         from bebrave.smartstore.auth import get_access_token
@@ -924,7 +924,7 @@ def products_detail(product_id):
         ctx.update(
             images=img_list,
             tags=[t.get("text", "") if isinstance(t, dict) else str(t) for t in tags],
-            detail_length=len(op.get("detailContent", "") or ""),
+            detail_content=op.get("detailContent", "") or "",
             stock=op.get("stockQuantity"),
             status_type=op.get("statusType"),
             quality=score_listing(record, live_detail=info),

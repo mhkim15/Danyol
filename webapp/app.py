@@ -179,11 +179,11 @@ def _todo_groups(registered: list, pending_orders, returns_count, inquiry_count)
 
     order_items = []
     if pending_orders:
-        order_items.append({"text": f"발주할 주문 {pending_orders}건 — 결제완료 후 발주 대기",
+        order_items.append({"text": f"발주 필요 {pending_orders}건",
                              "link": url_for("orders", tab="ready"), "n": pending_orders})
     dispatch_wait = len([i for i in load_queue() if i["status"] == STATUS_ORDERED])
     if dispatch_wait:
-        order_items.append({"text": f"발송할 주문 {dispatch_wait}건 — 송장 입력 대기",
+        order_items.append({"text": f"발송 필요 {dispatch_wait}건",
                              "link": url_for("orders", tab="dispatch"), "n": dispatch_wait})
     groups.append({"name": "주문 처리", "rows": order_items})
 
@@ -199,22 +199,22 @@ def _todo_groups(registered: list, pending_orders, returns_count, inquiry_count)
 
     product_items = []
     if suspended_n:
-        product_items.append({"text": f"판매중지 상태 {suspended_n}개 — 스토어에 노출 안 되는 중",
+        product_items.append({"text": f"판매중지 {suspended_n}개",
                                "link": url_for("products_view", tab="action"), "n": suspended_n})
     if supply_n:
-        product_items.append({"text": f"도매매 품절·재고변동 {supply_n}건 — 스토어에 반영 필요",
+        product_items.append({"text": f"재고 반영 {supply_n}건",
                                "link": url_for("products_view", tab="action"), "n": supply_n})
     if margin_n:
-        product_items.append({"text": f"마진 붕괴 {margin_n}건 — 가격 판단 필요",
+        product_items.append({"text": f"마진경고 {margin_n}건",
                                "link": url_for("products_view", tab="action"), "n": margin_n})
     if no_sale_n:
-        product_items.append({"text": f"무판매 {no_sale_n}개 — 이름 재최적화 또는 교체 검토",
+        product_items.append({"text": f"무판매 {no_sale_n}개",
                                "link": url_for("products_view", tab="action"), "n": no_sale_n})
     groups.append({"name": "상품 조치", "rows": product_items})
 
     cs_items = []
     if returns_count:
-        cs_items.append({"text": f"반품·취소 접수 {returns_count}건 (최근 24시간)",
+        cs_items.append({"text": f"반품·취소 {returns_count}건",
                           "link": url_for("cs"), "n": returns_count})
     if inquiry_count:
         cs_items.append({"text": f"미답변 문의 {inquiry_count}건", "link": url_for("cs"), "n": inquiry_count})
@@ -225,7 +225,7 @@ def _todo_groups(registered: list, pending_orders, returns_count, inquiry_count)
         from bebrave.report.reconcile import reconcile, suggest_fee_rate
         s = suggest_fee_rate(reconcile())
         if s and abs(s["diff"]) > 0.01:
-            settle_items.append({"text": f"실측 수수료율이 가정과 {s['diff']:+.1%}p 차이 — 확인 필요",
+            settle_items.append({"text": f"수수료율 확인 ({s['diff']:+.1%}p 차이)",
                                   "link": url_for("settlement_view", tab="reconcile"), "n": 1})
     except Exception:
         pass  # 표본 부족(5건 미만)이면 suggest_fee_rate가 None — 지어내지 않고 그냥 0건으로 둔다
@@ -298,6 +298,7 @@ def index():
         "index.html",
         todo_groups=todo_groups, todo_total=todo_total, checked_at=checked_at,
         this_month=this_month, this_month_returns=this_month_returns, chart_series=chart_series,
+        env_status=_env_status(),
     )
 
 
@@ -324,11 +325,11 @@ def index_demo():
 
     demo_groups = [
         {"name": "주문 처리", "count": 3, "rows": [
-            {"text": "발주할 주문 2건 — 결제완료 후 발주 대기", "link": url_for("orders_demo", tab="ready"), "n": 2},
-            {"text": "발송할 주문 1건 — 송장 입력 대기", "link": url_for("orders_demo", tab="dispatch"), "n": 1},
+            {"text": "발주 필요 2건", "link": url_for("orders_demo", tab="ready"), "n": 2},
+            {"text": "발송 필요 1건", "link": url_for("orders_demo", tab="dispatch"), "n": 1},
         ]},
         {"name": "상품 조치", "count": 2, "rows": [
-            {"text": "판매중지 상태 2개 — 스토어에 노출 안 되는 중", "link": url_for("products_view", tab="action"), "n": 2},
+            {"text": "판매중지 2개", "link": url_for("products_view", tab="action"), "n": 2},
         ]},
         {"name": "고객 응대", "count": 1, "rows": [
             {"text": "미답변 문의 1건", "link": url_for("cs"), "n": 1},
@@ -341,7 +342,7 @@ def index_demo():
         "index.html",
         todo_groups=demo_groups, todo_total=6, checked_at=datetime.now().strftime("%H:%M"),
         this_month=this_month, this_month_returns=1, chart_series=chart_series,
-        demo=True,
+        env_status=_env_status(), demo=True,
     )
 
 

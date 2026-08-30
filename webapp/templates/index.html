@@ -13,18 +13,17 @@
   <div class="panel" style="background:var(--ok-bg);color:var(--ok);">지금 할 일 없음</div>
   {% endif %}
 
-  {# 0건인 그룹은 아예 그리지 않는다 — 빈 줄이 깔리면 실제 할 일이 묻힌다. #}
-  {% for g in todo_groups if g.rows %}
-  <p class="eyebrow" style="margin:{{ '18px' if not loop.first }} 0 8px;">{{ g.name }} <span style="text-transform:none;letter-spacing:normal;font-weight:400;">{{ g.count }}건</span></p>
+  {# 카테고리당 행 하나 — 안에 항목을 칩으로 나열한다. 0건 그룹은 그리지 않는다. #}
   <div class="stack">
-    {% for it in g.rows %}
-    <a href="{{ it.link }}" class="todo-row" style="margin-bottom:0;">
-      <p class="todo-title attn">{{ it.text }}</p>
-      <span class="todo-arrow">→</span>
-    </a>
+    {% for g in todo_groups if g.rows %}
+    <div class="todo-row" style="align-items:flex-start;">
+      <p class="todo-title" style="flex-shrink:0;width:88px;">{{ g.name }}</p>
+      <div style="flex:1;line-height:2;">
+        {% for it in g.rows %}<a href="{{ it.link }}" class="chip-link">{{ it.text }}</a>{% endfor %}
+      </div>
+    </div>
     {% endfor %}
   </div>
-  {% endfor %}
 </div>
 
 <div class="section">
@@ -60,6 +59,26 @@
     <p id="chartEmpty" class="muted" style="display:none;">집계된 매출 없음</p>
   </div>
 </div>
+
+<details>
+  <summary class="hint" style="cursor:pointer;font-size:13px;margin-bottom:8px;">연동 상태 ▾</summary>
+  <div class="panel">
+    <table>
+      <tr><th>항목</th><th style="width:20%;">상태</th></tr>
+      {% for name, status in env_status.items() %}
+      {% set ok, required = status %}
+      <tr>
+        <td>{{ name }}</td>
+        <td>
+          {% if ok %}<span class="badge-ok">설정됨</span>
+          {% elif required %}<span class="badge-err">미설정</span>
+          {% else %}<span class="muted mono">미설정</span>{% endif %}
+        </td>
+      </tr>
+      {% endfor %}
+    </table>
+  </div>
+</details>
 
 <script>
 (function () {

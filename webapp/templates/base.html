@@ -96,6 +96,12 @@
   .todo-title.attn { color: var(--err); }
   .todo-sub { font-size: 12px; color: var(--ink-muted); margin: 2px 0 0; }
   .todo-arrow { color: var(--ink-muted); font-size: 16px; flex-shrink: 0; }
+  .chip-link {
+    display: inline-block; padding: 5px 12px; margin: 2px 6px 2px 0;
+    background: var(--chip-bg); color: var(--ink); border-radius: 8px;
+    font-size: 13px; font-weight: 600; text-decoration: none; white-space: nowrap;
+  }
+  .chip-link:hover { background: var(--accent-soft); color: var(--accent); }
 
   .stat-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(110px, 1fr)); gap: 12px; }
   .stat-card {

@@ -592,6 +592,12 @@ PRODUCT_STATUS_CACHE = DATA_DIR / "product_status_cache.json"
 PRODUCT_SYNC_CACHE = DATA_DIR / "product_sync_cache.json"
 PRODUCT_PRICE_CACHE = DATA_DIR / "product_price_cache.json"
 
+# 연동된 판매채널 — 지금은 스마트스토어뿐이지만 다른 채널이 늘어나면 여기 한 줄만 추가하면
+# 상품 관리 표의 채널 아이콘·상세 이동에 자동으로 반영된다.
+CHANNEL_META = {
+    "smartstore": {"label": "스마트스토어", "abbr": "N", "color": "#03C75A"},
+}
+
 
 def _bulk_eligibility(is_suspended: bool, sync: dict, perf_status: str) -> list:
     """이 상품에 적용 가능한 일괄 액션 목록. 화면(버튼별 건수 표시)과 실행
@@ -619,7 +625,7 @@ def products_view():
     from bebrave.smartstore.sync import ACTION_OK
     from bebrave.tracker.products import ProductTracker
     from bebrave.config import AUTO_DELETE_MONTHS
-    from bebrave.report import claim_counts_by_product
+    from bebrave.report import claim_counts_by_product, recent_order_counts, sales_tier
 
     registered = _load_json(REGISTERED_PRODUCTS)
     registered.reverse()
@@ -631,6 +637,7 @@ def products_view():
     sync_checked_at = sync_cache[0]["checked_at"] if sync_cache else None
     tracked_by_id = {p.product_id: p for p in ProductTracker(TRACKED_PRODUCTS).products}
     claims_by_id = claim_counts_by_product()
+    recent_counts_by_id = recent_order_counts()
     price_cache = _load_json(PRODUCT_PRICE_CACHE)
     price_by_id = {r["naver_product_id"]: r for r in price_cache} if isinstance(price_cache, list) else {}
 
@@ -647,6 +654,8 @@ def products_view():
         sale_status = "확인필요" if not live_status else ("판매중지" if is_suspended else "판매중")
 
         order_count = perf.get("order_count", 0)
+        recent_order_count = recent_counts_by_id.get(pid, 0)
+        sales_status = sales_tier(recent_order_count)
         claims = claims_by_id.get(pid, {"RETURN": 0, "EXCHANGE": 0})
         return_rate = claims["RETURN"] / order_count if order_count else None
         exchange_rate = claims["EXCHANGE"] / order_count if order_count else None
@@ -691,6 +700,13 @@ def products_view():
             "return_rate": return_rate,
             "exchange_rate": exchange_rate,
             "price_position": price_by_id.get(pid),
+            "recent_order_count": recent_order_count,
+            "sales_status": sales_status,
+            "channels": (
+                [{**CHANNEL_META["smartstore"], "code": "smartstore",
+                  "modal_url": url_for("products_detail", product_id=pid)}]
+                if pid else []
+            ),
             "order_count": order_count,
             "revenue": perf.get("revenue", 0),
             "profit": perf.get("profit", 0),
@@ -711,69 +727,7 @@ def products_view():
     # 내려보내고 자바스크립트가 보여줄 것만 고른다) — 서버 왕복 없이 바로 반응한다.
     return render_template("products.html", rows=rows, total=len(registered),
                             action_count=action_count, ok_count=len(registered) - action_count,
-                            sync_checked_at=sync_checked_at, demo=False)
-
-
-@app.route("/products/demo")
-def products_demo():
-    """등록 상품이 없거나 캐시가 비어 있을 때도 표의 모든 배지 상태(판매상태·상품상태·
-    가격경쟁력·반품교환)를 눈으로 확인할 수 있도록 가짜 데이터로 렌더링. 저장은 전혀 안 함."""
-    from bebrave.smartstore.listing_quality import QualityScore, QualityIssue
-
-    def _row(**kw):
-        base = {
-            "naver_product_id": "", "name": "", "sale_price": 0, "margin_rate": 0, "supply_price": 0,
-            "live_status": None, "is_suspended": False, "sale_status": "확인필요", "sync": None,
-            "return_count": 0, "exchange_count": 0, "return_rate": None, "exchange_rate": None,
-            "order_count": 0, "quality": None, "price_position": None,
-            "filters": ["ok"], "eligible": [],
-        }
-        base.update(kw)
-        return base
-
-    rows = [
-        _row(naver_product_id="DEMO-1", name="실리콘주걱 대코 브라이트 미니볶음주걱 실리콘 이유식주걱",
-             sale_price=20000, margin_rate=0.30, supply_price=14000,
-             live_status={"stock": 120}, sale_status="판매중",
-             order_count=18, return_count=1, exchange_count=0, return_rate=0.06, exchange_rate=0.0,
-             quality=QualityScore(score=92, issues=[], checked_live=True),
-             price_position={"label": "강함", "market_avg": 24500, "sample_size": 20},
-             filters=["ok"]),
-        _row(naver_product_id="DEMO-2", name="우산 양산 양우산 자동우산 3단자동우산 우양산 골프우",
-             sale_price=4600, margin_rate=0.205, supply_price=3190,
-             live_status=None, sale_status="확인필요",
-             order_count=0, quality=None, price_position=None,
-             filters=["action"]),
-        _row(naver_product_id="DEMO-3", name="캠핑용 접이식 미니 테이블 카키",
-             sale_price=13000, margin_rate=0.02, supply_price=12700,
-             live_status={"stock": 0}, is_suspended=True, sale_status="판매중지",
-             sync={"action": "판매중지", "detail": "도매매 품절 — 판매중지"},
-             order_count=4, return_count=2, exchange_count=1, return_rate=0.5, exchange_rate=0.25,
-             quality=QualityScore(score=38, issues=[
-                 QualityIssue("마진", "절대이익 260원 — 기준(5,000원) 미달", 15),
-                 QualityIssue("상품명", "금지 홍보문구 포함: 최저가 — 노출 페널티 위험", 20),
-                 QualityIssue("이미지", "1장 — 최소 3장 권장", 15),
-             ], checked_live=True),
-             price_position={"label": "약함", "market_avg": 9800, "sample_size": 14},
-             filters=["action", "suspended", "stock"]),
-        _row(naver_product_id="DEMO-4", name="완전 다른 상품 XYZ 무판매 예시",
-             sale_price=9900, margin_rate=0.18, supply_price=8100,
-             live_status={"stock": 50}, sale_status="판매중",
-             sync={"action": "마진경고", "detail": "도매가 인상 — 마진 12.0% < 최소 15%", "suggested_price": 11500},
-             order_count=0,
-             quality=QualityScore(score=65, issues=[
-                 QualityIssue("마진", "절대이익 1,782원 — 기준(5,000원) 미달", 15),
-                 QualityIssue("상세설명", "220자 — 정보 부족", 15),
-             ], checked_live=False),
-             price_position={"label": "보통", "market_avg": 10200, "sample_size": 9},
-             filters=["action", "margin", "nosale"]),
-    ]
-
-    action_count = len([r for r in rows if r["filters"][0] == "action"])
-    flash("샘플 데이터입니다 — 실제 등록 상품이 아닙니다.", "success")
-    return render_template("products.html", rows=rows, total=len(rows),
-                            action_count=action_count, ok_count=len(rows) - action_count,
-                            sync_checked_at=None, demo=True)
+                            sync_checked_at=sync_checked_at)
 
 
 @app.route("/products/refresh_stock", methods=["POST"])

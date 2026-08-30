@@ -30,7 +30,7 @@
 
 <form id="bulkForm" method="post" action="{{ url_for('products_bulk') }}"></form>
 
-<div class="bulkbar" id="bulkBar" hidden>
+<div class="bulkbar" id="bulkBar" style="background:none;border:none;padding:10px 0;">
   <div class="row" style="align-items:center;">
     <span class="sel-count" id="bulkCount">0건 선택</span>
     <span class="divider"></span>
@@ -56,13 +56,24 @@
     <tr>
       <th style="width:24px;"><input type="checkbox" id="checkAll" onclick="toggleAll(this)"></th>
       <th>상품</th>
-      <th style="width:12%;">상태</th>
-      <th style="width:12%;">재고</th>
-      <th style="width:13%;">가격</th>
-      <th class="num" style="width:12%;">성과</th>
-      <th style="width:12%;">품질
+      <th style="width:10%;">판매상태</th>
+      <th style="width:9%;">재고수량</th>
+      <th style="width:14%;">판매가</th>
+      <th style="width:11%;">상품 상태
         <button type="button" class="tip-btn" data-tip-toggle>?<span class="tip-bubble">
-          <p>상품명·이미지·태그·마진 종합 0~100점.</p>
+          <p>최근 30일 주문건수 기준 판매 등급입니다.</p>
+          <ul>
+            <li><b>점검필요</b> — 0건, 최근 판매이력 없음</li>
+            <li><b>저조</b> — 1~4건</li>
+            <li><b>양호</b> — 5~19건</li>
+            <li><b>인기</b> — 20건 이상</li>
+          </ul>
+        </span></button>
+      </th>
+      <th style="width:11%;">반품률·교환률</th>
+      <th style="width:9%;">가격 경쟁력
+        <button type="button" class="tip-btn" data-tip-toggle>?<span class="tip-bubble">
+          <p>11번가 동일 키워드 검색결과 평균가 대비 내 판매가 위치. ±5% 안이면 보통.</p>
         </span></button>
       </th>
     </tr>
@@ -71,16 +82,21 @@
     {% for p in rows %}
     <tr data-filters="{{ p.filters|join(' ') }}" data-eligible="{{ p.eligible|join(' ') }}" data-name="{{ p.name|lower }}">
       <td><input type="checkbox" form="bulkForm" class="row-check" name="ids" value="{{ p.naver_product_id }}" onclick="updateBulkBar()"></td>
-      <td>{{ p.name }}</td>
       <td>
-        {% if p.live_status %}
-          <span class="{{ 'badge-err' if p.is_suspended else 'badge-ok' }}">{{ '판매중지' if p.is_suspended else '판매중' }}</span>
-        {% else %}
-          <span class="badge">미확인</span>
+        <a href="#" onclick="openPreviewModal('{{ url_for('products_detail', product_id=p.naver_product_id) }}'); return false;">{{ p.name }}</a>
+        {% if p.channels %}
+        <div class="row" style="gap:4px;margin-top:4px;">
+          {% for ch in p.channels %}
+          <a href="{{ ch.external_url or '#' }}"
+             {% if ch.external_url %}target="_blank" rel="noopener"{% else %}onclick="openPreviewModal('{{ ch.modal_url }}'); return false;"{% endif %}
+             title="{{ ch.label }}"
+             style="display:inline-flex;align-items:center;justify-content:center;width:17px;height:17px;border-radius:5px;background:{{ ch.color }};color:#fff;font-size:9px;font-weight:700;text-decoration:none;line-height:1;">{{ ch.abbr }}</a>
+          {% endfor %}
+        </div>
         {% endif %}
-        {% if p.perf_status.startswith('무판매') %}<div style="margin-top:4px;"><span class="badge-warn">무판매</span></div>{% endif %}
-        {% if p.auto_delete_risk %}<div style="margin-top:4px;"><span class="badge-err">삭제위험</span></div>{% endif %}
-        {% if p.naver_product_id %}<div><a class="hint" href="{{ url_for('registered_status', product_id=p.naver_product_id) }}">상태 조회</a></div>{% endif %}
+      </td>
+      <td>
+        <span class="{{ 'badge-ok' if p.sale_status == '판매중' else ('badge-err' if p.sale_status == '판매중지' else 'badge') }}">{{ p.sale_status }}</span>
       </td>
       <td>
         {% if p.live_status and p.live_status.stock is not none %}
@@ -98,26 +114,33 @@
       </td>
       <td class="mono" style="font-size:12px;line-height:1.7;">
         {{ "{:,}".format(p.sale_price) }}원<br>
-        <span class="muted">원가 {{ "{:,}".format(p.supply_price) if p.supply_price else '—' }}</span><br>
-        <span class="muted">마진 {{ "%.1f"|format(p.margin_rate * 100) }}%</span>
+        <span class="muted">도매가 {{ "{:,}".format(p.supply_price) if p.supply_price else '—' }}</span><br>
+        <span class="muted">마진 {{ "%.1f"|format(p.margin_rate * 100) }}% ({{ "{:,}".format((p.sale_price * p.margin_rate) | round | int) }}원)</span>
         {% if p.sync and p.sync.action == '마진경고' %}
           <div style="margin-top:4px;"><span class="badge-warn" title="{{ p.sync.detail }}">권장 {{ "{:,}".format(p.sync.suggested_price) }}원</span></div>
         {% endif %}
       </td>
-      <td class="num" style="font-size:12px;line-height:1.7;">
-        {{ p.order_count }}건<br>{{ "{:,}".format(p.revenue) }}원<br>
-        <span class="muted">{{ "{:,}".format(p.profit) }}원</span>
-        {% if p.uncertain_count %}<br><span class="badge-warn" title="원가 매칭 실패 — 순수익 미포함">원가미상 {{ p.uncertain_count }}</span>{% endif %}
+      <td>
+        <span class="{{ 'badge-err' if p.sales_status == '점검필요' else ('badge-warn' if p.sales_status == '저조' else 'badge-ok') }}"
+              title="최근 30일 {{ p.recent_order_count }}건 주문">{{ p.sales_status }}</span>
+      </td>
+      <td style="font-size:12px;line-height:1.7;">
+        {% if p.order_count %}
+          반품 {{ "%.0f"|format((p.return_rate or 0) * 100) }}%({{ p.return_count }}건)<br>
+          교환 {{ "%.0f"|format((p.exchange_rate or 0) * 100) }}%({{ p.exchange_count }}건)
+        {% else %}
+          <span class="muted">주문 없음</span>
+        {% endif %}
       </td>
       <td>
-        {% if p.quality %}
-        <span class="{{ 'badge-ok' if p.quality.score >= 80 else ('badge-warn' if p.quality.score >= 50 else 'badge-err') }}"
-              title="{{ p.quality.top_issue() if p.quality.issues else '이상 없음' }}">{{ p.quality.score }}점</span>
-        {% else %}<span class="muted">—</span>{% endif %}
+        {% if p.price_position and p.price_position.label != '확인불가' %}
+        <span class="{{ 'badge-ok' if p.price_position.label == '강함' else ('badge-warn' if p.price_position.label == '약함' else 'badge') }}"
+              title="시장 평균가 {{ '{:,}'.format(p.price_position.market_avg) }}원 (11번가 {{ p.price_position.sample_size }}건 기준)">{{ p.price_position.label }}</span>
+        {% else %}<span class="muted">미확인</span>{% endif %}
       </td>
     </tr>
     {% else %}
-    <tr><td colspan="7" class="muted">등록된 상품이 없습니다</td></tr>
+    <tr><td colspan="8" class="muted">등록된 상품이 없습니다</td></tr>
     {% endfor %}
     </tbody>
   </table>
@@ -157,12 +180,10 @@ function applyFilters() {
 function updateBulkBar() {
   var checked = Array.prototype.filter.call(
     document.querySelectorAll('.row-check'), function (c) { return c.checked; });
-  var bar = document.getElementById('bulkBar');
-  bar.hidden = checked.length === 0;
   document.getElementById('bulkCount').textContent = checked.length + '건 선택';
 
-  // 버튼마다 "선택한 것 중 실제로 적용될 건수"를 붙이고, 0건이면 잠근다 —
-  // 누르고 나서야 "적용할 수 있는 상품이 없습니다"를 보는 일이 없도록.
+  // 버튼마다 "선택한 것 중 실제로 적용될 건수"를 표시한다 — 몇 건에 적용되는지
+  // 누르기 전에 알 수 있도록. 선택 0건이어도 버튼 자체는 항상 눌러볼 수 있다.
   document.querySelectorAll('.bulk-btn').forEach(function (btn) {
     var act = btn.dataset.act;
     var n = checked.filter(function (c) {
@@ -170,7 +191,6 @@ function updateBulkBar() {
     }).length;
     var base = btn.dataset.label || (btn.dataset.label = btn.textContent.trim());
     btn.textContent = base + ' (' + n + ')';
-    btn.disabled = n === 0;
     btn.onclick = function () {
       return confirm(base + ' — ' + n + '건에 적용합니다. 진행할까요?');
     };

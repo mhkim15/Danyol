@@ -12,11 +12,11 @@
 오판할 수 있다.
 """
 import json
-from datetime import date
+from datetime import date, timedelta
 from pathlib import Path
 from typing import Optional
 
-from ..config import STALE_PRODUCT_MONTHS
+from ..config import STALE_PRODUCT_MONTHS, SALES_TIER_DAYS, SALES_TIER_LOW_MAX, SALES_TIER_GOOD_MAX
 
 REGISTERED_PATH = Path("data/registered_products.json")
 SALES_PATH = Path("data/sales_orders.json")
@@ -86,6 +86,36 @@ def product_performance(sales_records: Optional[list] = None, registered: Option
     return results
 
 
+def recent_order_counts(sales_records: Optional[list] = None, days: int = SALES_TIER_DAYS,
+                         today: Optional[date] = None) -> dict:
+    """최근 N일간 상품별 주문건수 — "상품 상태"(판매 등급) 판정용 분자.
+    전체기간 누적(product_performance의 order_count)과 달리 최근 흐름만 본다 —
+    예전엔 잘 팔렸어도 최근에 안 팔리면 낮은 등급으로 잡혀야 하기 때문."""
+    sales_records = _load(SALES_PATH) if sales_records is None else sales_records
+    today = today or date.today()
+    cutoff = (today - timedelta(days=days)).isoformat()
+
+    counts = {}
+    for r in sales_records:
+        pid = r.get("naver_product_id", "")
+        if not pid or r.get("date", "") < cutoff:
+            continue
+        counts[pid] = counts.get(pid, 0) + 1
+    return counts
+
+
+def sales_tier(recent_count: int) -> str:
+    """최근 판매건수 → 판매 등급. 0건은 "저조"보다 심각하게 본다 — 노출 자체가
+    끊겼을 가능성이 있어 점검이 더 급하다는 판단."""
+    if recent_count == 0:
+        return "점검필요"
+    if recent_count < SALES_TIER_LOW_MAX:
+        return "저조"
+    if recent_count < SALES_TIER_GOOD_MAX:
+        return "양호"
+    return "인기"
+
+
 def _demo() -> None:
     sales = [
         {"naver_product_id": "1", "revenue": 3000, "profit": 500},
@@ -102,6 +132,19 @@ def _demo() -> None:
     assert by_id["1"]["uncertain_count"] == 1 and by_id["1"]["status"] == "판매중"
     assert by_id["2"]["status"] == "신규(관찰중)"          # 5일 경과, 무주문
     assert by_id["3"]["status"] == "무판매(재검토 필요)"    # 136일 경과(>90일=3개월), 무주문
+
+    recent = [
+        {"naver_product_id": "A", "date": "2026-08-14"},
+        {"naver_product_id": "B", "date": "2026-08-10"}, {"naver_product_id": "B", "date": "2026-08-11"},
+        {"naver_product_id": "B", "date": "2026-08-12"}, {"naver_product_id": "B", "date": "2026-08-13"},
+        {"naver_product_id": "B", "date": "2026-08-14"}, {"naver_product_id": "B", "date": "2026-08-15"},
+        {"naver_product_id": "C", "date": "2026-01-01"},  # 30일 밖 — 집계에서 빠져야 함
+    ]
+    counts = recent_order_counts(recent, days=30, today=date(2026, 8, 15))
+    assert counts == {"A": 1, "B": 6}, f"최근 주문건수 집계 오류: {counts}"
+    assert sales_tier(0) == "점검필요" and sales_tier(1) == "저조" and sales_tier(counts["A"]) == "저조"
+    assert sales_tier(counts["B"]) == "양호" and sales_tier(20) == "인기"
+
     print("performance self-check OK")
 
 

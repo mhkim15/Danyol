@@ -1,0 +1,70 @@
+<h1>{{ record.name }}</h1>
+
+{% if fetch_error %}
+<div class="flash flash-error">네이버 실시간 조회 실패({{ fetch_error }}) — 등록 당시 저장된 정보만 표시합니다.</div>
+{% endif %}
+
+<div class="panel">
+  <h2>판매 상태</h2>
+  <div class="row">
+    <div class="badge">{{ status_type or '미확인' }}</div>
+    <div class="badge">재고 {{ "{:,}".format(stock) + "개" if stock is not none else '—' }}</div>
+  </div>
+</div>
+
+<div class="panel">
+  <h2>가격 · 마진</h2>
+  <div class="row">
+    <div class="badge">판매가 {{ "{:,}".format(record.sale_price or 0) }}원</div>
+    <div class="badge">도매가 {{ "{:,}".format(record.supply_price or 0) }}원</div>
+    <div class="badge">마진율 {{ "%.1f"|format((record.margin_rate or 0) * 100) }}%</div>
+    <div class="badge">마진액 {{ "{:,}".format(((record.sale_price or 0) * (record.margin_rate or 0)) | round | int) }}원</div>
+  </div>
+</div>
+
+<div class="panel">
+  <h2>리스팅 품질 — {{ quality.score }}점</h2>
+  {% if quality.issues %}
+  <ul>
+    {% for issue in quality.issues %}
+    <li>[{{ issue.item }}] {{ issue.detail }} (-{{ issue.penalty }})</li>
+    {% endfor %}
+  </ul>
+  {% else %}
+  <p class="muted">감점 요소 없음</p>
+  {% endif %}
+  {% if not quality.checked_live %}
+  <p class="hint">이미지·상세설명·태그는 네이버 실시간 조회에 실패해 채점하지 못했습니다 — 상품명·마진만 반영된 점수입니다.</p>
+  {% endif %}
+</div>
+
+{% if images %}
+<div class="panel">
+  <h2>이미지 ({{ images|length }}장)</h2>
+  <div class="row" style="flex-wrap:wrap;">
+    {% for url in images[:8] %}
+    <img src="{{ url }}" style="width:96px;height:96px;object-fit:cover;border-radius:8px;border:1px solid var(--line);">
+    {% endfor %}
+  </div>
+</div>
+{% endif %}
+
+{% if tags %}
+<div class="panel">
+  <h2>검색어 태그 ({{ tags|length }}개)</h2>
+  <div class="row">
+    {% for t in tags %}<span class="badge">{{ t }}</span>{% endfor %}
+  </div>
+</div>
+{% endif %}
+
+<div class="panel">
+  <h2>상세설명</h2>
+  {% if detail_content %}
+  <div style="max-height:520px;overflow-y:auto;border:1px solid var(--line);border-radius:8px;padding:12px;">
+    {{ detail_content|safe }}
+  </div>
+  {% else %}
+  <p class="muted">상세설명을 불러오지 못했습니다{{ ' — 네이버 실시간 조회 실패' if fetch_error else '' }}.</p>
+  {% endif %}
+</div>

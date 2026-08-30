@@ -4,8 +4,8 @@ from .sales import (
     record_orders as record_sales_orders,
     month_series as sales_month_series,
 )
-from .performance import product_performance
-from .claims import load_claims, record_claims, return_rate
+from .performance import product_performance, recent_order_counts, sales_tier
+from .claims import load_claims, record_claims, return_rate, claim_counts_by_product
 from .health import check_store_health
 from .store_health import check_store_health_macro
 from .cashflow import cash_events
@@ -13,6 +13,7 @@ from .replacement import suggest_replacements
 
 __all__ = [
     "weekly_summary", "load_sales_orders", "record_sales_orders", "sales_month_series",
-    "product_performance", "load_claims", "record_claims", "return_rate",
+    "product_performance", "recent_order_counts", "sales_tier",
+    "load_claims", "record_claims", "return_rate", "claim_counts_by_product",
     "check_store_health", "check_store_health_macro", "cash_events", "suggest_replacements",
 ]

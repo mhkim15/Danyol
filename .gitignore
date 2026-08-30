@@ -25,6 +25,7 @@ data/tracked_products.json
 data/sales_orders.json
 data/product_status_cache.json
 data/product_sync_cache.json
+data/product_price_cache.json
 data/claims.json
 data/settlements.json
 data/purchase_queue.json

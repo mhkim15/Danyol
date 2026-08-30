@@ -79,6 +79,19 @@ def return_rate(days: int = 30) -> dict:
     }
 
 
+def claim_counts_by_product() -> dict:
+    """상품별 반품·교환 누적 건수(전체 기간) — 상품 관리 표의 반품률·교환률 분자.
+    CANCEL(발송 전 취소)은 반품·교환과 성격이 달라 제외한다."""
+    counts = {}
+    for c in load_claims():
+        pid = c.get("naver_product_id", "")
+        claim_type = c.get("claim_type", "")
+        if not pid or claim_type not in ("RETURN", "EXCHANGE"):
+            continue
+        counts.setdefault(pid, {"RETURN": 0, "EXCHANGE": 0})[claim_type] += 1
+    return counts
+
+
 def _demo() -> None:
     """실행 가능한 자체 점검 — 중복방지·반품률 계산만 검증 (파일 IO 없음, 모듈 경로만 임시 치환)."""
     import tempfile
@@ -113,6 +126,15 @@ def _demo() -> None:
             r = return_rate(days=30)
             assert r["claim_count"] == 1 and r["order_count"] == 4 and r["rate"] == 0.25, \
                 f"반품률 계산 오류: {r}"
+
+            o2 = FakeOrder("PO-2", "실리콘주걱", "CLAIM_REQUESTED", claim_type="RETURN",
+                            ordered_at="2026-08-12", product_id="P1")
+            o3 = FakeOrder("PO-3", "실리콘주걱", "CLAIM_REQUESTED", claim_type="EXCHANGE",
+                            ordered_at="2026-08-12", product_id="P1")
+            record_claims([o2, o3])
+            counts = claim_counts_by_product()
+            assert counts["P1"] == {"RETURN": 1, "EXCHANGE": 1}, f"상품별 반품/교환 집계 오류: {counts}"
+            assert "" not in counts, "CANCEL 건이 반품/교환 집계에 잘못 포함됨"
 
     print("claims self-check OK")
 

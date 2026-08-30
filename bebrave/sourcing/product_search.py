@@ -115,6 +115,94 @@ def _to_int(val) -> int:
         return 0
 
 
+# ── 11번가 오픈API 상품검색 (네이버쇼핑 리스팅 API 폐지 대체) ──────────────────
+# 2026-07-31 네이버쇼핑 개별 상품 리스팅(제목·가격·판매처) API가 대체 없이 영구
+# 종료되어, 경쟁사 가격분포 파악이 불가능해짐. 11번가 오픈API ProductSearch로
+# 대체 — 목적은 판매 채널 확장이 아니라 소싱 전 가격 조사.
+
+def fetch_11st_products(
+    keyword: str,
+    limit: int = 20,
+    api_key: str = "",
+) -> List[NaverProduct]:
+    """11번가 ProductSearch API → 경쟁 상품 목록(제목·가격·판매자)."""
+    if not _HAS_REQUESTS:
+        raise NotImplementedError("pip3 install requests 후 재시도하세요.")
+
+    key = api_key or os.environ.get("ELEVENST_API_KEY", "")
+    if not key:
+        raise ValueError(".env 파일에 ELEVENST_API_KEY를 설정하세요.")
+
+    import xml.etree.ElementTree as ET
+
+    resp = requests.get(
+        "http://openapi.11st.co.kr/openapi/OpenApiService.tmall",
+        params={
+            "key": key,
+            "apiCode": "ProductSearch",
+            "keyword": keyword,
+            "pageNum": 1,
+            "pageSize": min(limit, 200),
+        },
+        timeout=10,
+    )
+    resp.raise_for_status()
+    # 11번가 응답은 EUC-KR 고정 — expat이 멀티바이트 인코딩을 못 읽으므로 직접 디코딩
+    root = ET.fromstring(resp.content.decode("euc-kr", errors="replace"))
+
+    products = []
+    for item in root.iter("Product"):
+        def _f(tag):
+            el = item.find(tag)
+            return el.text if el is not None and el.text else ""
+
+        title = _f("ProductName")
+        price = _to_int(_f("SalePrice") or _f("ProductPrice"))
+        if title and price:
+            products.append(NaverProduct(
+                title=title,
+                price=price,
+                mall_name=_f("Seller"),
+                review_count=_to_int(_f("ReviewCount")),
+                category="",
+                brand="",
+                link=_f("ProductDetailUrl"),
+                image=_f("ImageUrl"),
+            ))
+
+    return products
+
+
+def price_competitiveness(sale_price: int, competitor_prices: List[int]) -> dict:
+    """내 판매가를 동일 키워드 시장가 분포(11번가 등)와 비교해 강함/보통/약함으로 판정.
+    상품 관리 화면의 "가격 경쟁력" 컬럼용 — 네트워크 호출은 fetch_11st_products()가 맡고
+    여기선 가격 목록만 받아 순수 계산만 하므로 네트워크 없이 테스트 가능하다."""
+    from ..config import PRICE_COMPETITIVE_BAND
+
+    prices = [p for p in competitor_prices if p > 0]
+    if not prices or not sale_price:
+        return {"label": "확인불가", "market_avg": None, "sample_size": len(prices)}
+
+    market_avg = sum(prices) / len(prices)
+    ratio = sale_price / market_avg
+    if ratio <= 1 - PRICE_COMPETITIVE_BAND:
+        label = "강함"
+    elif ratio <= 1 + PRICE_COMPETITIVE_BAND:
+        label = "보통"
+    else:
+        label = "약함"
+    return {"label": label, "market_avg": round(market_avg), "sample_size": len(prices)}
+
+
+def _demo() -> None:
+    """실행 가능한 자체 점검 — price_competitiveness 라벨 판정만 검증 (네트워크 호출 없음)."""
+    assert price_competitiveness(9000, [10000, 10000, 10000])["label"] == "강함"
+    assert price_competitiveness(10000, [10000, 10000, 10000])["label"] == "보통"
+    assert price_competitiveness(12000, [10000, 10000, 10000])["label"] == "약함"
+    assert price_competitiveness(9000, [])["label"] == "확인불가"
+    print("product_search.price_competitiveness self-check OK")
+
+
 # ── 통합 검색 결과 ─────────────────────────────────────────────────────────────
 
 @dataclass
@@ -170,9 +258,9 @@ def search(
         errors.append(f"네이버쇼핑 집계 실패: {e}")
 
     try:
-        naver_products = fetch_naver_products(keyword, limit=naver_limit)
+        naver_products = fetch_11st_products(keyword, limit=naver_limit)
     except Exception as e:
-        errors.append(f"네이버쇼핑 상품 조회 실패: {e}")
+        errors.append(f"11번가 상품 조회 실패: {e}")
 
     time.sleep(0.3)
 
@@ -215,8 +303,9 @@ def print_search_report(result: ProductSearchResult) -> None:
     print(f"  상품 검색 결과 — [{kw}]")
     print(f"{'═'*70}")
 
-    # ── 네이버 쇼핑 ──────────────────────────────────────────────────────────
-    print(f"\n  [네이버 쇼핑]  총 {result.naver_total:,}개 등록  |  상위 평균가: {result.naver_avg_price:,.0f}원  |  신규셀러 진입가(추정): {result.naver_entry_price:,.0f}원")
+    # ── 네이버쇼핑 집계 + 11번가 실제 상품(가격분포) ──────────────────────────
+    print(f"\n  [네이버쇼핑 집계]  총 {result.naver_total:,}개 등록  |  상위 평균가: {result.naver_avg_price:,.0f}원  |  신규셀러 진입가(추정): {result.naver_entry_price:,.0f}원")
+    print(f"  [11번가 가격분포]  아래 상품 목록은 11번가 검색 결과 (네이버쇼핑 상품 리스팅 API는 2026-07-31 폐지됨)")
     print(f"  {'─'*65}")
     if result.naver_products:
         print(f"  {'#':>2}  {'상품명':<36} {'최저가':>9}  {'리뷰':>6}  스토어")
@@ -306,3 +395,7 @@ def print_variants_report(result: ProductSearchResult, top_n: int = 5) -> None:
     print(f"\n  다음 단계: 마음에 드는 변형 goods_no로 도매매 상세 확인 후 등록\n{'═'*70}\n")
 
     print(f"\n{'═'*70}\n")
+
+
+if __name__ == "__main__":
+    _demo()

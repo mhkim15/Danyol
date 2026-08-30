@@ -583,39 +583,22 @@ PRODUCT_STATUS_CACHE = DATA_DIR / "product_status_cache.json"
 PRODUCT_SYNC_CACHE = DATA_DIR / "product_sync_cache.json"
 
 
-def _primary_action(pid: str, is_suspended: bool, sync: dict, perf_status: str):
-    """행마다 '지금 할 일' 버튼 하나만 고른다 — 우선순위는 결과의 무게 순
-    (팔 수 없는 상태 해소 > 도매매 문제 반영 > 가격 판단 > 무판매 대응)."""
-    from bebrave.smartstore.sync import ACTION_SUSPEND, ACTION_STOCK, ACTION_MARGIN_WARN, ACTION_OK
+def _bulk_eligibility(is_suspended: bool, sync: dict, perf_status: str) -> list:
+    """이 상품에 적용 가능한 일괄 액션 목록. 화면(버튼별 건수 표시)과 실행
+    (products_bulk의 대상 필터)이 반드시 같은 기준을 쓰도록 판정을 여기 한 곳에 모은다 —
+    두 곳에서 따로 판정하면 "2건 적용됨"이라 써놓고 실제로는 0건이 처리되는 일이 생긴다."""
+    from bebrave.smartstore.sync import ACTION_OK, ACTION_MARGIN_WARN
 
+    ok = ["suspend"]  # 판매중지는 조건 없음
     if is_suspended and (not sync or sync.get("action") == ACTION_OK):
-        return {
-            "label": "판매 재개하기", "url": "performance_resume", "css": "",
-            "confirm": "네이버에서 판매를 재개합니다 — 실제 스토어에 즉시 노출됩니다. 진행할까요?",
-        }
-    if sync and sync.get("action") == ACTION_SUSPEND:
-        return {
-            "label": "판매중지 반영", "url": "performance_suspend", "css": "danger",
-            "confirm": "도매매 공급 문제로 스마트스토어에서 판매중지 처리합니다 — 스토어에서 즉시 내려갑니다. 진행할까요?",
-        }
-    if sync and sync.get("action") == ACTION_STOCK and sync.get("new_stock") is not None:
-        return {
-            "label": f"재고 {sync['new_stock']}개로 조정", "url": "sync_apply_one", "css": "secondary",
-            "confirm": f"재고를 {sync['new_stock']}개로 변경해 실제 반영합니다. 진행할까요?",
-        }
+        ok.append("resume")
+    if sync and sync.get("action") != ACTION_OK:
+        ok.append("apply_sync")
     if sync and sync.get("action") == ACTION_MARGIN_WARN and sync.get("suggested_price"):
-        price = sync["suggested_price"]
-        return {
-            "label": f"{price:,}원으로 변경", "url": "sync_apply_price", "css": "secondary",
-            "confirm": f"판매가를 {price:,}원으로 변경해 실제 반영합니다. 진행할까요?",
-            "extra": {"new_price": price},
-        }
+        ok.append("apply_price")
     if perf_status.startswith("무판매"):
-        return {
-            "label": "이름 재최적화", "url": "performance_reoptimize_name", "css": "secondary",
-            "confirm": "상품명을 자동으로 다시 만들어 즉시 반영합니다. 진행할까요?",
-        }
-    return None
+        ok.append("reoptimize")
+    return ok
 
 
 @app.route("/products")
@@ -626,8 +609,6 @@ def products_view():
     from bebrave.smartstore.sync import ACTION_OK
     from bebrave.tracker.products import ProductTracker
     from bebrave.config import AUTO_DELETE_MONTHS
-
-    tab = request.args.get("tab", "all")
 
     registered = _load_json(REGISTERED_PRODUCTS)
     registered.reverse()
@@ -650,15 +631,29 @@ def products_view():
         auto_delete_risk = months_since_sold is not None and months_since_sold >= AUTO_DELETE_MONTHS
         is_suspended = bool(live_status and live_status.get("status_type") == "SUSPENSION")
 
+        perf_status = perf.get("status", "")
+        sync_action = sync["action"] if sync else ""
+
         reasons = []
         if is_suspended:
             reasons.append("네이버 판매중지")
-        if sync and sync["action"] != ACTION_OK:
-            reasons.append(sync["action"])
-        if perf.get("status", "").startswith("무판매"):
-            reasons.append(perf["status"])
+        if sync and sync_action != ACTION_OK:
+            reasons.append(sync_action)
+        if perf_status.startswith("무판매"):
+            reasons.append(perf_status)
         if auto_delete_risk:
             reasons.append(f"자동삭제 위험({months_since_sold}개월 미판매)")
+
+        # 화면 필터용 태그 — 드롭다운 선택값이 이 목록에 있으면 그 행을 보여준다.
+        filters = ["action"] if reasons else ["ok"]
+        if is_suspended:
+            filters.append("suspended")
+        if sync_action in ("판매중지", "재고조정"):
+            filters.append("stock")
+        if sync_action == "마진경고":
+            filters.append("margin")
+        if perf_status.startswith("무판매"):
+            filters.append("nosale")
 
         rows.append({
             "naver_product_id": pid,
@@ -681,17 +676,16 @@ def products_view():
             "auto_delete_risk": auto_delete_risk,
             "needs_action": bool(reasons),
             "reasons": reasons,
-            "primary_action": _primary_action(pid, is_suspended, sync, perf.get("status", "")),
+            "filters": filters,
+            "eligible": _bulk_eligibility(is_suspended, sync, perf_status),
         })
 
     action_count = len([r for r in rows if r["needs_action"]])
-    if tab == "action":
-        rows = [r for r in rows if r["needs_action"]]
-    elif tab == "ok":
-        rows = [r for r in rows if not r["needs_action"]]
-
-    return render_template("products.html", rows=rows, tab=tab, total=len(registered),
-                            action_count=action_count, sync_checked_at=sync_checked_at)
+    # 탭 대신 화면에서 검색어·상태를 즉시 걸러내는 필터로 처리한다(행 전부를 항상
+    # 내려보내고 자바스크립트가 보여줄 것만 고른다) — 서버 왕복 없이 바로 반응한다.
+    return render_template("products.html", rows=rows, total=len(registered),
+                            action_count=action_count, ok_count=len(registered) - action_count,
+                            sync_checked_at=sync_checked_at)
 
 
 @app.route("/products/refresh_stock", methods=["POST"])
@@ -1057,12 +1051,10 @@ def products_bulk():
     5단계(대상 필터 → dry-run 게이트 → 토큰 1회 획득 → 건별 try/except → 집계)를 쓴다.
     로컬 파일(등록원장·동기화 캐시)은 루프 밖에서 1회만 읽고 1회만 쓴다 — 건마다
     전체 파일을 로드/덮어쓰면 선택 건수가 늘수록 느려진다."""
-    from bebrave.smartstore.sync import ACTION_OK
-
     action = request.form.get("action", "")
     ids = set(request.form.getlist("ids"))
     live = request.form.get("live") == "on"
-    if action not in ("apply_sync", "suspend", "reoptimize"):
+    if action not in ("apply_sync", "apply_price", "suspend", "resume", "reoptimize"):
         flash("알 수 없는 일괄 액션입니다.", "error")
         return redirect(url_for("products_view"))
     if not ids:
@@ -1073,6 +1065,8 @@ def products_bulk():
     by_id = {str(p.get("naver_product_id", "")): p for p in registered}
     sync_cache = _load_json(PRODUCT_SYNC_CACHE)
     sync_by_id = {s["naver_product_id"]: s for s in sync_cache} if isinstance(sync_cache, list) else {}
+    status_cache = _load_json(PRODUCT_STATUS_CACHE)
+    status_by_id = {s["product_id"]: s for s in status_cache} if isinstance(status_cache, list) else {}
     perf_by_id = {p["naver_product_id"]: p for p in _performance_with_quality()}
 
     targets = []
@@ -1081,9 +1075,9 @@ def products_bulk():
         if not record:
             continue
         sync = sync_by_id.get(pid)
-        if action == "apply_sync" and not (sync and sync["action"] != ACTION_OK):
-            continue
-        if action == "reoptimize" and not perf_by_id.get(pid, {}).get("status", "").startswith("무판매"):
+        is_suspended = bool(status_by_id.get(pid, {}).get("status_type") == "SUSPENSION")
+        # 화면이 버튼 라벨에 띄운 건수와 같은 판정을 쓴다(_bulk_eligibility 한 곳에서만 판정).
+        if action not in _bulk_eligibility(is_suspended, sync, perf_by_id.get(pid, {}).get("status", "")):
             continue
         targets.append((record, sync))
 
@@ -1097,6 +1091,8 @@ def products_bulk():
             preview = ", ".join(
                 f"{r['name'][:14]}→{optimize_name(r.get('keyword', ''), r['name'])[:14]}" for r, _ in targets[:5]
             )
+        elif action == "apply_price":
+            preview = ", ".join(f"{r['name'][:14]}→{s['suggested_price']:,}원" for r, s in targets[:5])
         else:
             preview = ", ".join(f"{r['name'][:16]}" for r, _ in targets[:5])
         more = f" 외 {len(targets)-5}건" if len(targets) > 5 else ""
@@ -1122,13 +1118,17 @@ def products_bulk():
         except Exception as e:
             failed.append(f"{record.get('name', pid)[:16]}({e})")
 
-    if action == "reoptimize":
+    if action in ("reoptimize", "apply_price"):
         with open(REGISTERED_PRODUCTS, "w", encoding="utf-8") as f:
             json.dump(registered, f, ensure_ascii=False, indent=2)
     if action == "apply_sync" and applied_ids:
         sync_cache = [s for s in sync_cache if s.get("naver_product_id") not in applied_ids]
         with open(PRODUCT_SYNC_CACHE, "w", encoding="utf-8") as f:
             json.dump(sync_cache, f, ensure_ascii=False, indent=2)
+    if action == "resume" and applied_ids:
+        status_cache = [s for s in status_cache if s.get("product_id") not in applied_ids]
+        with open(PRODUCT_STATUS_CACHE, "w", encoding="utf-8") as f:
+            json.dump(status_cache, f, ensure_ascii=False, indent=2)
 
     msg = f"일괄 처리 완료 — 성공 {ok}건"
     if failed:
@@ -1355,6 +1355,30 @@ def _apply_product_action(action: str, record: dict, token: str, sync: dict = No
                 body["smartstoreChannelProduct"]["channelProductDisplayStatusType"] = "SUSPENSION"
         update_registered_product(pid, token, _mutate)
         return f"{name} 판매중지 완료"
+
+    if action == "resume":
+        def _mutate(body):
+            body["originProduct"]["statusType"] = "SALE"
+            if "smartstoreChannelProduct" in body:
+                body["smartstoreChannelProduct"]["channelProductDisplayStatusType"] = "ON"
+        update_registered_product(pid, token, _mutate)
+        return f"{name} 판매 재개 완료"
+
+    if action == "apply_price":
+        from bebrave.margin.calculator import calculate as calc_margin
+        if not sync or not sync.get("suggested_price"):
+            raise ValueError("권장가 정보 없음 — '지금 확인'을 먼저 실행하세요")
+        new_price = sync["suggested_price"]
+
+        def _mutate(body):
+            body["originProduct"]["salePrice"] = new_price
+        update_registered_product(pid, token, _mutate)
+        old_price = record.get("sale_price", 0)
+        record["sale_price"] = new_price
+        m = calc_margin(sale_price=new_price, cost_price=record.get("supply_price", 0),
+                         free_shipping=(new_price >= 30_000))
+        record["margin_rate"] = round(m.margin_rate, 4)
+        return f"{name} 판매가 {old_price:,}→{new_price:,}원"
 
     if action == "reoptimize":
         from bebrave.smartstore.name_optimizer import optimize_name

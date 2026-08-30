@@ -1,142 +1,190 @@
 {% extends "base.html" %}
 {% block title %}상품 관리{% endblock %}
 {% block content %}
-<h1>상품 관리</h1>
-<p class="page-note">
-  "어떤 상품을 손봐야 하나"에 답하는 화면입니다. 도매매 재고·네이버 판매상태는 방문마다 실시간 조회하지 않고
-  아래 "지금 확인"을 눌렀을 때만 갱신됩니다.
-</p>
-
-<div class="tabs">
-  <a href="{{ url_for('products_view', tab='all') }}" class="{{ 'active' if tab == 'all' }}">전체 <span class="tab-count">{{ total }}</span></a>
-  <a href="{{ url_for('products_view', tab='action') }}" class="{{ 'active' if tab == 'action' }}">조치 필요{% if action_count %} <span class="tab-count">{{ action_count }}</span>{% endif %}</a>
-  <a href="{{ url_for('products_view', tab='ok') }}" class="{{ 'active' if tab == 'ok' }}">정상판매중</a>
+<div class="row" style="justify-content:space-between;align-items:center;margin-bottom:18px;">
+  <h1 style="margin:0;">상품 관리</h1>
+  <form method="post" action="{{ url_for('products_refresh_stock') }}" style="margin:0;">
+    <button type="submit" class="secondary btn-sm">지금 확인</button>
+  </form>
 </div>
 
-<div class="row" style="margin:-6px 0 14px;align-items:center;">
-  <form method="post" action="{{ url_for('products_refresh_stock') }}">
-    <button type="submit" class="secondary btn-sm">지금 확인 (도매매 재고·마진 + 네이버 판매상태)</button>
-  </form>
+<div class="filterbar">
+  <input type="text" id="searchInput" placeholder="상품명 검색" oninput="applyFilters()">
+  <select id="statusFilter" onchange="applyFilters()">
+    <option value="all">전체 {{ total }}</option>
+    <option value="action">조치 필요 {{ action_count }}</option>
+    <option value="suspended">판매중지</option>
+    <option value="stock">품절·재고조정</option>
+    <option value="margin">마진경고</option>
+    <option value="nosale">무판매</option>
+    <option value="ok">정상 {{ ok_count }}</option>
+  </select>
+  <span id="filterCount" class="muted" style="font-size:12px;"></span>
+  <span class="spacer"></span>
   {% if sync_checked_at %}
   <span class="muted" style="font-size:12px;">{{ sync_checked_at.replace('T', ' ') }} 확인</span>
   {% else %}
-  <span class="muted" style="font-size:12px;">아직 확인 안 됨 — 재고상태가 "미확인"으로 보입니다</span>
+  <span class="badge-warn">재고 미확인</span>
   {% endif %}
 </div>
 
 <form id="bulkForm" method="post" action="{{ url_for('products_bulk') }}"></form>
 
+<div class="bulkbar" id="bulkBar" hidden>
+  <div class="row" style="align-items:center;">
+    <span class="sel-count" id="bulkCount">0건 선택</span>
+    <span class="divider"></span>
+    <span class="group-label">판매 상태</span>
+    <button type="submit" form="bulkForm" name="action" value="resume" data-act="resume" class="bulk-btn btn-sm">판매 재개</button>
+    <button type="submit" form="bulkForm" name="action" value="suspend" data-act="suspend" class="bulk-btn btn-sm danger">판매중지</button>
+    <span class="divider"></span>
+    <span class="group-label">공급 반영</span>
+    <button type="submit" form="bulkForm" name="action" value="apply_sync" data-act="apply_sync" class="bulk-btn btn-sm secondary">도매매 반영</button>
+    <button type="submit" form="bulkForm" name="action" value="apply_price" data-act="apply_price" class="bulk-btn btn-sm secondary">권장가 변경</button>
+    <span class="divider"></span>
+    <span class="group-label">리스팅</span>
+    <button type="submit" form="bulkForm" name="action" value="reoptimize" data-act="reoptimize" class="bulk-btn btn-sm secondary">이름 재최적화</button>
+    <span class="spacer"></span>
+    <label style="margin:0;font-size:13px;white-space:nowrap;"><input type="checkbox" name="live" form="bulkForm"> 확인함 — 실제로 반영</label>
+  </div>
+</div>
+
 <div class="panel">
   <div class="table-wrap">
-  <table>
+  <table id="productTable">
+    <thead>
     <tr>
-      <th style="width:24px;"><input type="checkbox" id="checkAll" onclick="document.querySelectorAll('.row-check').forEach(c=>c.checked=this.checked);updateBulkBar()"></th>
+      <th style="width:24px;"><input type="checkbox" id="checkAll" onclick="toggleAll(this)"></th>
       <th>상품</th>
-      <th>판매가</th>
-      <th>성과</th>
-      <th>리스팅 품질
+      <th style="width:12%;">상태</th>
+      <th style="width:12%;">재고</th>
+      <th style="width:13%;">가격</th>
+      <th class="num" style="width:12%;">성과</th>
+      <th style="width:12%;">품질
         <button type="button" class="tip-btn" data-tip-toggle>?<span class="tip-bubble">
-          <p>상품명·이미지·태그·마진을 종합한 0~100점입니다. "확인함"이 아니면 이름·마진만으로 낸 참고값입니다.</p>
+          <p>상품명·이미지·태그·마진 종합 0~100점.</p>
         </span></button>
       </th>
-      <th>지금 할 일</th>
     </tr>
+    </thead>
+    <tbody>
     {% for p in rows %}
-    <tr>
+    <tr data-filters="{{ p.filters|join(' ') }}" data-eligible="{{ p.eligible|join(' ') }}" data-name="{{ p.name|lower }}">
       <td><input type="checkbox" form="bulkForm" class="row-check" name="ids" value="{{ p.naver_product_id }}" onclick="updateBulkBar()"></td>
+      <td>{{ p.name }}</td>
       <td>
-        <div>{{ p.name }}</div>
-        <div style="margin-top:4px;">
-          <span class="{{ 'badge-err' if p.needs_action else 'badge-ok' }}">{{ '조치 필요' if p.needs_action else '정상판매중' }}</span>
-          {% if p.is_suspended %}<span class="badge-err">네이버 판매중지</span>{% endif %}
-          {% if p.sync %}<span class="{{ {'판매중지':'badge-err','재고조정':'badge-warn','마진경고':'badge-warn','확인실패':'badge-err','이상없음':'badge-ok'}.get(p.sync.action, 'badge') }}">도매매 {{ p.sync.action }}</span>{% endif %}
-        </div>
-        {% if p.reasons %}<p class="hint">{{ p.reasons|join(' · ') }}</p>{% endif %}
-        <details>
-          <summary class="hint" style="cursor:pointer;">상세 ▾</summary>
-          <div class="hint" style="margin-top:4px;">
-            {% if p.sync %}{{ p.sync.detail }}<br>{% endif %}
-            {% if p.supply_price %}도매가 {{ "{:,}".format(p.supply_price) }}원<br>{% endif %}
-            {% if p.live_status %}네이버 상태 확인: {{ p.live_status.checked_at }}<br>{% endif %}
-            {% if p.name_change %}
-            이름변경({{ p.name_change.changed_at }}) 전 {{ p.name_change.before_orders }}건/{{ "{:,}".format(p.name_change.before_revenue) }}원
-            → 후 {{ p.name_change.after_orders }}건/{{ "{:,}".format(p.name_change.after_revenue) }}원<br>
-            {% endif %}
-            {% if p.replacements %}
-            교체 후보: {% for c in p.replacements %}<a href="{{ url_for('candidates_preview', keyword=c.keyword) }}">{{ c.keyword }}({{ c.score }}점)</a>{% if not loop.last %}, {% endif %}{% endfor %}
-            {% endif %}
-          </div>
-        </details>
+        {% if p.live_status %}
+          <span class="{{ 'badge-err' if p.is_suspended else 'badge-ok' }}">{{ '판매중지' if p.is_suspended else '판매중' }}</span>
+        {% else %}
+          <span class="badge">미확인</span>
+        {% endif %}
+        {% if p.perf_status.startswith('무판매') %}<div style="margin-top:4px;"><span class="badge-warn">무판매</span></div>{% endif %}
+        {% if p.auto_delete_risk %}<div style="margin-top:4px;"><span class="badge-err">삭제위험</span></div>{% endif %}
+        {% if p.naver_product_id %}<div><a class="hint" href="{{ url_for('registered_status', product_id=p.naver_product_id) }}">상태 조회</a></div>{% endif %}
       </td>
-      <td class="mono">{{ "{:,}".format(p.sale_price) }}원<div class="hint">마진 {{ "%.1f"|format(p.margin_rate * 100) }}%</div></td>
-      <td class="num">
-        {{ p.order_count }}건<br>{{ "{:,}".format(p.revenue) }}원<br>{{ "{:,}".format(p.profit) }}원
-        {% if p.uncertain_count %}<br><span class="badge-warn" title="원가 매칭 실패 — 순수익 미포함">원가미상 {{ p.uncertain_count }}건</span>{% endif %}
+      <td>
+        {% if p.live_status and p.live_status.stock is not none %}
+          <span class="mono">{{ "{:,}".format(p.live_status.stock) }}개</span>
+        {% else %}
+          <span class="muted mono">—</span>
+        {% endif %}
+        {% if p.sync and p.sync.action == '판매중지' %}
+          <div style="margin-top:4px;"><span class="badge-err" title="{{ p.sync.detail }}">도매매 품절</span></div>
+        {% elif p.sync and p.sync.action == '재고조정' %}
+          <div style="margin-top:4px;"><span class="badge-warn" title="{{ p.sync.detail }}">→ {{ p.sync.new_stock }}개</span></div>
+        {% elif p.sync and p.sync.action == '확인실패' %}
+          <div style="margin-top:4px;"><span class="badge-err" title="{{ p.sync.detail }}">확인실패</span></div>
+        {% endif %}
+      </td>
+      <td class="mono" style="font-size:12px;line-height:1.7;">
+        {{ "{:,}".format(p.sale_price) }}원<br>
+        <span class="muted">원가 {{ "{:,}".format(p.supply_price) if p.supply_price else '—' }}</span><br>
+        <span class="muted">마진 {{ "%.1f"|format(p.margin_rate * 100) }}%</span>
+        {% if p.sync and p.sync.action == '마진경고' %}
+          <div style="margin-top:4px;"><span class="badge-warn" title="{{ p.sync.detail }}">권장 {{ "{:,}".format(p.sync.suggested_price) }}원</span></div>
+        {% endif %}
+      </td>
+      <td class="num" style="font-size:12px;line-height:1.7;">
+        {{ p.order_count }}건<br>{{ "{:,}".format(p.revenue) }}원<br>
+        <span class="muted">{{ "{:,}".format(p.profit) }}원</span>
+        {% if p.uncertain_count %}<br><span class="badge-warn" title="원가 매칭 실패 — 순수익 미포함">원가미상 {{ p.uncertain_count }}</span>{% endif %}
       </td>
       <td>
         {% if p.quality %}
-        <span class="{{ 'badge-ok' if p.quality.score >= 80 else ('badge-warn' if p.quality.score >= 50 else 'badge-err') }}" title="{{ '이미지·태그·상세설명까지 확인함' if p.quality.checked_live else '이름·마진만 확인 — 실시간 조회 실패' }}">
-          {{ p.quality.score }}점
-        </span>
-        {% if p.quality.issues %}<div class="hint">{{ p.quality.top_issue() }}</div>{% endif %}
-        {% else %}
-        <span class="muted">-</span>
-        {% endif %}
-      </td>
-      <td class="actions">
-        {% if p.primary_action %}
-        <form method="post" action="{{ url_for(p.primary_action.url) }}" onsubmit="return confirm('{{ p.primary_action.confirm }}')">
-          <input type="hidden" name="naver_product_id" value="{{ p.naver_product_id }}">
-          {% if p.primary_action.extra %}{% for k, v in p.primary_action.extra.items() %}<input type="hidden" name="{{ k }}" value="{{ v }}">{% endfor %}{% endif %}
-          <button type="submit" class="btn-sm {{ p.primary_action.css }}">{{ p.primary_action.label }}</button>
-        </form>
-        {% else %}
-        <span class="muted" style="font-size:12px;">할 일 없음</span>
-        {% endif %}
-        <details>
-          <summary class="hint" style="cursor:pointer;">기타 ▾</summary>
-          <div class="actions" style="margin-top:6px;">
-            {% if p.perf_status.startswith('무판매') and p.primary_action and p.primary_action.url != 'performance_suspend' %}
-            <form method="post" action="{{ url_for('performance_suspend') }}" onsubmit="return confirm('무판매 상품을 스마트스토어에서 판매중지 처리합니다 — 스토어에서 즉시 내려갑니다. 진행할까요?')">
-              <input type="hidden" name="naver_product_id" value="{{ p.naver_product_id }}">
-              <button type="submit" class="btn-sm danger">판매중지</button>
-            </form>
-            {% endif %}
-            {% if p.naver_product_id %}
-            <a class="btn secondary btn-sm" href="{{ url_for('registered_status', product_id=p.naver_product_id) }}">실시간 상태 확인</a>
-            {% endif %}
-          </div>
-        </details>
+        <span class="{{ 'badge-ok' if p.quality.score >= 80 else ('badge-warn' if p.quality.score >= 50 else 'badge-err') }}"
+              title="{{ p.quality.top_issue() if p.quality.issues else '이상 없음' }}">{{ p.quality.score }}점</span>
+        {% else %}<span class="muted">—</span>{% endif %}
       </td>
     </tr>
     {% else %}
-    <tr><td colspan="6" class="muted">해당 조건의 상품이 없습니다</td></tr>
+    <tr><td colspan="7" class="muted">등록된 상품이 없습니다</td></tr>
     {% endfor %}
+    </tbody>
   </table>
   </div>
 </div>
 
-<div class="panel bulkbar" style="background:var(--paper);">
-  <div class="row" style="align-items:center;">
-    <span class="muted" style="font-size:13px;">선택한 상품에 한 번에 적용:</span>
-    <select name="action" form="bulkForm">
-      <option value="apply_sync">도매매 판정 반영 (품절→판매중지 / 재고조정)</option>
-      <option value="suspend">판매중지</option>
-      <option value="reoptimize">이름 재최적화</option>
-    </select>
-    <label style="margin:0;font-size:13px;"><input type="checkbox" name="live" form="bulkForm"> 확인함 — 실제로 반영</label>
-    <span class="muted" style="font-size:12px;flex:1;">체크 안 하면 미리보기만 하고 아무것도 바뀌지 않습니다.</span>
-    <button type="submit" form="bulkForm" id="bulkSubmit" class="btn-sm" disabled
-            onclick="return confirm('선택한 ' + document.querySelectorAll('.row-check:checked').length + '건에 일괄 액션을 적용합니다. 진행할까요?')">선택 0건 처리</button>
-  </div>
-</div>
-
 <script>
-function updateBulkBar() {
-  var n = document.querySelectorAll('.row-check:checked').length;
-  var btn = document.getElementById('bulkSubmit');
-  btn.textContent = '선택 ' + n + '건 처리';
-  btn.disabled = n === 0;
+function visibleRows() {
+  return Array.prototype.filter.call(
+    document.querySelectorAll('#productTable tbody tr[data-filters]'),
+    function (tr) { return tr.style.display !== 'none'; });
 }
+
+function toggleAll(box) {
+  visibleRows().forEach(function (tr) { tr.querySelector('.row-check').checked = box.checked; });
+  updateBulkBar();
+}
+
+function applyFilters() {
+  var q = document.getElementById('searchInput').value.trim().toLowerCase();
+  var f = document.getElementById('statusFilter').value;
+  var shown = 0;
+  document.querySelectorAll('#productTable tbody tr[data-filters]').forEach(function (tr) {
+    var okFilter = f === 'all' || tr.dataset.filters.split(' ').indexOf(f) !== -1;
+    var okSearch = !q || tr.dataset.name.indexOf(q) !== -1;
+    var show = okFilter && okSearch;
+    tr.style.display = show ? '' : 'none';
+    if (!show) tr.querySelector('.row-check').checked = false;
+    if (show) shown++;
+  });
+  document.getElementById('filterCount').textContent =
+    (q || f !== 'all') ? shown + '개 표시' : '';
+  document.getElementById('checkAll').checked = false;
+  updateBulkBar();
+}
+
+function updateBulkBar() {
+  var checked = Array.prototype.filter.call(
+    document.querySelectorAll('.row-check'), function (c) { return c.checked; });
+  var bar = document.getElementById('bulkBar');
+  bar.hidden = checked.length === 0;
+  document.getElementById('bulkCount').textContent = checked.length + '건 선택';
+
+  // 버튼마다 "선택한 것 중 실제로 적용될 건수"를 붙이고, 0건이면 잠근다 —
+  // 누르고 나서야 "적용할 수 있는 상품이 없습니다"를 보는 일이 없도록.
+  document.querySelectorAll('.bulk-btn').forEach(function (btn) {
+    var act = btn.dataset.act;
+    var n = checked.filter(function (c) {
+      return c.closest('tr').dataset.eligible.split(' ').indexOf(act) !== -1;
+    }).length;
+    var base = btn.dataset.label || (btn.dataset.label = btn.textContent.trim());
+    btn.textContent = base + ' (' + n + ')';
+    btn.disabled = n === 0;
+    btn.onclick = function () {
+      return confirm(base + ' — ' + n + '건에 적용합니다. 진행할까요?');
+    };
+  });
+}
+
+(function () {
+  // 홈·헬스체크의 "확인하러 가기" 링크가 ?tab=action 으로 들어온다 — 필터 초기값으로 받는다.
+  var tab = new URLSearchParams(window.location.search).get('tab');
+  if (tab) {
+    var sel = document.getElementById('statusFilter');
+    if (Array.prototype.some.call(sel.options, function (o) { return o.value === tab; })) sel.value = tab;
+  }
+  applyFilters();
+})();
 </script>
 {% endblock %}

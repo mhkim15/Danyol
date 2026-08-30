@@ -110,7 +110,7 @@ def check_product(record: dict) -> SyncResult:
                           f"재고 {registered_stock:,}→{p.stock:,}개로 조정",
                           new_stock=p.stock)
 
-    return SyncResult(pid, name, ACTION_OK, f"재고 {p.stock:,}개, 도매가 {p.supply_price:,}원")
+    return SyncResult(pid, name, ACTION_OK, f"도매가 {p.supply_price:,}원 — 이상없음")
 
 
 def apply_result(result: SyncResult, access_token: str) -> None:

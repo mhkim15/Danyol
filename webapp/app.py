@@ -487,6 +487,41 @@ PRODUCT_STATUS_CACHE = DATA_DIR / "product_status_cache.json"
 PRODUCT_SYNC_CACHE = DATA_DIR / "product_sync_cache.json"
 
 
+def _primary_action(pid: str, is_suspended: bool, sync: dict, perf_status: str):
+    """행마다 '지금 할 일' 버튼 하나만 고른다 — 우선순위는 결과의 무게 순
+    (팔 수 없는 상태 해소 > 도매매 문제 반영 > 가격 판단 > 무판매 대응)."""
+    from bebrave.smartstore.sync import ACTION_SUSPEND, ACTION_STOCK, ACTION_MARGIN_WARN, ACTION_OK
+
+    if is_suspended and (not sync or sync.get("action") == ACTION_OK):
+        return {
+            "label": "판매 재개하기", "url": "performance_resume", "css": "",
+            "confirm": "네이버에서 판매를 재개합니다 — 실제 스토어에 즉시 노출됩니다. 진행할까요?",
+        }
+    if sync and sync.get("action") == ACTION_SUSPEND:
+        return {
+            "label": "판매중지 반영", "url": "performance_suspend", "css": "danger",
+            "confirm": "도매매 공급 문제로 스마트스토어에서 판매중지 처리합니다 — 스토어에서 즉시 내려갑니다. 진행할까요?",
+        }
+    if sync and sync.get("action") == ACTION_STOCK and sync.get("new_stock") is not None:
+        return {
+            "label": f"재고 {sync['new_stock']}개로 조정", "url": "sync_apply_one", "css": "secondary",
+            "confirm": f"재고를 {sync['new_stock']}개로 변경해 실제 반영합니다. 진행할까요?",
+        }
+    if sync and sync.get("action") == ACTION_MARGIN_WARN and sync.get("suggested_price"):
+        price = sync["suggested_price"]
+        return {
+            "label": f"{price:,}원으로 변경", "url": "sync_apply_price", "css": "secondary",
+            "confirm": f"판매가를 {price:,}원으로 변경해 실제 반영합니다. 진행할까요?",
+            "extra": {"new_price": price},
+        }
+    if perf_status.startswith("무판매"):
+        return {
+            "label": "이름 재최적화", "url": "performance_reoptimize_name", "css": "secondary",
+            "confirm": "상품명을 자동으로 다시 만들어 즉시 반영합니다. 진행할까요?",
+        }
+    return None
+
+
 @app.route("/products")
 def products_view():
     """등록상품(마스터) + 재고동기화(캐시) + 판매성과 + 판매추적 위험판정을 한 표로 합친다.
@@ -514,10 +549,14 @@ def products_view():
         perf = perf_by_id.get(pid, {})
         sync = sync_by_id.get(pid)
         tracked = tracked_by_id.get(pid)
+        live_status = status_by_id.get(pid)
         months_since_sold = tracked.months_since_sold() if tracked else None
         auto_delete_risk = months_since_sold is not None and months_since_sold >= AUTO_DELETE_MONTHS
+        is_suspended = bool(live_status and live_status.get("status_type") == "SUSPENSION")
 
         reasons = []
+        if is_suspended:
+            reasons.append("네이버 판매중지")
         if sync and sync["action"] != ACTION_OK:
             reasons.append(sync["action"])
         if perf.get("status", "").startswith("무판매"):
@@ -530,8 +569,10 @@ def products_view():
             "name": p.get("name", ""),
             "sale_price": p.get("sale_price", 0),
             "margin_rate": p.get("margin_rate", 0),
+            "supply_price": p.get("supply_price", 0),
             "registered_date": p.get("registered_date", ""),
-            "live_status": status_by_id.get(pid),
+            "live_status": live_status,
+            "is_suspended": is_suspended,
             "sync": sync,
             "order_count": perf.get("order_count", 0),
             "revenue": perf.get("revenue", 0),
@@ -544,6 +585,7 @@ def products_view():
             "auto_delete_risk": auto_delete_risk,
             "needs_action": bool(reasons),
             "reasons": reasons,
+            "primary_action": _primary_action(pid, is_suspended, sync, perf.get("status", "")),
         })
 
     action_count = len([r for r in rows if r["needs_action"]])
@@ -903,6 +945,38 @@ def sync_apply_price():
     return redirect(url_for("products_view"))
 
 
+@app.route("/sync/apply_one", methods=["POST"])
+def sync_apply_one():
+    """도매매 대조 결과(품절→중지, 재고조정) 한 건만 실제 반영. 캐시에 저장된
+    판정을 SyncResult로 되살려 apply_result()에 그대로 넘긴다 — 전체 반영(sync_apply)과
+    같은 판정 로직을 1건 단위로 쓰는 것뿐, 새 판정 로직은 만들지 않는다."""
+    from bebrave.smartstore.sync import SyncResult, apply_result
+
+    pid = request.form.get("naver_product_id", "")
+    cache = _load_json(PRODUCT_SYNC_CACHE)
+    entry = next((c for c in cache if str(c.get("naver_product_id", "")) == pid), None) if isinstance(cache, list) else None
+    if not entry:
+        flash("적용 대상을 찾을 수 없습니다 — '지금 확인'을 먼저 눌러주세요.", "error")
+        return redirect(url_for("products_view"))
+
+    try:
+        from bebrave.smartstore.auth import get_access_token
+        token = get_access_token()
+        result = SyncResult(
+            naver_product_id=entry["naver_product_id"], name=entry.get("name", ""),
+            action=entry["action"], detail=entry.get("detail", ""),
+            new_stock=entry.get("new_stock"), suggested_price=entry.get("suggested_price"),
+        )
+        apply_result(result, token)
+        cache = [c for c in cache if str(c.get("naver_product_id", "")) != pid]
+        with open(PRODUCT_SYNC_CACHE, "w", encoding="utf-8") as f:
+            json.dump(cache, f, ensure_ascii=False, indent=2)
+        flash(f"{entry.get('name', pid)} — {entry['action']} 반영 완료", "success")
+    except Exception as e:
+        flash(f"반영 실패: {e}", "error")
+    return redirect(url_for("products_view"))
+
+
 # ── 정산 (돈의 흐름) — 탭 3개(캘린더/대사/현금흐름), 로직은 각 탭 함수 그대로 ──────────
 
 SETTLEMENT_TABS = ("calendar", "reconcile", "cashflow")
@@ -1121,6 +1195,32 @@ def performance_suspend():
         flash(f"상품ID {pid} 판매중지 완료", "success")
     except Exception as e:
         flash(f"판매중지 실패: {e}", "error")
+    return redirect(url_for("products_view"))
+
+
+@app.route("/performance/resume", methods=["POST"])
+def performance_resume():
+    """네이버 판매중지 상태를 판매중으로 되돌린다 — 도매매 재고는 정상인데
+    네이버만 중지된 경우(과거 대응·수동 조작 등)에 다시 파는 판단."""
+    pid = request.form.get("naver_product_id", "")
+    try:
+        from bebrave.smartstore.auth import get_access_token
+        from bebrave.smartstore.register import update_registered_product
+
+        def _mutate(body):
+            body["originProduct"]["statusType"] = "SALE"
+            if "smartstoreChannelProduct" in body:
+                body["smartstoreChannelProduct"]["channelProductDisplayStatusType"] = "ON"
+
+        token = get_access_token()
+        update_registered_product(pid, token, _mutate)
+        cache = _load_json(PRODUCT_STATUS_CACHE)
+        cache = [s for s in cache if s.get("product_id") != pid] if isinstance(cache, list) else []
+        with open(PRODUCT_STATUS_CACHE, "w", encoding="utf-8") as f:
+            json.dump(cache, f, ensure_ascii=False, indent=2)
+        flash(f"상품ID {pid} 판매 재개 완료", "success")
+    except Exception as e:
+        flash(f"판매 재개 실패: {e}", "error")
     return redirect(url_for("products_view"))
 
 

@@ -27,6 +27,11 @@ class ProductCandidate:
     # 기록만 남긴다. 점수·supply_matched는 건드리지 않는다(자동 신뢰도와 사람
     # 승인을 섞으면 나중에 뭐가 자동판정이고 뭐가 사람확인인지 못 구분하게 됨, 2026-08).
     human_confirmed: bool = False
+    # 소싱 2트랙 구분 — "A"=신규 틈새(바로 등록) / "B"=리메이크 후보(손봐서 등록) / ""=미분류.
+    # discover.py의 DiscoveryResult.track/recommendation을 그대로 옮겨온다(2026-08 복구 —
+    # 전엔 to_product_candidates()가 이 값을 복사하지 않아 트랙이 저장 단계에서 사라졌었다).
+    track: str = ""
+    recommendation: str = ""
 
     @property
     def golden_ratio(self) -> float:
@@ -52,6 +57,8 @@ class ProductCandidate:
             "margin_rate": self.margin_rate,
             "supply_matched": self.supply_matched,
             "human_confirmed": self.human_confirmed,
+            "track": self.track,
+            "recommendation": self.recommendation,
         }
 
     @classmethod
@@ -72,4 +79,6 @@ class ProductCandidate:
             margin_rate=data.get("margin_rate", 0.0),
             supply_matched=data.get("supply_matched"),
             human_confirmed=data.get("human_confirmed", False),
+            track=data.get("track", ""),
+            recommendation=data.get("recommendation", ""),
         )

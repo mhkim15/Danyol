@@ -1,7 +1,39 @@
 """최소 자가검증 — 프레임워크 없이 python3 -m bebrave.sourcing.test_discover_scoring 로 실행."""
-from .discover import _entry_score, _profit_score
+from .discover import _entry_score, _profit_score, DiscoveryResult, to_product_candidates
 from ..margin.calculator import estimate_sale_price, calculate as calc_margin
 from ..config import TARGET_MARGIN, MIN_ABS_PROFIT
+
+
+def test_to_product_candidates_preserves_track():
+    """저장 변환 시 트랙·판정·월검색수가 사라지지 않는지 (2026-08 회귀 수정 검증) —
+    전에는 monthly_search가 0으로 덮어써지고 track/recommendation이 아예 안 옮겨졌다."""
+    results = [
+        DiscoveryResult(keyword="테스트키워드", category="주방용품", score=62, recommendation="진입 권장",
+                         product_count=0, monthly_search=3200, trend_direction="up", is_seasonal=False,
+                         competition_barrier="low", supply_tier="tight", avg_naver_price=12000, supply_price=4000,
+                         supply_name="테스트상품", margin_rate=0.22, margin_passes=True, track="A"),
+        DiscoveryResult(keyword="테스트키워드", category="주방용품", score=68, recommendation="리메이크 권장",
+                         product_count=0, monthly_search=3200, trend_direction="up", is_seasonal=False,
+                         competition_barrier="mid", supply_tier="normal", avg_naver_price=12000, supply_price=4000,
+                         supply_name="테스트상품", margin_rate=0.22, margin_passes=True, track="B"),
+    ]
+    candidates = to_product_candidates(results)
+    assert len(candidates) == 2
+    assert {c.track for c in candidates} == {"A", "B"}, "트랙이 저장 단계에서 사라짐"
+    assert all(c.monthly_search == 3200 for c in candidates), "월검색수가 0으로 덮어써짐"
+    assert candidates[0].recommendation == "진입 권장" and candidates[1].recommendation == "리메이크 권장"
+
+    # (키워드, 트랙) 중복 제거 — 같은 키워드의 두 트랙이 서로를 밀어내면 안 된다.
+    existing_kw = set()
+    kept = []
+    for c in candidates:
+        key = (c.keyword, c.track)
+        if key not in existing_kw:
+            existing_kw.add(key)
+            kept.append(c)
+    assert len(kept) == 2, "같은 키워드의 리메이크 후보가 조용히 사라짐"
+
+    print("ok")
 
 
 def test():
@@ -37,3 +69,4 @@ def test():
 
 if __name__ == "__main__":
     test()
+    test_to_product_candidates_preserves_track()

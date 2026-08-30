@@ -579,7 +579,7 @@ def to_product_candidates(results: List[DiscoveryResult]) -> List[ProductCandida
     for r in results:
         c = ProductCandidate(
             keyword=r.keyword,
-            monthly_search=0,            # 데이터랩 상대 지수 사용 — 절대값 미제공
+            monthly_search=r.monthly_search,  # 광고 API 실측값 — 전엔 0으로 덮어써서 저장 후 골든레이시오가 항상 무의미해짐
             product_count=r.product_count,
             category=r.category,
             is_seasonal=r.is_seasonal,
@@ -594,6 +594,8 @@ def to_product_candidates(results: List[DiscoveryResult]) -> List[ProductCandida
             supply_goods_no=r.supply_goods_no,
             margin_rate=r.margin_rate,
             supply_matched=(not r.supply_match_uncertain) if r.supply_price else None,
+            track=r.track,
+            recommendation=r.recommendation,
         )
         c.score = r.score
         candidates.append(c)

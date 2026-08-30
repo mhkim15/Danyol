@@ -351,27 +351,66 @@ def index_demo():
 
 # ── 발굴 후보 ─────────────────────────────────────────────────────────────
 
+def _candidate_bucket(c: dict) -> str:
+    """트랙(할 일의 종류)으로 후보를 나눈다 — 데이터 종류가 아니라 해야 하는 일의
+    종류로 나누라는 설계 원칙. 6단계 데이터 복구 전 저장분은 track이 없어
+    자동으로 미분류에 남는다(억지로 추측해서 분류하지 않는다)."""
+    track = c.get("track", "")
+    if track not in ("A", "B"):
+        return "unclassified"
+    if c.get("recommendation", "") in ("보류", "제외"):
+        return "hold"
+    return "niche" if track == "A" else "remake"
+
+
 @app.route("/candidates")
 def candidates():
     from bebrave.config import TARGET_CATEGORIES
     items = _load_json(SOURCING_LOG)
     items.sort(key=lambda c: c.get("score", 0), reverse=True)
-    return render_template("candidates.html", candidates=items, target_categories=TARGET_CATEGORIES)
 
-
-@app.route("/candidates/confirm_match", methods=["POST"])
-def confirm_match():
-    """도매매 매칭이 '불확실'로 뜬 후보를 사람이 실물/상세페이지 보고 승인 처리."""
-    keyword = request.form.get("keyword", "")
-    items = _load_json(SOURCING_LOG)
+    counts = {"niche": 0, "remake": 0, "unclassified": 0, "hold": 0}
     for c in items:
-        if c.get("keyword") == keyword:
+        counts[_candidate_bucket(c)] += 1
+
+    tab = request.args.get("tab", "niche")
+    if tab not in counts:
+        tab = "niche"
+    unconfirmed_only = request.args.get("unconfirmed") == "1"
+
+    filtered = [c for c in items if _candidate_bucket(c) == tab]
+    if unconfirmed_only:
+        filtered = [c for c in filtered
+                    if c.get("supply_name") and not c.get("supply_matched") and not c.get("human_confirmed")]
+
+    return render_template("candidates.html", candidates=filtered, target_categories=TARGET_CATEGORIES,
+                            tab=tab, counts=counts, unconfirmed_only=unconfirmed_only)
+
+
+@app.route("/candidates/confirm_match_bulk", methods=["POST"])
+def confirm_match_bulk():
+    """도매매 매칭이 '불확실'로 뜬 후보를 사람이 실물/상세페이지 보고 승인 처리 —
+    체크한 여러 건을 한 번에. 로컬 JSON만 바꾸고 되돌리기 쉬우므로 확인 게이트를
+    두지 않는다(단건 confirm_match는 이 라우트로 통합돼 삭제됨)."""
+    pairs = set()
+    for raw in request.form.getlist("ids"):
+        if "||" in raw:
+            kw, tr = raw.split("||", 1)
+            pairs.add((kw, tr))
+
+    items = _load_json(SOURCING_LOG)
+    n = 0
+    for c in items:
+        if (c.get("keyword", ""), c.get("track", "")) in pairs:
             c["human_confirmed"] = True
-            break
-    with open(SOURCING_LOG, "w", encoding="utf-8") as f:
-        json.dump(items, f, ensure_ascii=False, indent=2)
-    flash(f"'{keyword}' 실물확인 완료로 표시됨", "success")
-    return redirect(url_for("candidates"))
+            n += 1
+    if n:
+        with open(SOURCING_LOG, "w", encoding="utf-8") as f:
+            json.dump(items, f, ensure_ascii=False, indent=2)
+        flash(f"실물확인 완료 처리 — {n}건", "success")
+    else:
+        flash("선택된 후보가 없습니다.", "error")
+    return redirect(url_for("candidates", tab=request.form.get("tab", "niche")))
 
 
 @app.route("/candidates/discover", methods=["POST"])
@@ -380,7 +419,9 @@ def discover_scan():
     try:
         from bebrave.sourcing.analyzer import load_from_json, save_to_json, dedupe_by_supply
         existing = load_from_json(SOURCING_LOG)
-        existing_kw = {c.keyword for c in existing}
+        # (키워드, 트랙)으로 중복을 걸러야 한다 — 키워드만 보면 같은 키워드가 두
+        # 트랙에서 다 나왔을 때 먼저 도는 트랙만 남고 리메이크 후보가 조용히 사라진다.
+        existing_kw = {(c.keyword, c.track) for c in existing}
         added = 0
 
         if category == "all":
@@ -388,9 +429,9 @@ def discover_scan():
             scores = scan_categories(limit=15)
             for score in scores:
                 for c in to_product_candidates(score.results):
-                    if c.keyword not in existing_kw:
+                    if (c.keyword, c.track) not in existing_kw:
                         existing.append(c)
-                        existing_kw.add(c.keyword)
+                        existing_kw.add((c.keyword, c.track))
                         added += 1
             existing, removed_dupes = dedupe_by_supply(existing)
             save_to_json(existing, SOURCING_LOG)
@@ -402,9 +443,9 @@ def discover_scan():
             from bebrave.sourcing.discover import discover, to_product_candidates
             result = discover(category=category, limit=15)
             for c in to_product_candidates(result):
-                if c.keyword not in existing_kw:
+                if (c.keyword, c.track) not in existing_kw:
                     existing.append(c)
-                    existing_kw.add(c.keyword)
+                    existing_kw.add((c.keyword, c.track))
                     added += 1
             existing, removed_dupes = dedupe_by_supply(existing)
             save_to_json(existing, SOURCING_LOG)
@@ -424,7 +465,8 @@ def candidates_preview():
     """
     keyword = request.args.get("keyword", "")
     is_modal = request.args.get("modal") == "1"
-    ctx = {"keyword": keyword, "modal": is_modal}
+    track = request.args.get("track", "")
+    ctx = {"keyword": keyword, "modal": is_modal, "track": track}
 
     def _fail(message):
         if is_modal:

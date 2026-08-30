@@ -15,6 +15,7 @@ import json
 import os
 import secrets
 import sys
+import time
 from contextlib import redirect_stdout
 from datetime import date, datetime, timedelta
 from pathlib import Path
@@ -198,18 +199,18 @@ def _todo_groups(registered: list, pending_orders, returns_count, inquiry_count)
 
     product_items = []
     if supply_n:
-        product_items.append({"label": "재고 확인", "link": url_for("products_view", tab="action"), "n": supply_n})
+        product_items.append({"label": "재고 확인 필요", "link": url_for("products_view", tab="action"), "n": supply_n})
     if margin_n:
-        product_items.append({"label": "마진 확인", "link": url_for("products_view", tab="action"), "n": margin_n})
+        product_items.append({"label": "마진 확인 필요", "link": url_for("products_view", tab="action"), "n": margin_n})
     if no_sale_n:
-        product_items.append({"label": "품질 점검", "link": url_for("products_view", tab="action"), "n": no_sale_n})
+        product_items.append({"label": "품질 점검 필요", "link": url_for("products_view", tab="action"), "n": no_sale_n})
     groups.append({"name": "상품", "rows": product_items})
 
     cs_items = []
     if returns_count:
-        cs_items.append({"label": "반품·취소", "link": url_for("cs"), "n": returns_count})
+        cs_items.append({"label": "반품·취소 확인 필요", "link": url_for("cs"), "n": returns_count})
     if inquiry_count:
-        cs_items.append({"label": "미답변 문의", "link": url_for("cs"), "n": inquiry_count})
+        cs_items.append({"label": "답변 필요", "link": url_for("cs"), "n": inquiry_count})
     groups.append({"name": "고객응대", "rows": cs_items})
 
     settle_items = []
@@ -217,7 +218,7 @@ def _todo_groups(registered: list, pending_orders, returns_count, inquiry_count)
         from bebrave.report.reconcile import reconcile, suggest_fee_rate
         s = suggest_fee_rate(reconcile())
         if s and abs(s["diff"]) > 0.01:
-            settle_items.append({"label": f"수수료율 확인({s['diff']:+.1%}p)",
+            settle_items.append({"label": f"수수료율 확인 필요 ({s['diff']:+.1%}p)",
                                   "link": url_for("settlement_view", tab="reconcile"), "n": 1})
     except Exception:
         pass  # 표본 부족(5건 미만)이면 suggest_fee_rate가 None — 지어내지 않고 그냥 0건으로 둔다
@@ -337,10 +338,10 @@ def index_demo():
             {"label": "발송 필요", "link": url_for("orders_demo", tab="dispatch"), "n": 1},
         ]},
         {"name": "상품", "count": 2, "rows": [
-            {"label": "품질 점검", "link": url_for("products_view", tab="action"), "n": 2},
+            {"label": "품질 점검 필요", "link": url_for("products_view", tab="action"), "n": 2},
         ]},
         {"name": "고객응대", "count": 1, "rows": [
-            {"label": "미답변 문의", "link": url_for("cs"), "n": 1},
+            {"label": "답변 필요", "link": url_for("cs"), "n": 1},
         ]},
         {"name": "정산", "count": 0, "rows": []},
     ]
@@ -589,6 +590,7 @@ def register_candidate():
 
 PRODUCT_STATUS_CACHE = DATA_DIR / "product_status_cache.json"
 PRODUCT_SYNC_CACHE = DATA_DIR / "product_sync_cache.json"
+PRODUCT_PRICE_CACHE = DATA_DIR / "product_price_cache.json"
 
 
 def _bulk_eligibility(is_suspended: bool, sync: dict, perf_status: str) -> list:
@@ -629,6 +631,8 @@ def products_view():
     sync_checked_at = sync_cache[0]["checked_at"] if sync_cache else None
     tracked_by_id = {p.product_id: p for p in ProductTracker(TRACKED_PRODUCTS).products}
     claims_by_id = claim_counts_by_product()
+    price_cache = _load_json(PRODUCT_PRICE_CACHE)
+    price_by_id = {r["naver_product_id"]: r for r in price_cache} if isinstance(price_cache, list) else {}
 
     rows = []
     for p in registered:
@@ -686,6 +690,7 @@ def products_view():
             "exchange_count": claims["EXCHANGE"],
             "return_rate": return_rate,
             "exchange_rate": exchange_rate,
+            "price_position": price_by_id.get(pid),
             "order_count": order_count,
             "revenue": perf.get("revenue", 0),
             "profit": perf.get("profit", 0),
@@ -706,7 +711,69 @@ def products_view():
     # 내려보내고 자바스크립트가 보여줄 것만 고른다) — 서버 왕복 없이 바로 반응한다.
     return render_template("products.html", rows=rows, total=len(registered),
                             action_count=action_count, ok_count=len(registered) - action_count,
-                            sync_checked_at=sync_checked_at)
+                            sync_checked_at=sync_checked_at, demo=False)
+
+
+@app.route("/products/demo")
+def products_demo():
+    """등록 상품이 없거나 캐시가 비어 있을 때도 표의 모든 배지 상태(판매상태·상품상태·
+    가격경쟁력·반품교환)를 눈으로 확인할 수 있도록 가짜 데이터로 렌더링. 저장은 전혀 안 함."""
+    from bebrave.smartstore.listing_quality import QualityScore, QualityIssue
+
+    def _row(**kw):
+        base = {
+            "naver_product_id": "", "name": "", "sale_price": 0, "margin_rate": 0, "supply_price": 0,
+            "live_status": None, "is_suspended": False, "sale_status": "확인필요", "sync": None,
+            "return_count": 0, "exchange_count": 0, "return_rate": None, "exchange_rate": None,
+            "order_count": 0, "quality": None, "price_position": None,
+            "filters": ["ok"], "eligible": [],
+        }
+        base.update(kw)
+        return base
+
+    rows = [
+        _row(naver_product_id="DEMO-1", name="실리콘주걱 대코 브라이트 미니볶음주걱 실리콘 이유식주걱",
+             sale_price=20000, margin_rate=0.30, supply_price=14000,
+             live_status={"stock": 120}, sale_status="판매중",
+             order_count=18, return_count=1, exchange_count=0, return_rate=0.06, exchange_rate=0.0,
+             quality=QualityScore(score=92, issues=[], checked_live=True),
+             price_position={"label": "강함", "market_avg": 24500, "sample_size": 20},
+             filters=["ok"]),
+        _row(naver_product_id="DEMO-2", name="우산 양산 양우산 자동우산 3단자동우산 우양산 골프우",
+             sale_price=4600, margin_rate=0.205, supply_price=3190,
+             live_status=None, sale_status="확인필요",
+             order_count=0, quality=None, price_position=None,
+             filters=["action"]),
+        _row(naver_product_id="DEMO-3", name="캠핑용 접이식 미니 테이블 카키",
+             sale_price=13000, margin_rate=0.02, supply_price=12700,
+             live_status={"stock": 0}, is_suspended=True, sale_status="판매중지",
+             sync={"action": "판매중지", "detail": "도매매 품절 — 판매중지"},
+             order_count=4, return_count=2, exchange_count=1, return_rate=0.5, exchange_rate=0.25,
+             quality=QualityScore(score=38, issues=[
+                 QualityIssue("마진", "절대이익 260원 — 기준(5,000원) 미달", 15),
+                 QualityIssue("상품명", "금지 홍보문구 포함: 최저가 — 노출 페널티 위험", 20),
+                 QualityIssue("이미지", "1장 — 최소 3장 권장", 15),
+             ], checked_live=True),
+             price_position={"label": "약함", "market_avg": 9800, "sample_size": 14},
+             filters=["action", "suspended", "stock"]),
+        _row(naver_product_id="DEMO-4", name="완전 다른 상품 XYZ 무판매 예시",
+             sale_price=9900, margin_rate=0.18, supply_price=8100,
+             live_status={"stock": 50}, sale_status="판매중",
+             sync={"action": "마진경고", "detail": "도매가 인상 — 마진 12.0% < 최소 15%", "suggested_price": 11500},
+             order_count=0,
+             quality=QualityScore(score=65, issues=[
+                 QualityIssue("마진", "절대이익 1,782원 — 기준(5,000원) 미달", 15),
+                 QualityIssue("상세설명", "220자 — 정보 부족", 15),
+             ], checked_live=False),
+             price_position={"label": "보통", "market_avg": 10200, "sample_size": 9},
+             filters=["action", "margin", "nosale"]),
+    ]
+
+    action_count = len([r for r in rows if r["filters"][0] == "action"])
+    flash("샘플 데이터입니다 — 실제 등록 상품이 아닙니다.", "success")
+    return render_template("products.html", rows=rows, total=len(rows),
+                            action_count=action_count, ok_count=len(rows) - action_count,
+                            sync_checked_at=None, demo=True)
 
 
 @app.route("/products/refresh_stock", methods=["POST"])
@@ -755,6 +822,45 @@ def products_refresh_stock():
             flash(f"네이버 판매상태 확인 완료 — {len(statuses)}건 모두 정상 판매중", "success")
     except Exception as e:
         flash(f"네이버 판매상태 확인 실패: {e}", "error")
+
+    try:
+        from bebrave.sourcing.product_search import fetch_11st_products, price_competitiveness
+
+        registered = _load_json(REGISTERED_PRODUCTS)
+        by_keyword = {}
+        for p in registered:
+            by_keyword.setdefault(p.get("keyword", ""), []).append(p)
+
+        price_cache = []
+        failed = 0
+        for keyword, products in by_keyword.items():
+            if not keyword:
+                failed += len(products)
+                continue
+            try:
+                competitors = fetch_11st_products(keyword, limit=20)
+                prices = [c.price for c in competitors]
+            except Exception:
+                failed += len(products)
+                continue
+            for p in products:
+                result = price_competitiveness(p.get("sale_price", 0), prices)
+                price_cache.append({
+                    "naver_product_id": p.get("naver_product_id", ""),
+                    "label": result["label"], "market_avg": result["market_avg"],
+                    "sample_size": result["sample_size"], "checked_at": checked_at,
+                })
+            time.sleep(0.3)  # 11번가 API 연속 호출 과부하 방지
+
+        PRODUCT_PRICE_CACHE.parent.mkdir(parents=True, exist_ok=True)
+        with open(PRODUCT_PRICE_CACHE, "w", encoding="utf-8") as f:
+            json.dump(price_cache, f, ensure_ascii=False, indent=2)
+        msg = f"가격 경쟁력 확인 완료 — {len(price_cache)}건"
+        if failed:
+            msg += f" (키워드 없음/조회 실패 {failed}건 제외)"
+        flash(msg, "success")
+    except Exception as e:
+        flash(f"가격 경쟁력 확인 실패: {e}", "error")
 
     return redirect(url_for("products_view"))
 

@@ -3,29 +3,128 @@
 {% block content %}
 <h1>헬스체크</h1>
 <p class="page-note">
-  새로 조사하는 화면이 아니라, 품절·마진붕괴·발송지연·미답변문의·반품률·무판매를
-  각자 흩어져 있던 판정에서 모아 심각도순으로 보여줍니다.
-  {% if not deep %}지금은 캐시 기준 빠른 진단입니다 — 도매매 실시간 대조까지 보려면 아래 버튼을 누르세요.{% endif %}
+  개별 문제 목록이 아니라 스토어를 거시적으로 봅니다 — 매출이 늘고 있는지 줄고 있는지,
+  원인은 뭘로 추정되는지, 지금 놓치고 있는 기회는 없는지. 표본이 부족하면 지어내지 않고
+  "판단 불가"라고 표시합니다. 개별 문제(품절·무판매 등)는 <a href="{{ url_for('index') }}">홈의 오늘 할 일</a>에서 확인하세요.
 </p>
 
 <div class="row" style="margin:-6px 0 14px;">
   {% if not demo %}
   <a class="btn secondary" href="{{ url_for('health_demo') }}">샘플 데이터로 화면 확인</a>
-  <a class="btn secondary" href="{{ url_for('health_view', deep=1) }}">정밀 진단 다시 돌리기 (도매매 실시간 대조)</a>
+  <a class="btn secondary" href="{{ url_for('health_view', deep=1) }}">정밀 진단 다시 돌리기 (검색량 계절성 포함)</a>
+  {% endif %}
+  <span class="muted" style="font-size:12px;">최근 진단 {{ checked_at.replace('T', ' ') }}</span>
+</div>
+
+<div class="panel" style="background:{{ 'var(--err-bg)' if verdict.level == '주의' else ('var(--ok-bg)' if verdict.level == '양호' else 'var(--paper)') }};color:{{ 'var(--err)' if verdict.level == '주의' else ('var(--ok)' if verdict.level == '양호' else 'var(--ink-soft)') }};">
+  <b>종합 판정 · {{ verdict.level }}</b><br>{{ verdict.message }}
+</div>
+
+<div class="section">
+  <h2>1. 추세 — 나아지고 있나</h2>
+  {% if not trend.enough_sample %}
+  <p class="hint">판단 불가 — 표본 {{ trend.sample_count }}건 (5건 미만). 주문이 쌓이면 자동으로 채워집니다.</p>
+  {% else %}
+  <p class="hint" style="margin-bottom:8px;">최근 {{ trend.window_days }}일 vs 직전 {{ trend.window_days }}일 (같은 일수 비교)</p>
+  <div class="stat-grid">
+    <div class="stat-card">
+      <p class="stat-num {{ 'delta-down' if trend.revenue_delta is not none and trend.revenue_delta < 0 else 'delta-up' if trend.revenue_delta is not none and trend.revenue_delta > 0 }}">
+        {{ "{:+.0%}".format(trend.revenue_delta) if trend.revenue_delta is not none else "—" }}
+      </p>
+      <p class="stat-label">매출 ({{ "{:,}".format(trend.this.revenue) }}원)</p>
+    </div>
+    <div class="stat-card">
+      <p class="stat-num {{ 'delta-down' if trend.profit_delta is not none and trend.profit_delta < 0 else 'delta-up' if trend.profit_delta is not none and trend.profit_delta > 0 }}">
+        {{ "{:+.0%}".format(trend.profit_delta) if trend.profit_delta is not none else "—" }}
+      </p>
+      <p class="stat-label">순수익 ({{ "{:,}".format(trend.this.profit) }}원)</p>
+    </div>
+    <div class="stat-card">
+      <p class="stat-num {{ 'delta-down' if trend.order_delta is not none and trend.order_delta < 0 else 'delta-up' if trend.order_delta is not none and trend.order_delta > 0 }}">
+        {{ "{:+.0%}".format(trend.order_delta) if trend.order_delta is not none else "—" }}
+      </p>
+      <p class="stat-label">주문건수 ({{ trend.this.order_count }}건)</p>
+    </div>
+    <div class="stat-card">
+      <p class="stat-num {{ 'delta-down' if trend.aov_delta is not none and trend.aov_delta < 0 else 'delta-up' if trend.aov_delta is not none and trend.aov_delta > 0 }}">
+        {{ "{:+.0%}".format(trend.aov_delta) if trend.aov_delta is not none else "—" }}
+      </p>
+      <p class="stat-label">객단가 ({{ "{:,.0f}".format(trend.aov_this) }}원)</p>
+    </div>
+  </div>
   {% endif %}
 </div>
 
-{% if not issues %}
-<div class="panel" style="background:var(--ok-bg);color:var(--ok);">이상 없음 — 지금 조치할 게 없습니다.</div>
-{% endif %}
-
-{% for i in issues %}
-<div class="panel" style="padding:12px 16px;display:flex;align-items:center;gap:12px;">
-  <span class="{{ 'badge-err' if i.severity == '긴급' else ('badge-warn' if i.severity == '주의' else 'badge') }}">{{ i.severity }}</span>
-  <span class="badge">{{ i.category }}</span>
-  <span style="flex:1;">{{ i.message }}</span>
-  {% if i.detail %}<span class="muted" style="font-size:12px;">{{ i.detail }}</span>{% endif %}
-  {% if i.link %}<a class="btn secondary btn-sm" href="{{ i.link }}">확인하러 가기</a>{% endif %}
+<div class="section">
+  <h2>2. 이 변화의 원인 (추정)</h2>
+  <div class="stack">
+    {% for c in causes %}
+    <div class="panel" style="padding:12px 16px;">
+      <div class="row" style="align-items:center;">
+        <span style="flex:1;"><b>{{ c.label }}</b> — {{ c.detail }}</span>
+        {% if c.link %}<a class="btn secondary btn-sm" href="{{ c.link }}">확인하러 가기</a>{% endif %}
+      </div>
+    </div>
+    {% endfor %}
+  </div>
 </div>
-{% endfor %}
+
+<div class="section">
+  <h2>3. 놓치고 있는 것</h2>
+  <div class="stack">
+    <div class="panel" style="padding:12px 16px;">
+      틈새(바로 등록) <b>{{ opportunities.niche_count }}개</b> · 리메이크(손봐서 등록) <b>{{ opportunities.remake_count }}개</b>
+      {% if opportunities.unclassified_count %}· 미분류 <b>{{ opportunities.unclassified_count }}개</b> — 6단계 트랙 데이터 복구 후 재스캔 필요{% endif %}
+      <a class="btn secondary btn-sm" href="{{ url_for('candidates') }}" style="margin-left:8px;">발굴 후보 →</a>
+    </div>
+    {% if opportunities.concentration %}
+    <div class="panel" style="padding:12px 16px;">
+      매출 쏠림 위험 — 상품ID {{ opportunities.concentration.naver_product_id }} 하나가 전체 매출의 {{ "{:.0%}".format(opportunities.concentration.share) }}를 차지합니다.
+    </div>
+    {% endif %}
+    {% if deep %}
+      {% if deep_trend_error %}
+      <div class="panel" style="padding:12px 16px;">검색량 계절성 확인 실패: {{ deep_trend_error }}</div>
+      {% else %}
+      {% for d in deep_trend %}
+      <div class="panel" style="padding:12px 16px;">
+        {% if d.error %}{{ d.keyword }} — 조회 실패: {{ d.error }}
+        {% else %}{{ d.keyword }} — 검색량 {{ {'up':'상승','stable':'안정','down':'하락'}.get(d.direction, d.direction) }}{% if d.is_seasonal %} · 계절성 주의(월별 편차 {{ "{:.0%}".format(d.variance) }}){% endif %}
+        {% endif %}
+      </div>
+      {% endfor %}
+      {% endif %}
+    {% else %}
+    <p class="hint">(정밀) 진입권장 후보의 검색량 추세·계절 진입 시점은 위 "정밀 진단 다시 돌리기"로 확인하세요.</p>
+    {% endif %}
+  </div>
+</div>
+
+<div class="section">
+  <h2>4. 스토어 체력</h2>
+  <div class="stat-grid">
+    <div class="stat-card">
+      <p class="stat-num">
+        {% if vitals.fast_settlement_ok is none %}판단 불가{% elif vitals.fast_settlement_ok %}자격 있음{% else %}자격 미달{% endif %}
+      </p>
+      <p class="stat-label">빠른정산 자격 (반품률 20% 미만)</p>
+    </div>
+    <a href="{{ url_for('orders', tab='dispatch') }}" class="stat-card link">
+      <p class="stat-num {{ 'attn' if vitals.dispatch_delay_count }}">{{ vitals.dispatch_delay_count if vitals.dispatch_delay_count is not none else "판단 불가" }}</p>
+      <p class="stat-label">발송 지연</p>
+    </a>
+    <div class="stat-card">
+      <p class="stat-num">{{ "{:.1%}".format(vitals.avg_margin_rate) if vitals.avg_margin_rate is not none else "—" }}</p>
+      <p class="stat-label">평균 실현 마진</p>
+    </div>
+    <a href="{{ url_for('products_view') }}" class="stat-card {{ 'link' if vitals.below_min_profit_count }}">
+      <p class="stat-num {{ 'attn' if vitals.below_min_profit_count }}">{{ vitals.below_min_profit_count }}개</p>
+      <p class="stat-label">절대이익 기준 미달</p>
+    </a>
+    <div class="stat-card">
+      <p class="stat-num">{{ "{:,}".format(vitals.cash_balance) + "원" if vitals.cash_balance is not none else "데이터 없음" }}</p>
+      <p class="stat-label">현금 흐름 (나간 돈 − 들어올 돈)</p>
+    </div>
+  </div>
+</div>
 {% endblock %}

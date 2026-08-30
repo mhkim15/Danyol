@@ -113,31 +113,43 @@ def _find_registered_product(order) -> tuple:
     return match_order_to_product(order, _load_json(REGISTERED_PRODUCTS))
 
 
-# ── 스토어 헬스체크 (3단계에서 홈과 완전히 분리된 별도 화면, 4단계에서 고도화 예정) ──
+# ── 스토어 헬스체크 (거시 진단, 3단계에서 홈과 분리·4단계에서 고도화) ────────────────
 
 @app.route("/health")
 def health_view():
-    """기본은 캐시 기반 빠른 진단(deep=False). ?deep=1이면 도매매 실시간 대조까지
-    포함한 정밀 진단을 돈다 — 상품 수가 늘면 느려지니 방문마다 자동으로 돌리지 않는다."""
-    from bebrave.report import check_store_health
+    """기본은 로컬 파일만 읽는 빠른 진단(deep=False). ?deep=1이면 검색량 계절성까지
+    확인한다(데이터랩 API 호출 있음) — 방문마다 자동으로 돌리지 않는다."""
+    from bebrave.report import check_store_health_macro
     deep = request.args.get("deep") == "1"
-    issues = check_store_health(deep=deep)
-    return render_template("health.html", issues=issues, deep=deep)
+    result = check_store_health_macro(deep=deep)
+    return render_template("health.html", **result)
 
 
 @app.route("/health/demo")
 def health_demo():
-    from bebrave.report.health import HealthIssue, SEVERITY_URGENT, SEVERITY_WARN, SEVERITY_INFO
-    issues = [
-        HealthIssue(SEVERITY_URGENT, "발송지연", "캠핑용 접이식 미니 테이블 — 결제 후 30시간째 미발송", "주문 DEMO-Q5", link="/orders?tab=dispatch"),
-        HealthIssue(SEVERITY_URGENT, "품절", "실리콘주걱 대코 브라이트 — 도매매 품절, 판매중지", "도매매 조회 결과", link="/products?tab=action"),
-        HealthIssue(SEVERITY_WARN, "마진붕괴", "우산 양산 양우산 — 도매가 3,190→4,200원(+31%) 마진 12% < 최소 15%", link="/products?tab=action"),
-        HealthIssue(SEVERITY_WARN, "미답변문의", "실리콘주걱 대코 브라이트 — 재질이 어떻게 되나요?", link="/cs"),
-        HealthIssue(SEVERITY_WARN, "반품률", "최근 30일 반품률 28% — 빠른정산 기준(20%) 초과", "7건 / 25건", link="/cs"),
-        HealthIssue(SEVERITY_INFO, "무판매", "캠핑용 접이식 미니 테이블 — 95일 경과", link="/products?tab=action"),
-    ]
+    demo_result = {
+        "checked_at": datetime.now().isoformat(timespec="minutes"),
+        "verdict": {"level": "주의", "message": "등록 상품 2개가 모두 판매중지 상태입니다 — 지금 스토어에서 살 수 있는 상품이 없습니다."},
+        "trend": {
+            "enough_sample": True, "window_days": 28,
+            "this": {"revenue": 82000, "profit": 16200, "order_count": 9, "uncertain_count": 0},
+            "prev": {"revenue": 104000, "profit": 21400, "order_count": 12, "uncertain_count": 0},
+            "revenue_delta": -0.21, "profit_delta": -0.24, "order_delta": -0.25,
+            "aov_this": 9111, "aov_prev": 8667, "aov_delta": 0.05,
+        },
+        "causes": [
+            {"label": "판매 가능 상품 부족(추정)", "detail": "등록 2개 중 2개가 판매중지 — 매출 부재의 직접 원인일 수 있음", "link": "/products?tab=action"},
+            {"label": "반품률", "detail": "최근 30일 28% (7건/25건) — 빠른정산 기준(20%) 기준 초과", "link": "/cs"},
+            {"label": "실측 수수료율(추정)", "detail": "실측 11.2% vs 가정 9.5% (차이 +1.7%p, 표본 8건)", "link": "/settlement?tab=reconcile"},
+        ],
+        "opportunities": {"niche_count": 4, "remake_count": 3, "unclassified_count": 287,
+                           "concentration": {"naver_product_id": "13599502225", "share": 0.68}},
+        "vitals": {"fast_settlement_ok": False, "dispatch_delay_count": 1, "avg_margin_rate": 0.204,
+                    "below_min_profit_count": 2, "cash_balance": -4600},
+        "deep": False,
+    }
     flash("샘플 데이터입니다 — 실제 진단이 아닙니다.", "success")
-    return render_template("health.html", issues=issues, deep=False, demo=True)
+    return render_template("health.html", demo=True, **demo_result)
 
 
 # ── 홈 = 오늘 할 일 (거시 진단은 /health로 분리됨, 4단계) ───────────────────────
@@ -149,7 +161,7 @@ def _todo_groups(registered: list, pending_orders, returns_count, inquiry_count)
     않는다(유일한 예외는 이미 다른 이유로 방문마다 돌던 주문 조회 — 아래 참고)."""
     from bebrave.smartstore.purchase_queue import load_queue, STATUS_ORDERED
     from bebrave.report.performance import product_performance
-    from bebrave.smartstore.sync import ACTION_SUSPEND, ACTION_STOCK, ACTION_MARGIN_WARN
+    from bebrave.report.health import check_store_health
 
     groups = []
 
@@ -163,12 +175,14 @@ def _todo_groups(registered: list, pending_orders, returns_count, inquiry_count)
                              "link": url_for("orders", tab="dispatch"), "n": dispatch_wait})
     groups.append({"name": "주문 처리", "rows": order_items})
 
-    status_cache = _load_json(PRODUCT_STATUS_CACHE)
-    sync_cache = _load_json(PRODUCT_SYNC_CACHE)
-    registered_ids = {str(p.get("naver_product_id", "")) for p in registered}
-    suspended_n = len([s for s in status_cache if s.get("product_id") in registered_ids and s.get("status_type") == "SUSPENSION"]) if isinstance(status_cache, list) else 0
-    supply_n = len([s for s in sync_cache if s.get("naver_product_id") in registered_ids and s.get("action") in (ACTION_SUSPEND, ACTION_STOCK)]) if isinstance(sync_cache, list) else 0
-    margin_n = len([s for s in sync_cache if s.get("naver_product_id") in registered_ids and s.get("action") == ACTION_MARGIN_WARN]) if isinstance(sync_cache, list) else 0
+    # 품절·판매중지·마진붕괴·무판매 판정은 health.py(캐시 기반, deep=False)와 공유한다 —
+    # 같은 판정을 두 곳에서 따로 하면 두 화면이 다른 답을 낼 수 있다.
+    issues_by_category = {}
+    for issue in check_store_health(deep=False):
+        issues_by_category.setdefault(issue.category, []).append(issue)
+    suspended_n = len(issues_by_category.get("판매중지", []))
+    supply_n = len(issues_by_category.get("품절", [])) + len(issues_by_category.get("재고조정", []))
+    margin_n = len(issues_by_category.get("마진붕괴", []))
     no_sale_n = len([p for p in product_performance(registered=registered) if p["status"].startswith("무판매")])
 
     product_items = []

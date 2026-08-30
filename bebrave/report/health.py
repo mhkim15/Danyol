@@ -19,6 +19,8 @@ _SEVERITY_ORDER = {SEVERITY_URGENT: 0, SEVERITY_WARN: 1, SEVERITY_INFO: 2}
 
 DISPATCH_DELAY_HOURS = 24  # 결제완료 후 이 시간 넘게 미발송이면 지연으로 본다
 _SYNC_CACHE_PATH = Path("data/product_sync_cache.json")
+_STATUS_CACHE_PATH = Path("data/product_status_cache.json")
+_REGISTERED_PATH = Path("data/registered_products.json")
 
 
 @dataclass
@@ -58,6 +60,27 @@ def _cached_sync_entries() -> list:
     return json.loads(_SYNC_CACHE_PATH.read_text(encoding="utf-8"))
 
 
+def _registered_ids() -> set:
+    if not _REGISTERED_PATH.exists():
+        return set()
+    registered = json.loads(_REGISTERED_PATH.read_text(encoding="utf-8"))
+    return {str(p.get("naver_product_id", "")) for p in registered}
+
+
+def _naver_suspension_issues() -> List[HealthIssue]:
+    """네이버 쪽 판매중지 — 도매매는 정상인데 스토어에서만 못 파는 경우(발견1의
+    핵심). 등록 취소된 상품의 옛 캐시까지 세지 않도록 현재 등록원장으로 거른다."""
+    if not _STATUS_CACHE_PATH.exists():
+        return []
+    registered_ids = _registered_ids()
+    cache = json.loads(_STATUS_CACHE_PATH.read_text(encoding="utf-8"))
+    return [
+        HealthIssue(SEVERITY_URGENT, "판매중지", f"상품ID {s['product_id']} — 네이버에서 판매중지 상태",
+                    link="/products?tab=action")
+        for s in cache if s.get("product_id") in registered_ids and s.get("status_type") == "SUSPENSION"
+    ]
+
+
 def check_store_health(deep: bool = False) -> List[HealthIssue]:
     """각 신호는 독립적으로 실패해도 나머지 신호에 영향 없게 개별 try/except로 감싼다 —
     카카오 API 하나 막혔다고 품절 경고까지 안 보이면 안 된다.
@@ -68,7 +91,12 @@ def check_store_health(deep: bool = False) -> List[HealthIssue]:
     issues: List[HealthIssue] = []
 
     try:
-        from ..smartstore.sync import ACTION_SUSPEND, ACTION_MARGIN_WARN, ACTION_ERROR
+        issues.extend(_naver_suspension_issues())
+    except Exception:
+        pass
+
+    try:
+        from ..smartstore.sync import ACTION_SUSPEND, ACTION_STOCK, ACTION_MARGIN_WARN, ACTION_ERROR
         if deep:
             from ..smartstore.sync import sync_all
             entries = [{"action": r.action, "name": r.name, "detail": r.detail} for r in sync_all(dry_run=True)]
@@ -77,6 +105,9 @@ def check_store_health(deep: bool = False) -> List[HealthIssue]:
         for e in entries:
             if e["action"] == ACTION_SUSPEND:
                 issues.append(HealthIssue(SEVERITY_URGENT, "품절", f"{e['name'][:24]} — {e['detail']}",
+                                           link="/products?tab=action"))
+            elif e["action"] == ACTION_STOCK:
+                issues.append(HealthIssue(SEVERITY_WARN, "재고조정", f"{e['name'][:24]} — {e['detail']}",
                                            link="/products?tab=action"))
             elif e["action"] == ACTION_MARGIN_WARN:
                 issues.append(HealthIssue(SEVERITY_WARN, "마진붕괴", f"{e['name'][:24]} — {e['detail']}",

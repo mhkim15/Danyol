@@ -884,28 +884,7 @@ def cs_demo():
 
 
 # ── 재고·가격 동기화 (판정은 /products 캐시로 보여주고, 반영 액션만 여기 남김) ──────────
-
-@app.route("/sync/apply", methods=["POST"])
-def sync_apply():
-    from bebrave.smartstore.auth import get_access_token
-    from bebrave.smartstore.sync import sync_all, ACTION_OK, ACTION_ERROR
-    try:
-        token = get_access_token()
-        results = sync_all(access_token=token, dry_run=False)
-        need = [r for r in results if r.action != ACTION_OK]
-        flash(f"동기화 반영 완료 — 조치 {len(need)}건 / 전체 {len(results)}건", "success")
-        problems = [r for r in need if r.action != ACTION_ERROR]
-        if problems:
-            _notify(
-                "[비브레이브] 재고·가격 동기화 조치 발생\n" +
-                "\n".join(f"- {r.name[:30]}: {r.action} ({r.detail[:40]})" for r in problems[:5])
-            )
-        if PRODUCT_SYNC_CACHE.exists():
-            PRODUCT_SYNC_CACHE.unlink()  # 반영 직후엔 캐시가 낡으므로 지우고 "지금 확인"으로 다시 채우게 함
-    except Exception as e:
-        flash(f"동기화 반영 실패: {e}", "error")
-    return redirect(url_for("products_view"))
-
+# 전체 일괄 반영은 /products/bulk(action=apply_sync)로 통합됨(2단계) — 개별 가격 반영만 남음.
 
 @app.route("/sync/apply_price", methods=["POST"])
 def sync_apply_price():
@@ -950,8 +929,6 @@ def sync_apply_one():
     """도매매 대조 결과(품절→중지, 재고조정) 한 건만 실제 반영. 캐시에 저장된
     판정을 SyncResult로 되살려 apply_result()에 그대로 넘긴다 — 전체 반영(sync_apply)과
     같은 판정 로직을 1건 단위로 쓰는 것뿐, 새 판정 로직은 만들지 않는다."""
-    from bebrave.smartstore.sync import SyncResult, apply_result
-
     pid = request.form.get("naver_product_id", "")
     cache = _load_json(PRODUCT_SYNC_CACHE)
     entry = next((c for c in cache if str(c.get("naver_product_id", "")) == pid), None) if isinstance(cache, list) else None
@@ -962,18 +939,101 @@ def sync_apply_one():
     try:
         from bebrave.smartstore.auth import get_access_token
         token = get_access_token()
-        result = SyncResult(
-            naver_product_id=entry["naver_product_id"], name=entry.get("name", ""),
-            action=entry["action"], detail=entry.get("detail", ""),
-            new_stock=entry.get("new_stock"), suggested_price=entry.get("suggested_price"),
-        )
-        apply_result(result, token)
+        record = {"naver_product_id": pid, "name": entry.get("name", "")}
+        msg = _apply_product_action("apply_sync", record, token, sync=entry)
         cache = [c for c in cache if str(c.get("naver_product_id", "")) != pid]
         with open(PRODUCT_SYNC_CACHE, "w", encoding="utf-8") as f:
             json.dump(cache, f, ensure_ascii=False, indent=2)
-        flash(f"{entry.get('name', pid)} — {entry['action']} 반영 완료", "success")
+        flash(f"{msg} 완료", "success")
     except Exception as e:
         flash(f"반영 실패: {e}", "error")
+    return redirect(url_for("products_view"))
+
+
+@app.route("/products/bulk", methods=["POST"])
+def products_bulk():
+    """상품 관리 표에서 체크한 여러 건을 한 번에 처리 — purchase_bulk_place()와 같은
+    5단계(대상 필터 → dry-run 게이트 → 토큰 1회 획득 → 건별 try/except → 집계)를 쓴다.
+    로컬 파일(등록원장·동기화 캐시)은 루프 밖에서 1회만 읽고 1회만 쓴다 — 건마다
+    전체 파일을 로드/덮어쓰면 선택 건수가 늘수록 느려진다."""
+    from bebrave.smartstore.sync import ACTION_OK
+
+    action = request.form.get("action", "")
+    ids = set(request.form.getlist("ids"))
+    live = request.form.get("live") == "on"
+    if action not in ("apply_sync", "suspend", "reoptimize"):
+        flash("알 수 없는 일괄 액션입니다.", "error")
+        return redirect(url_for("products_view"))
+    if not ids:
+        flash("선택된 상품이 없습니다.", "error")
+        return redirect(url_for("products_view"))
+
+    registered = _load_json(REGISTERED_PRODUCTS)
+    by_id = {str(p.get("naver_product_id", "")): p for p in registered}
+    sync_cache = _load_json(PRODUCT_SYNC_CACHE)
+    sync_by_id = {s["naver_product_id"]: s for s in sync_cache} if isinstance(sync_cache, list) else {}
+    perf_by_id = {p["naver_product_id"]: p for p in _performance_with_quality()}
+
+    targets = []
+    for pid in ids:
+        record = by_id.get(pid)
+        if not record:
+            continue
+        sync = sync_by_id.get(pid)
+        if action == "apply_sync" and not (sync and sync["action"] != ACTION_OK):
+            continue
+        if action == "reoptimize" and not perf_by_id.get(pid, {}).get("status", "").startswith("무판매"):
+            continue
+        targets.append((record, sync))
+
+    if not targets:
+        flash("선택한 건 중 이 액션을 적용할 수 있는 상품이 없습니다.", "error")
+        return redirect(url_for("products_view"))
+
+    if not live:
+        if action == "reoptimize":
+            from bebrave.smartstore.name_optimizer import optimize_name
+            preview = ", ".join(
+                f"{r['name'][:14]}→{optimize_name(r.get('keyword', ''), r['name'])[:14]}" for r, _ in targets[:5]
+            )
+        else:
+            preview = ", ".join(f"{r['name'][:16]}" for r, _ in targets[:5])
+        more = f" 외 {len(targets)-5}건" if len(targets) > 5 else ""
+        flash(f"[dry-run] {len(targets)}건 처리 예정 (실제 반영 안 함) — {preview}{more}. "
+              f"실제로 반영하려면 '확인함' 체크 후 다시 실행하세요.", "success")
+        return redirect(url_for("products_view"))
+
+    try:
+        from bebrave.smartstore.auth import get_access_token
+        token = get_access_token()
+    except Exception as e:
+        flash(f"인증 실패 — 일괄 처리 중단: {e}", "error")
+        return redirect(url_for("products_view"))
+
+    ok, failed = 0, []
+    applied_ids = set()
+    for record, sync in targets:
+        pid = str(record.get("naver_product_id", ""))
+        try:
+            _apply_product_action(action, record, token, sync=sync)
+            ok += 1
+            applied_ids.add(pid)
+        except Exception as e:
+            failed.append(f"{record.get('name', pid)[:16]}({e})")
+
+    if action == "reoptimize":
+        with open(REGISTERED_PRODUCTS, "w", encoding="utf-8") as f:
+            json.dump(registered, f, ensure_ascii=False, indent=2)
+    if action == "apply_sync" and applied_ids:
+        sync_cache = [s for s in sync_cache if s.get("naver_product_id") not in applied_ids]
+        with open(PRODUCT_SYNC_CACHE, "w", encoding="utf-8") as f:
+            json.dump(sync_cache, f, ensure_ascii=False, indent=2)
+
+    msg = f"일괄 처리 완료 — 성공 {ok}건"
+    if failed:
+        msg += f", 실패 {len(failed)}건: " + "; ".join(failed[:3]) + (" 외" if len(failed) > 3 else "")
+        _notify(f"[비브레이브] 상품 일괄처리 실패 {len(failed)}건\n" + "\n".join(f"- {f}" for f in failed[:5]))
+    flash(msg, "success" if not failed else "error")
     return redirect(url_for("products_view"))
 
 
@@ -1178,21 +1238,63 @@ def _performance_with_quality():
     return results
 
 
-@app.route("/performance/suspend", methods=["POST"])
-def performance_suspend():
-    pid = request.form.get("naver_product_id", "")
-    try:
-        from bebrave.smartstore.auth import get_access_token
-        from bebrave.smartstore.register import update_registered_product
+def _apply_product_action(action: str, record: dict, token: str, sync: dict = None) -> str:
+    """건 1개에 실제 반영 액션 1개를 적용하고 사람이 읽을 결과 문장을 돌려준다.
+    개별 버튼(판매중지/이름 재최적화/도매매 판정 반영)과 일괄 처리가 판정 로직을
+    두 벌로 유지하지 않도록 이 함수 하나로 합친다. 실패하면 예외를 그대로 던지고
+    호출쪽(개별 라우트 또는 일괄 루프)이 각자 방식으로 처리한다."""
+    from bebrave.smartstore.register import update_registered_product
+    pid = str(record.get("naver_product_id", ""))
+    name = record.get("name", "")
 
+    if action == "suspend":
         def _mutate(body):
             body["originProduct"]["statusType"] = "SUSPENSION"
             if "smartstoreChannelProduct" in body:
                 body["smartstoreChannelProduct"]["channelProductDisplayStatusType"] = "SUSPENSION"
-
-        token = get_access_token()
         update_registered_product(pid, token, _mutate)
-        flash(f"상품ID {pid} 판매중지 완료", "success")
+        return f"{name} 판매중지 완료"
+
+    if action == "reoptimize":
+        from bebrave.smartstore.name_optimizer import optimize_name
+        from bebrave.report.name_changes import record_name_change
+        old_name = name
+        new_name = optimize_name(record.get("keyword", ""), old_name)
+        if new_name == old_name:
+            return f"{name} — 이미 최적화된 이름, 변경 없음"
+
+        def _mutate(body):
+            body["originProduct"]["name"] = new_name
+        update_registered_product(pid, token, _mutate)
+        record["name"] = new_name
+        record_name_change(pid, old_name, new_name)
+        return f"{old_name} → {new_name}"
+
+    if action == "apply_sync":
+        from bebrave.smartstore.sync import SyncResult, apply_result
+        if not sync:
+            raise ValueError("도매매 판정 캐시 없음 — '지금 확인'을 먼저 실행하세요")
+        result = SyncResult(
+            naver_product_id=sync["naver_product_id"], name=sync.get("name", name),
+            action=sync["action"], detail=sync.get("detail", ""),
+            new_stock=sync.get("new_stock"), suggested_price=sync.get("suggested_price"),
+        )
+        apply_result(result, token)
+        return f"{name} — {sync['action']} 반영"
+
+    raise ValueError(f"알 수 없는 액션: {action}")
+
+
+@app.route("/performance/suspend", methods=["POST"])
+def performance_suspend():
+    pid = request.form.get("naver_product_id", "")
+    registered = _load_json(REGISTERED_PRODUCTS)
+    record = next((p for p in registered if str(p.get("naver_product_id", "")) == pid), {"naver_product_id": pid, "name": ""})
+    try:
+        from bebrave.smartstore.auth import get_access_token
+        token = get_access_token()
+        msg = _apply_product_action("suspend", record, token)
+        flash(msg, "success")
     except Exception as e:
         flash(f"판매중지 실패: {e}", "error")
     return redirect(url_for("products_view"))
@@ -1238,29 +1340,15 @@ def performance_reoptimize_name():
 
     old_name = record.get("name", "")
     try:
-        from bebrave.smartstore.name_optimizer import optimize_name
         from bebrave.smartstore.auth import get_access_token
-        from bebrave.smartstore.register import update_registered_product
-
-        new_name = optimize_name(record.get("keyword", ""), old_name)
-        if new_name == old_name:
-            flash("이미 최적화된 이름입니다 — 바뀔 게 없습니다.", "success")
-            return redirect(url_for("products_view"))
-
-        def _mutate(body):
-            body["originProduct"]["name"] = new_name
-
         token = get_access_token()
-        update_registered_product(pid, token, _mutate)
-
-        record["name"] = new_name
+        msg = _apply_product_action("reoptimize", record, token)
         with open(REGISTERED_PRODUCTS, "w", encoding="utf-8") as f:
             json.dump(registered, f, ensure_ascii=False, indent=2)
-
-        from bebrave.report.name_changes import record_name_change
-        record_name_change(pid, old_name, new_name)
-
-        flash(f"상품명 변경: '{old_name}' → '{new_name}' — 앞으로의 판매 실적을 이전과 비교합니다", "success")
+        if record.get("name") == old_name:
+            flash(msg, "success")
+        else:
+            flash(f"상품명 변경: {msg} — 앞으로의 판매 실적을 이전과 비교합니다", "success")
     except Exception as e:
         flash(f"이름 재최적화 실패: {e}", "error")
     return redirect(url_for("products_view"))

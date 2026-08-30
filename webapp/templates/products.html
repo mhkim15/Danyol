@@ -24,11 +24,13 @@
   {% endif %}
 </div>
 
+<form id="bulkForm" method="post" action="{{ url_for('products_bulk') }}"></form>
+
 <div class="panel">
   <div class="table-wrap">
   <table>
     <tr>
-      <th style="width:24px;"><input type="checkbox" id="checkAll" disabled title="일괄 관리는 다음 단계에서 켭니다"></th>
+      <th style="width:24px;"><input type="checkbox" id="checkAll" onclick="document.querySelectorAll('.row-check').forEach(c=>c.checked=this.checked);updateBulkBar()"></th>
       <th>상품</th>
       <th>판매가</th>
       <th>성과</th>
@@ -41,7 +43,7 @@
     </tr>
     {% for p in rows %}
     <tr>
-      <td><input type="checkbox" class="row-check" name="ids" value="{{ p.naver_product_id }}" disabled></td>
+      <td><input type="checkbox" form="bulkForm" class="row-check" name="ids" value="{{ p.naver_product_id }}" onclick="updateBulkBar()"></td>
       <td>
         <div>{{ p.name }}</div>
         <div style="margin-top:4px;">
@@ -114,15 +116,27 @@
   </div>
 </div>
 
-{% set sync_need = rows | selectattr('sync') | selectattr('sync.action', 'ne', '이상없음') | list %}
-{% if sync_need %}
-<form method="post" action="{{ url_for('sync_apply') }}" onsubmit="return confirm('조치 필요 {{ sync_need|length }}건 전체를 스마트스토어에 한 번에 반영합니다(판매중지·재고조정). 진행할까요?')">
-  <div class="panel" style="background:var(--paper);">
-    <div class="row" style="align-items:center;">
-      <span class="muted" style="font-size:13px;flex:1;">재고·가격 조치 필요 {{ sync_need|length }}건 — 판매중지·재고조정을 스마트스토어에 실제로 반영합니다(마진경고는 반영할 게 없어 제외).</span>
-      <button type="submit" class="btn-sm">전체 반영</button>
-    </div>
+<div class="panel bulkbar" style="background:var(--paper);">
+  <div class="row" style="align-items:center;">
+    <span class="muted" style="font-size:13px;">선택한 상품에 한 번에 적용:</span>
+    <select name="action" form="bulkForm">
+      <option value="apply_sync">도매매 판정 반영 (품절→판매중지 / 재고조정)</option>
+      <option value="suspend">판매중지</option>
+      <option value="reoptimize">이름 재최적화</option>
+    </select>
+    <label style="margin:0;font-size:13px;"><input type="checkbox" name="live" form="bulkForm"> 확인함 — 실제로 반영</label>
+    <span class="muted" style="font-size:12px;flex:1;">체크 안 하면 미리보기만 하고 아무것도 바뀌지 않습니다.</span>
+    <button type="submit" form="bulkForm" id="bulkSubmit" class="btn-sm" disabled
+            onclick="return confirm('선택한 ' + document.querySelectorAll('.row-check:checked').length + '건에 일괄 액션을 적용합니다. 진행할까요?')">선택 0건 처리</button>
   </div>
-</form>
-{% endif %}
+</div>
+
+<script>
+function updateBulkBar() {
+  var n = document.querySelectorAll('.row-check:checked').length;
+  var btn = document.getElementById('bulkSubmit');
+  btn.textContent = '선택 ' + n + '건 처리';
+  btn.disabled = n === 0;
+}
+</script>
 {% endblock %}

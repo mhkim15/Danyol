@@ -28,8 +28,8 @@
     <tr><td><b>마진율</b></td><td class="mono"><b>{{ "%.1f"|format(result.margin_rate * 100) }}%</b></td></tr>
   </table>
   <div class="row" style="margin-top:12px;">
-    {% if result.passes_target %}<span class="badge">목표 마진율 달성</span>
-    {% elif result.passes_min %}<span class="badge">최소 마진율 통과</span>
+    {% if result.passes_target %}<span class="badge-ok">목표 마진율 달성</span>
+    {% elif result.passes_min %}<span class="badge-warn">최소 마진율 통과</span>
     {% else %}<div class="flash flash-error">최소 마진율 미달</div>{% endif %}
   </div>
 </div>

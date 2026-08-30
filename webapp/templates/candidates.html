@@ -59,7 +59,7 @@
     </a>
     <span class="muted" style="font-size:12.5px;">{{ candidates|length }}개{{ ' (점수순)' if not unconfirmed_only }}</span>
   </div>
-  <p class="muted" style="font-size:12.5px;margin:-6px 0 14px;">
+  <p class="page-note">
     도매매 상품명을 누르면 미리보기가 열리고, 그 안에서 가격비교 · 등록까지 이어집니다.
   </p>
   <form method="post" action="{{ url_for('confirm_match_bulk') }}">

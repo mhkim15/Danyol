@@ -95,7 +95,7 @@
 
 {# ── 발송 대기 (도매매 발주완료, 송장/발송처리 필요) ────────────────────────────── #}
 <div{% if tab != 'dispatch' %} style="display:none;"{% endif %}>
-  <p class="muted" style="font-size:12.5px;margin:-4px 0 12px;">
+  <p class="page-note">
     "송장 자동확인"은 실주문으로 아직 검증 안 된 도매매 API를 씁니다 — 결과를 눈으로 확인하세요. 실패하면 아래에 직접 입력하세요.
   </p>
   {% if not dispatch_wait %}
@@ -129,7 +129,7 @@
 
 {# ── 수동 발주 (매칭실패·보류 + 직접입력) ───────────────────────────────────── #}
 <div{% if tab != 'manual' %} style="display:none;"{% endif %}>
-  <p class="muted" style="font-size:13px;margin:-4px 0 16px;">
+  <p class="page-note">
     대부분의 주문은 "처리할 주문" 탭에서 한 번에(일괄) 처리됩니다. 이 탭은 상품 매칭이 실패했거나(보류)
     큐를 거치지 않고 상품번호를 직접 넣어 발주할 때만 씁니다.
   </p>

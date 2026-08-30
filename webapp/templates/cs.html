@@ -19,9 +19,9 @@
 
 <div class="section"{% if active_tab != 'claims' %} style="display:none;"{% endif %}>
   <p class="eyebrow">반품 · 취소</p>
-  <p class="muted" style="margin:-4px 0 12px;font-size:13px;">
-    최근 {{ hours }}시간 내 상태변경 건. 반품 승인·환불 등 실제 처리는 스마트스토어센터에서 —
-    여기는 조회 전용이다 (판단이 필요한 작업이라 자동화 대상에서 제외).
+  <p class="page-note">
+    여기서 할 수 있는 것: 최근 {{ hours }}시간 내 반품·취소 접수 현황 확인(조회 전용).<br>
+    스마트스토어센터에서 해야 하는 것: 반품 승인·환불 처리 — 판단이 필요한 작업이라 자동화 대상에서 제외했습니다.
   </p>
 
   {% if error %}
@@ -51,9 +51,10 @@
 
 <div class="section"{% if active_tab != 'inquiries' %} style="display:none;"{% endif %}>
   <p class="eyebrow">상품문의</p>
-  <p class="muted" style="margin:-4px 0 12px;font-size:13px;">
-    응답 필드명이 실주문·실문의로 아직 검증되지 않은 API라, 내용이 비어 보이면 필드명을 다시 확인해야 합니다.
-    답변은 스마트스토어센터에서 — 여기는 미답변 문의를 놓치지 않는 용도.
+  <p class="page-note">
+    여기서 할 수 있는 것: 미답변 문의를 놓치지 않고 확인(답변 필요 — 조회 전용 아님).<br>
+    스마트스토어센터에서 해야 하는 것: 실제 답변 작성·등록.
+    <br><span class="hint">응답 필드명이 실주문·실문의로 아직 검증되지 않은 API라, 내용이 비어 보이면 필드명을 다시 확인해야 합니다.</span>
   </p>
 
   {% if inquiry_error %}

@@ -6,4 +6,10 @@
 <div class="panel">
   <pre style="white-space:pre-wrap;font-family:var(--mono);font-size:13px;line-height:1.7;margin:0;">{{ summary }}</pre>
 </div>
+
+<div class="row" style="margin-top:14px;">
+  <a class="btn secondary" href="{{ url_for('products_view') }}">상품 관리 →</a>
+  <a class="btn secondary" href="{{ url_for('settlement_view', tab='reconcile') }}">정산 대사 →</a>
+  <a class="btn secondary" href="{{ url_for('candidates') }}">발굴 후보 →</a>
+</div>
 {% endblock %}

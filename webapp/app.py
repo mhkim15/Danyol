@@ -768,15 +768,19 @@ def registered_status(product_id):
 
 # ── 주문·발주 (주문확인 + 발주대기열 + 수동발주 통합, 탭: ready/dispatch/manual/history) ──
 
-ORDER_TABS = ("ready", "dispatch", "manual", "history")
+ORDER_TABS = ("ready", "dispatch", "failed", "manual", "history")
 
 
 @app.route("/orders")
 def orders():
-    """탭 4개: 처리할 주문(ready) | 발송 대기(ordered) | 수동 발주(hold+직접입력) | 전체 이력.
-    큐 조회(ready/hold/dispatch)는 방문마다 최근 72시간 주문을 실시간 대조한다
+    """탭 5개: 처리할 주문(ready) | 발송 대기(ordered) | 발주 실패(failed) |
+    수동 발주(hold+직접입력) | 완료 이력(dispatched).
+    큐 조회는 방문마다 최근 72시간 주문을 실시간 대조한다
     (구 발주 대기열 그대로 — 실제 발주가 걸린 화면이라 캐시로 늦추지 않음)."""
-    from bebrave.smartstore.purchase_queue import build_queue, load_queue, STATUS_READY, STATUS_HOLD, STATUS_ORDERED
+    from bebrave.smartstore.purchase_queue import (
+        build_queue, load_queue, STATUS_READY, STATUS_HOLD, STATUS_ORDERED,
+        STATUS_FAILED, STATUS_DISPATCHED,
+    )
 
     tab = request.args.get("tab", "ready")
     if tab not in ORDER_TABS:
@@ -796,6 +800,11 @@ def orders():
     ready = [i for i in items if i["status"] == STATUS_READY]
     hold = [i for i in items if i["status"] == STATUS_HOLD]
     dispatch_wait = [i for i in items if i["status"] == STATUS_ORDERED]
+    # 발주 실패는 지금까지 화면 어디에도 없었다 — 실패 순간 플래시 한 번 뜨고 끝이라,
+    # 새로고침하면 돈이 걸린 그 주문이 어디 갔는지 확인할 방법이 없었다.
+    failed = [i for i in items if i["status"] == STATUS_FAILED]
+    done = [i for i in items if i["status"] == STATUS_DISPATCHED]
+    done.sort(key=lambda i: i.get("updated_at", ""), reverse=True)
 
     # 이머니 잔액 — ready 건이 있을 때만 확인(로그인 호출 비용이 있어 빈 큐에서는 생략).
     # 필요 금액은 도매가×수량 기준(실제 이머니에서 빠지는 값) — 판매가가 아니다.
@@ -819,31 +828,42 @@ def orders():
         except Exception as e:
             emoney_error = str(e)
 
-    history_pairs = None
-    history_hours = int(request.args.get("hours", 24))
-    if tab == "history":
-        history_pairs = []
-        try:
-            from bebrave.smartstore.auth import get_access_token
-            from bebrave.smartstore.orders import fetch_new_orders
-            from bebrave.smartstore.purchase_queue import _match_option_code
-            token = get_access_token()
-            hist_orders = fetch_new_orders(token, hours=history_hours)
-            for o in hist_orders:
-                match, method = _find_registered_product(o)
-                history_pairs.append((o, match, method, _match_option_code(match, o.option_name) if match else None))
-        except Exception as e:
-            error = str(e)
-
     manual_prefill = {k: request.args.get(k, "") for k in
                        ("goods_no", "option_code", "qty", "receiver_name", "phone", "zipcode", "address1", "address2",
                         "shop_name", "product_order_id")}
 
     return render_template(
-        "orders.html", tab=tab, ready=ready, hold=hold, dispatch_wait=dispatch_wait, error=error,
-        emoney=emoney, emoney_error=emoney_error, history_pairs=history_pairs, history_hours=history_hours,
+        "orders.html", tab=tab, ready=ready, hold=hold, dispatch_wait=dispatch_wait,
+        failed=failed, done=done, error=error,
+        emoney=emoney, emoney_error=emoney_error,
         **manual_prefill,
     )
+
+
+@app.route("/orders/retry", methods=["POST"])
+def orders_retry():
+    """발주 실패 건을 발주 대기로 되돌린다. 실패 사유(이머니 부족·일시적 오류)를
+    해결한 뒤 다시 발주 대상으로 올리는 용도 — 로컬 큐 상태만 바꾸므로 돈이 나가지 않는다."""
+    from bebrave.smartstore.purchase_queue import load_queue, _save_queue, STATUS_READY, STATUS_FAILED
+
+    ids = set(request.form.getlist("ids"))
+    if not ids:
+        flash("선택된 주문이 없습니다.", "error")
+        return redirect(url_for("orders", tab="failed"))
+
+    items = load_queue()
+    n = 0
+    for i in items:
+        if i["product_order_id"] in ids and i["status"] == STATUS_FAILED:
+            i["status"] = STATUS_READY
+            i["hold_reason"] = ""
+            n += 1
+    if n:
+        _save_queue(items)
+        flash(f"{n}건을 발주 대기로 되돌렸습니다 — '처리할 주문' 탭에서 다시 발주하세요.", "success")
+    else:
+        flash("되돌릴 수 있는 실패 건이 없습니다.", "error")
+    return redirect(url_for("orders", tab="ready"))
 
 
 @app.route("/orders/demo")
@@ -876,21 +896,34 @@ def orders_demo():
         {"product_order_id": "DEMO-Q5", "product_name": "실리콘주걱 대코 브라이트 미니볶음주걱 실리콘 이유식주걱",
          "option_name": "", "quantity": 1, "unit_price": 3300, "status": "ordered",
          "hold_reason": "", "domemae_order_no": "OR9990001"},
+        {"product_order_id": "DEMO-Q6", "product_name": "우산 양산 양우산 자동우산 3단자동우산",
+         "option_name": "", "quantity": 1, "unit_price": 4600, "matched_goods_no": "13187678",
+         "matched_option_code": None, "matched_name": "우산 양산 양우산 자동우산",
+         "receiver_name": "이서준", "receiver_tel": "010-3434-5656", "receiver_zipcode": "13500",
+         "receiver_address1": "성남시 분당구", "receiver_address2": "", "status": "failed",
+         "hold_reason": "도매매 이머니 잔액 부족 — 4,600원 필요", "updated_at": "2026-08-29"},
+        {"product_order_id": "DEMO-Q7", "product_name": "실리콘주걱 대코 브라이트 미니볶음주걱",
+         "option_name": "", "quantity": 3, "unit_price": 3300, "status": "dispatched",
+         "hold_reason": "", "domemae_order_no": "OR9990002", "tracking_number": "123456789012",
+         "company": "CJ대한통운", "updated_at": "2026-08-28"},
     ]
     tab = request.args.get("tab", "ready")
     if tab not in ORDER_TABS:
         tab = "ready"
-    flash("샘플 데이터입니다 — 실제 주문이 아닙니다. IP 허용목록·주문 발생 후 실제 데이터로 확인하세요.", "success")
+    flash("샘플 데이터입니다 — 실제 주문이 아닙니다.", "success")
     ready = [i for i in demo_items if i["status"] == "ready"]
     hold = [i for i in demo_items if i["status"] == "hold"]
     dispatch_wait = [i for i in demo_items if i["status"] == "ordered"]
+    failed = [i for i in demo_items if i["status"] == "failed"]
+    done = [i for i in demo_items if i["status"] == "dispatched"]
     demo_emoney = {"total": 15000, "cash": 15000, "card": 0, "point": 320, "needed": 9890, "short": False}
     manual_prefill = {k: "" for k in
                        ("goods_no", "option_code", "qty", "receiver_name", "phone", "zipcode", "address1", "address2",
                         "shop_name", "product_order_id")}
     return render_template(
-        "orders.html", tab=tab, ready=ready, hold=hold, dispatch_wait=dispatch_wait, error=None,
-        emoney=demo_emoney, emoney_error=None, history_pairs=None, history_hours=24, demo=True,
+        "orders.html", tab=tab, ready=ready, hold=hold, dispatch_wait=dispatch_wait,
+        failed=failed, done=done, error=None,
+        emoney=demo_emoney, emoney_error=None, demo=True,
         **manual_prefill,
     )
 

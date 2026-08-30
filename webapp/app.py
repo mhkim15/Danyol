@@ -767,12 +767,15 @@ def orders():
 
     # 이머니 잔액 — ready 건이 있을 때만 확인(로그인 호출 비용이 있어 빈 큐에서는 생략).
     # 필요 금액은 도매가×수량 기준(실제 이머니에서 빠지는 값) — 판매가가 아니다.
+    # supply_cost를 아이템에 심어두면 화면에서 체크 해제할 때마다 필요금액을 다시
+    # 계산할 수 있다(안전버그B: 버튼 라벨이 서버 렌더 총량 그대로였던 문제).
     emoney = None
     emoney_error = None
     if ready:
         needed = 0
         for i in ready:
             supply_price = _lookup_supply_price(i["matched_goods_no"])
+            i["supply_cost"] = supply_price * i["quantity"] if supply_price is not None else None
             if supply_price is not None:
                 needed += supply_price * i["quantity"]
         try:
@@ -820,12 +823,14 @@ def orders_demo():
          "option_name": "", "quantity": 2, "unit_price": 3300, "matched_goods_no": "11013443",
          "matched_option_code": None, "matched_name": "실리콘주걱 대코 브라이트 미니볶음주걱 실리콘 이유식주걱",
          "receiver_name": "김철수", "receiver_tel": "010-1111-2222", "receiver_zipcode": "06000",
-         "receiver_address1": "서울시 강남구", "receiver_address2": "101호", "status": "ready", "hold_reason": ""},
+         "receiver_address1": "서울시 강남구", "receiver_address2": "101호", "status": "ready", "hold_reason": "",
+         "supply_cost": 6260},
         {"product_order_id": "DEMO-Q2", "product_name": "우산 양산 양우산 자동우산  3단자동우산 우양산 골프우",
          "option_name": "", "quantity": 1, "unit_price": 4600, "matched_goods_no": "13187678",
          "matched_option_code": None, "matched_name": "우산 양산 양우산 자동우산  3단자동우산 우양산 골프우",
          "receiver_name": "최지은", "receiver_tel": "010-7777-8888", "receiver_zipcode": "42000",
-         "receiver_address1": "대구시 수성구", "receiver_address2": "", "status": "ready", "hold_reason": ""},
+         "receiver_address1": "대구시 수성구", "receiver_address2": "", "status": "ready", "hold_reason": "",
+         "supply_cost": 3630},
         {"product_order_id": "DEMO-Q3", "product_name": "캠핑용 접이식 미니 테이블", "option_name": "카키",
          "quantity": 5, "unit_price": 13000, "matched_goods_no": "20000001", "matched_option_code": "02",
          "matched_name": "캠핑용 접이식 미니 테이블", "receiver_name": "박민수", "receiver_tel": "010-5555-6666",
@@ -1483,6 +1488,21 @@ def purchase_bulk_place():
         session_data = login()
     except Exception as e:
         flash(f"도매매 로그인 실패 — 일괄 발주 중단: {e}", "error")
+        return redirect(url_for("orders", tab="ready"))
+
+    # 안전버그A 수정: 이머니 부족은 버튼 disabled만으로는 못 막는다(자바스크립트가 꺼져
+    # 있거나 값이 새로고침 전이면 뚫린다) — 실제 결제 직전에 서버가 다시 검증한다.
+    needed = sum(
+        (_lookup_supply_price(i["matched_goods_no"]) or 0) * i["quantity"] for i in targets
+    )
+    try:
+        from bebrave.sourcing.domemae_order import fetch_emoney_balance
+        cash = fetch_emoney_balance(session_data["sId"])["cash"]
+        if needed > cash:
+            flash(f"이머니 {needed - cash:,}원 부족 — 충전 후 다시 시도하세요 (필요 {needed:,}원 / 잔액 {cash:,}원)", "error")
+            return redirect(url_for("orders", tab="ready"))
+    except Exception as e:
+        flash(f"이머니 잔액 확인 실패 — 안전을 위해 일괄 발주 중단: {e}", "error")
         return redirect(url_for("orders", tab="ready"))
 
     ok, failed = 0, []

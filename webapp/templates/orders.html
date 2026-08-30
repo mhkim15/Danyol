@@ -35,14 +35,16 @@
   {% endif %}
 
   {% if not ready %}
-  <div class="panel muted">없음</div>
+  <div class="panel muted">없음 — 다음에 할 일: 새 주문이 결제완료되면 여기 자동으로 나타납니다.</div>
   {% else %}
   <form method="post" action="{{ url_for('purchase_bulk_place') }}">
     {% for i in ready %}
     <div class="panel">
       <div class="row" style="align-items:flex-start;gap:24px;">
         <label style="display:flex;align-items:flex-start;gap:10px;flex:1;min-width:0;margin:0;">
-          <input type="checkbox" name="product_order_ids" value="{{ i.product_order_id }}" class="ready-check" checked style="margin-top:4px;">
+          <input type="checkbox" name="product_order_ids" value="{{ i.product_order_id }}" class="ready-check"
+                 data-amount="{{ i.supply_cost if i.supply_cost is not none else 0 }}" checked
+                 onclick="updateReadyBar()" style="margin-top:4px;">
           <span style="flex:2;min-width:260px;display:inline-block;">
             <span class="badge-ok">발주 준비됨</span>{% if demo %} <span class="badge">샘플</span>{% endif %}
             <div style="margin:6px 0 2px;">{{ i.product_name }} {{ i.option_name }} × {{ i.quantity }} — {{ "{:,}".format(i.unit_price) }}원</div>
@@ -63,11 +65,28 @@
       <span class="muted" style="font-size:12.5px;">샘플 데이터라 제출은 비활성화했습니다 — 실제 화면에서는 여기 체크박스와 버튼으로 선택한 건을 한 번에 발주합니다.</span>
       {% else %}
       <div class="row" style="align-items:center;">
-        <label style="margin:0;font-size:13px;"><input type="checkbox" id="checkAll" checked onclick="document.querySelectorAll('.ready-check').forEach(c=>c.checked=this.checked)"> 전체선택</label>
-        <span class="muted" style="font-size:12.5px;flex:1;">체크한 건을 한 번에 발주합니다 — 로그인 1회로 순서대로 처리, 실패한 건만 보류에 남습니다.</span>
+        <label style="margin:0;font-size:13px;"><input type="checkbox" id="checkAll" checked onclick="document.querySelectorAll('.ready-check').forEach(c=>c.checked=this.checked);updateReadyBar()"> 전체선택</label>
+        <span id="readyBarText" class="muted" style="font-size:12.5px;flex:1;">체크한 건을 한 번에 발주합니다 — 로그인 1회로 순서대로 처리, 실패한 건만 보류에 남습니다.</span>
         <label style="margin:0;"><input type="checkbox" name="live"> 확인함 — 실제로 발주</label>
-        <button type="submit">선택 {{ ready|length }}건 일괄 발주</button>
+        <button type="submit" id="readyBarSubmit" {% if emoney and emoney.short %}disabled{% endif %}>선택 {{ ready|length }}건 일괄 발주</button>
       </div>
+      <script>
+        var READY_CASH = {{ (emoney.cash if emoney else 0)|tojson }};
+        function updateReadyBar() {
+          var boxes = document.querySelectorAll('.ready-check:checked');
+          var n = boxes.length;
+          var needed = 0;
+          boxes.forEach(function (c) { needed += Number(c.dataset.amount || 0); });
+          var btn = document.getElementById('readyBarSubmit');
+          var text = document.getElementById('readyBarText');
+          btn.textContent = '선택 ' + n + '건 일괄 발주';
+          var short = needed > READY_CASH;
+          text.textContent = '선택 ' + n + '건 · 필요 ' + needed.toLocaleString() + '원 / 잔액 ' + READY_CASH.toLocaleString() + '원' + (short ? ' — 이머니 부족' : '');
+          text.className = short ? 'badge-err' : 'muted';
+          btn.disabled = n === 0 || short;
+        }
+        updateReadyBar();
+      </script>
       {% endif %}
     </div>
   </form>
@@ -80,7 +99,7 @@
     "송장 자동확인"은 실주문으로 아직 검증 안 된 도매매 API를 씁니다 — 결과를 눈으로 확인하세요. 실패하면 아래에 직접 입력하세요.
   </p>
   {% if not dispatch_wait %}
-  <div class="panel muted">없음</div>
+  <div class="panel muted">없음 — 다음에 할 일: 발주가 완료되면 여기서 송장을 입력해 발송처리합니다.</div>
   {% endif %}
   {% for i in dispatch_wait %}
   <div class="panel">
@@ -89,7 +108,7 @@
     <form method="post" action="{{ url_for('purchase_sync_tracking') }}" style="display:inline;margin-left:10px;">
       <input type="hidden" name="product_order_id" value="{{ i.product_order_id }}">
       <input type="hidden" name="domemae_order_no" value="{{ i.get('domemae_order_no', '') }}">
-      <button type="submit" style="padding:6px 12px;font-size:12px;">송장 자동확인</button>
+      <button type="submit" class="btn-sm">송장 자동확인</button>
     </form>
     <form method="post" action="{{ url_for('orders_dispatch') }}" class="row" style="margin-top:8px;align-items:flex-end;">
       <input type="hidden" name="product_order_id" value="{{ i.product_order_id }}">
@@ -102,7 +121,7 @@
       <div style="flex:2;min-width:180px;">
         <input type="text" name="tracking_number" placeholder="송장번호" required>
       </div>
-      <button type="submit" style="padding:8px 14px;font-size:12px;">발송처리</button>
+      <button type="submit" class="btn-sm">발송처리</button>
     </form>
   </div>
   {% endfor %}

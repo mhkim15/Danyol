@@ -1,28 +1,22 @@
 {% extends "base.html" %}
 {% block title %}CS{% endblock %}
 {% block content %}
-<h1>CS</h1>
-
 {% set active_tab = request.args.get('tab', 'claims') %}
 {% set endpoint = 'cs_demo' if demo else 'cs' %}
 {% set unanswered = inquiries | selectattr('answered', 'equalto', false) | list | length %}
+<div class="row" style="justify-content:space-between;align-items:center;margin-bottom:18px;">
+  <h1 style="margin:0;">CS</h1>
+  {% if not demo %}<a class="btn secondary btn-sm" href="{{ url_for('cs_demo') }}">샘플 데이터</a>{% endif %}
+</div>
+
 <div class="tabs">
   <a href="{{ url_for(endpoint, tab='claims') }}" class="{{ 'active' if active_tab == 'claims' }}">반품·취소 <span class="tab-count">{{ claims | length }}</span></a>
   <a href="{{ url_for(endpoint, tab='inquiries') }}" class="{{ 'active' if active_tab == 'inquiries' }}">상품문의{% if unanswered %} <span class="tab-count">{{ unanswered }}</span>{% endif %}</a>
 </div>
 
-{% if not demo %}
-<div class="row" style="margin:-6px 0 14px;">
-  <a class="btn secondary" href="{{ url_for('cs_demo') }}">샘플 데이터로 화면 확인</a>
-</div>
-{% endif %}
 
 <div class="section"{% if active_tab != 'claims' %} style="display:none;"{% endif %}>
   <p class="eyebrow">반품 · 취소</p>
-  <p class="page-note">
-    여기서 할 수 있는 것: 최근 {{ hours }}시간 내 반품·취소 접수 현황 확인(조회 전용).<br>
-    스마트스토어센터에서 해야 하는 것: 반품 승인·환불 처리 — 판단이 필요한 작업이라 자동화 대상에서 제외했습니다.
-  </p>
 
   {% if error %}
   <div class="panel" style="background:var(--err-bg);color:var(--err);">조회 실패: {{ error }}</div>
@@ -51,11 +45,6 @@
 
 <div class="section"{% if active_tab != 'inquiries' %} style="display:none;"{% endif %}>
   <p class="eyebrow">상품문의</p>
-  <p class="page-note">
-    여기서 할 수 있는 것: 미답변 문의를 놓치지 않고 확인(답변 필요 — 조회 전용 아님).<br>
-    스마트스토어센터에서 해야 하는 것: 실제 답변 작성·등록.
-    <br><span class="hint">응답 필드명이 실주문·실문의로 아직 검증되지 않은 API라, 내용이 비어 보이면 필드명을 다시 확인해야 합니다.</span>
-  </p>
 
   {% if inquiry_error %}
   <div class="panel" style="background:var(--err-bg);color:var(--err);">조회 실패: {{ inquiry_error }}</div>

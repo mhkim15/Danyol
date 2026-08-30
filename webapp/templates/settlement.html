@@ -16,10 +16,6 @@
 {% endif %}
 
 {% if tab == 'calendar' %}
-<p class="muted" style="margin:-10px 0 16px;font-size:13px;">
-  이 화면은 이번 세션에 처음 연동한 정산 API를 씁니다 — 응답 필드가 실계정으로 완전히 검증되지 않았으니,
-  숫자가 이상해 보이면 우선 의심하고 스마트스토어센터 정산내역과 대조해보세요.
-</p>
 
 {% if error %}
 <div class="panel" style="background:var(--err-bg);color:var(--err);">일별 정산 조회 실패: {{ error }}</div>
@@ -27,7 +23,7 @@
 
 <div class="panel">
   <div class="chart-toolbar">
-    <p class="eyebrow" style="margin:0;">일별 정산 (정산예정일 기준)</p>
+    <p class="eyebrow" style="margin:0;">일별 정산</p>
     <div class="month-nav">
       <a href="{{ url_for('settlement_view', tab='calendar', year=prev_year, month=prev_month) }}"><button type="button">‹</button></a>
       <span class="month-label">{{ selected_year }}년 {{ selected_month }}월</span>
@@ -44,11 +40,11 @@
     </div>
     <div class="stat-card">
       <p class="stat-num">{{ "{:,}".format(total_benefit) }}원</p>
-      <p class="stat-label">혜택정산(쿠폰·포인트 등, 집계치)</p>
+      <p class="stat-label">혜택정산</p>
     </div>
     <div class="stat-card">
       <p class="stat-num {{ 'attn' if total_vat }}">{{ "{:,}".format(total_vat) + '원' if total_vat is not none else '확인 필요' }}</p>
-      <p class="stat-label">이번달 부가세 — 신고 전 미리 떼어둘 금액</p>
+      <p class="stat-label">이번달 부가세</p>
     </div>
   </div>
 
@@ -69,11 +65,7 @@
 </div>
 
 <div class="panel">
-  <p class="eyebrow">건별 정산 (상품주문 단위 실정산액 — 매출↔정산 대사용)</p>
-  <p class="muted" style="font-size:13px;margin:0 0 12px;">
-    건별 조회는 하루씩만 되는 API라 자동으로 안 돌고 버튼을 눌러야 동기화됩니다.
-    지금까지 로컬에 쌓인 건: {{ case_count }}건, 합계 {{ "{:,}".format(case_total) }}원.
-  </p>
+  <p class="eyebrow">건별 정산</p>
   <form method="post" action="{{ url_for('settlement_sync_cases') }}" class="row" style="align-items:center;">
     <label style="margin:0;">최근<input type="number" name="days" value="14" min="1" max="31" style="width:70px;display:inline-block;margin:0 6px;">일 동기화</label>
     <button type="submit">건별 정산 동기화</button>
@@ -82,10 +74,6 @@
 </div>
 
 {% elif tab == 'reconcile' %}
-<p class="muted" style="margin:-10px 0 16px;font-size:13px;">
-  내가 계산한 매출과 실제 입금액(건별 정산)을 상품주문 단위로 대조합니다.
-  <a href="{{ url_for('settlement_view', tab='calendar') }}">정산 캘린더</a>에서 "건별 정산 동기화"를 먼저 눌러야 데이터가 쌓입니다.
-</p>
 
 {% if suggestion %}
 <div class="panel" style="background:var(--paper);">
@@ -95,13 +83,9 @@
     <div><span class="muted" style="font-size:12px;">실측 평균 공제율</span><div class="mono" style="font-size:16px;font-weight:700;">{{ "%.2f"|format(suggestion.measured_rate * 100) }}%</div></div>
     <div><span class="muted" style="font-size:12px;">차이</span><div class="mono" style="font-size:16px;color:{{ 'var(--err)' if suggestion.diff > 0 else 'var(--ok)' }};">{{ "%+.2f"|format(suggestion.diff * 100) }}%p</div></div>
   </div>
-  <p class="muted" style="font-size:12.5px;margin:10px 0 0;">
-    차이가 꾸준히 반복되면 bebrave/config.py의 SALES_FEE_MAX·CS_RESERVE를 이 실측값 방향으로 조정을 검토하세요 —
-    자동으로 바꾸지 않습니다(판매가 정책에 직결되는 값이라 사람이 판단할 일).
-  </p>
 </div>
 {% else %}
-<div class="panel muted">대사 표본이 5건 미만이라 수수료율 제안은 아직 안 나옵니다 (거래가 쌓이면 자동으로 표시됩니다).</div>
+<div class="panel muted">수수료율 제안 — 표본 부족</div>
 {% endif %}
 
 <div class="panel">
@@ -118,21 +102,17 @@
       <td><span class="badge">{{ '빠른정산' if r.settle_type == 'QUICK_SETTLE_ORIGINAL' else ('일반정산' if r.settle_type == 'NORMAL_SETTLE_ORIGINAL' else r.settle_type or '-') }}</span></td>
     </tr>
     {% else %}
-    <tr><td colspan="6" class="muted">대사 가능한 건 없음 — 매출과 정산 데이터가 둘 다 있는 주문만 표시됩니다</td></tr>
+    <tr><td colspan="6" class="muted">대사 가능한 건 없음</td></tr>
     {% endfor %}
   </table>
   </div>
 </div>
 
 {% else %}
-<p class="muted" style="margin:-10px 0 16px;font-size:13px;">
-  도매매에 먼저 나간 발주 지출과, 스마트스토어에서 나중에 들어올 정산예정을 날짜순으로 합쳐
-  누적 잔액을 봅니다. 정확한 미래 예측이 아니라 "지금 얼마가 묶여 있는지" 방향을 보는 용도입니다.
-</p>
 
 <div class="panel">
   <p class="stat-num {{ 'attn' if ending_balance < 0 else 'money' }}">{{ "{:,}".format(ending_balance) }}원</p>
-  <p class="stat-label">현재까지 누적 잔액 (지출은 이미 나간 돈, 입금예정은 아직 안 들어온 돈 포함)</p>
+  <p class="stat-label">누적 잔액</p>
 </div>
 
 <div class="panel">
@@ -148,7 +128,7 @@
       <td class="mono">{{ "{:,}".format(e.balance) }}원</td>
     </tr>
     {% else %}
-    <tr><td colspan="5" class="muted">발주 지출 또는 정산예정 데이터가 없습니다</td></tr>
+    <tr><td colspan="5" class="muted">데이터 없음</td></tr>
     {% endfor %}
   </table>
   </div>

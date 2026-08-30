@@ -6,8 +6,10 @@ claims.py의 반품률)을 한곳에 모아 심각도순으로 "오늘 할 일"�
 유일하게 새로 계산하는 건 발송 지연이다 — 결제완료 후 오래 미발송인 주문을
 감시하는 코드가 지금까지 전혀 없었다(발송 지연은 굿서비스 점수에 직결).
 """
+import json
 from dataclasses import dataclass
 from datetime import datetime, timedelta
+from pathlib import Path
 from typing import List
 
 SEVERITY_URGENT = "긴급"
@@ -16,6 +18,7 @@ SEVERITY_INFO = "참고"
 _SEVERITY_ORDER = {SEVERITY_URGENT: 0, SEVERITY_WARN: 1, SEVERITY_INFO: 2}
 
 DISPATCH_DELAY_HOURS = 24  # 결제완료 후 이 시간 넘게 미발송이면 지연으로 본다
+_SYNC_CACHE_PATH = Path("data/product_sync_cache.json")
 
 
 @dataclass
@@ -24,6 +27,7 @@ class HealthIssue:
     category: str
     message: str
     detail: str = ""
+    link: str = ""  # 웹앱 내부 경로 문자열 — url_for는 이 라이브러리 계층에서 못 쓴다
 
 
 def _dispatch_delay_issues() -> List[HealthIssue]:
@@ -43,25 +47,43 @@ def _dispatch_delay_issues() -> List[HealthIssue]:
             issues.append(HealthIssue(
                 SEVERITY_URGENT, "발송지연",
                 f"{i['product_name'][:24]} — 결제 후 {hours:.0f}시간째 미발송",
-                f"주문 {i['product_order_id']}",
+                f"주문 {i['product_order_id']}", link="/orders?tab=dispatch",
             ))
     return issues
 
 
-def check_store_health() -> List[HealthIssue]:
+def _cached_sync_entries() -> list:
+    if not _SYNC_CACHE_PATH.exists():
+        return []
+    return json.loads(_SYNC_CACHE_PATH.read_text(encoding="utf-8"))
+
+
+def check_store_health(deep: bool = False) -> List[HealthIssue]:
     """각 신호는 독립적으로 실패해도 나머지 신호에 영향 없게 개별 try/except로 감싼다 —
-    카카오 API 하나 막혔다고 품절 경고까지 안 보이면 안 된다."""
+    카카오 API 하나 막혔다고 품절 경고까지 안 보이면 안 된다.
+
+    deep=False(기본)면 도매매 대조는 네트워크를 타지 않고 상품 관리 화면의
+    "지금 확인" 캐시(product_sync_cache.json)를 읽는다 — 홈에 얹어도 느려지지
+    않게 하려는 것. 캐시가 낡았을 수 있으니 정밀 진단은 deep=True로 실행한다."""
     issues: List[HealthIssue] = []
 
     try:
-        from ..smartstore.sync import sync_all, ACTION_SUSPEND, ACTION_MARGIN_WARN, ACTION_ERROR
-        for r in sync_all(dry_run=True):
-            if r.action == ACTION_SUSPEND:
-                issues.append(HealthIssue(SEVERITY_URGENT, "품절", f"{r.name[:24]} — {r.detail}"))
-            elif r.action == ACTION_MARGIN_WARN:
-                issues.append(HealthIssue(SEVERITY_WARN, "마진붕괴", f"{r.name[:24]} — {r.detail}"))
-            elif r.action == ACTION_ERROR:
-                issues.append(HealthIssue(SEVERITY_WARN, "확인실패", f"{r.name[:24]} — {r.detail}"))
+        from ..smartstore.sync import ACTION_SUSPEND, ACTION_MARGIN_WARN, ACTION_ERROR
+        if deep:
+            from ..smartstore.sync import sync_all
+            entries = [{"action": r.action, "name": r.name, "detail": r.detail} for r in sync_all(dry_run=True)]
+        else:
+            entries = _cached_sync_entries()
+        for e in entries:
+            if e["action"] == ACTION_SUSPEND:
+                issues.append(HealthIssue(SEVERITY_URGENT, "품절", f"{e['name'][:24]} — {e['detail']}",
+                                           link="/products?tab=action"))
+            elif e["action"] == ACTION_MARGIN_WARN:
+                issues.append(HealthIssue(SEVERITY_WARN, "마진붕괴", f"{e['name'][:24]} — {e['detail']}",
+                                           link="/products?tab=action"))
+            elif e["action"] == ACTION_ERROR:
+                issues.append(HealthIssue(SEVERITY_WARN, "확인실패", f"{e['name'][:24]} — {e['detail']}",
+                                           link="/products?tab=action"))
     except Exception as e:
         issues.append(HealthIssue(SEVERITY_WARN, "동기화확인실패", str(e)))
 
@@ -75,7 +97,8 @@ def check_store_health() -> List[HealthIssue]:
         from ..smartstore.inquiries import fetch_inquiries
         token = get_access_token()
         for q in fetch_inquiries(token, days=7, answered=False):
-            issues.append(HealthIssue(SEVERITY_WARN, "미답변문의", f"{q.product_name[:24]} — {q.content[:30]}"))
+            issues.append(HealthIssue(SEVERITY_WARN, "미답변문의", f"{q.product_name[:24]} — {q.content[:30]}",
+                                       link="/cs"))
     except Exception:
         pass
 
@@ -87,7 +110,7 @@ def check_store_health() -> List[HealthIssue]:
             issues.append(HealthIssue(
                 SEVERITY_WARN, "반품률",
                 f"최근 30일 반품률 {r['rate']:.0%} — 빠른정산 기준({FAST_SETTLEMENT_MAX_RETURN:.0%}) 초과",
-                f"{r['claim_count']}건 / {r['order_count']}건",
+                f"{r['claim_count']}건 / {r['order_count']}건", link="/cs",
             ))
     except Exception:
         pass
@@ -97,7 +120,8 @@ def check_store_health() -> List[HealthIssue]:
         for p in product_performance():
             if p["status"] == "무판매(재검토 필요)":
                 issues.append(HealthIssue(
-                    SEVERITY_INFO, "무판매", f"{p['name'][:24]} — {p['days_since_registered']}일 경과"))
+                    SEVERITY_INFO, "무판매", f"{p['name'][:24]} — {p['days_since_registered']}일 경과",
+                    link="/products?tab=action"))
     except Exception:
         pass
 
@@ -124,6 +148,15 @@ def _demo() -> None:
         with patch.object(pq, "QUEUE_PATH", path):
             issues = _dispatch_delay_issues()
             assert len(issues) == 1 and "지연상품" in issues[0].message, "30시간 지연건을 못 잡음"
+            assert issues[0].link == "/orders?tab=dispatch", "발송지연 딥링크 누락"
+
+    with tempfile.TemporaryDirectory() as tmp:
+        cache_path = Path(tmp) / "product_sync_cache.json"
+        cache_path.write_text(json.dumps([{"action": "판매중지", "name": "품절상품", "detail": "재고 0"}]), encoding="utf-8")
+        import bebrave.report.health as health_mod
+        with patch.object(health_mod, "_SYNC_CACHE_PATH", cache_path):
+            entries = health_mod._cached_sync_entries()
+            assert entries and entries[0]["name"] == "품절상품", "동기화 캐시 읽기 실패(deep=False 경로)"
 
     unsorted = [
         HealthIssue(SEVERITY_INFO, "a", "m"),

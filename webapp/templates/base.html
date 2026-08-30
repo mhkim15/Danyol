@@ -275,11 +275,12 @@
     <div class="brand"><span class="brand-mark" aria-hidden="true">F</span><span>Friday</span></div>
     <div class="nav-links">
       <a href="{{ url_for('index') }}" class="{{ 'active' if request.endpoint in ('index','index_demo') }}">홈</a>
+      <a href="{{ url_for('health_view') }}" class="{{ 'active' if request.endpoint in ('health_view','health_demo') }}">헬스체크</a>
     </div>
     <p class="nav-group">상품</p>
     <div class="nav-links">
       <a href="{{ url_for('candidates') }}" class="{{ 'active' if request.endpoint in ('candidates','candidates_preview') }}">발굴 후보</a>
-      <a href="{{ url_for('products_view') }}" class="{{ 'active' if request.endpoint in ('products_view','products_refresh_stock','registered_status','sync_apply','sync_apply_price','performance_suspend','performance_reoptimize_name') }}">상품 관리</a>
+      <a href="{{ url_for('products_view') }}" class="{{ 'active' if request.endpoint in ('products_view','products_refresh_stock','products_bulk','registered_status','sync_apply_price','sync_apply_one','performance_suspend','performance_resume','performance_reoptimize_name') }}">상품 관리</a>
     </div>
     <p class="nav-group">주문</p>
     <div class="nav-links">

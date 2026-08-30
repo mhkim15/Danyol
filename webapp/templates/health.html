@@ -1,0 +1,31 @@
+{% extends "base.html" %}
+{% block title %}헬스체크{% endblock %}
+{% block content %}
+<h1>헬스체크</h1>
+<p class="page-note">
+  새로 조사하는 화면이 아니라, 품절·마진붕괴·발송지연·미답변문의·반품률·무판매를
+  각자 흩어져 있던 판정에서 모아 심각도순으로 보여줍니다.
+  {% if not deep %}지금은 캐시 기준 빠른 진단입니다 — 도매매 실시간 대조까지 보려면 아래 버튼을 누르세요.{% endif %}
+</p>
+
+<div class="row" style="margin:-6px 0 14px;">
+  {% if not demo %}
+  <a class="btn secondary" href="{{ url_for('health_demo') }}">샘플 데이터로 화면 확인</a>
+  <a class="btn secondary" href="{{ url_for('health_view', deep=1) }}">정밀 진단 다시 돌리기 (도매매 실시간 대조)</a>
+  {% endif %}
+</div>
+
+{% if not issues %}
+<div class="panel" style="background:var(--ok-bg);color:var(--ok);">이상 없음 — 지금 조치할 게 없습니다.</div>
+{% endif %}
+
+{% for i in issues %}
+<div class="panel" style="padding:12px 16px;display:flex;align-items:center;gap:12px;">
+  <span class="{{ 'badge-err' if i.severity == '긴급' else ('badge-warn' if i.severity == '주의' else 'badge') }}">{{ i.severity }}</span>
+  <span class="badge">{{ i.category }}</span>
+  <span style="flex:1;">{{ i.message }}</span>
+  {% if i.detail %}<span class="muted" style="font-size:12px;">{{ i.detail }}</span>{% endif %}
+  {% if i.link %}<a class="btn secondary btn-sm" href="{{ i.link }}">확인하러 가기</a>{% endif %}
+</div>
+{% endfor %}
+{% endblock %}

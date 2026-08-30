@@ -2,178 +2,93 @@
 {% block title %}홈{% endblock %}
 {% block content %}
 <h1>홈</h1>
+<p class="page-note">"오늘 뭐부터 해야 하나"에 답하는 화면입니다. 스토어를 거시적으로 진단하려면 <a href="{{ url_for('health_view') }}">헬스체크</a>를 확인하세요.</p>
 
-<div class="tabs">
-  <a href="{{ url_for('index') }}" class="{{ 'active' if tab == 'pipeline' }}">파이프라인 현황</a>
-  <a href="{{ url_for('index', tab='health') }}" class="{{ 'active' if tab == 'health' }}">헬스체크</a>
-</div>
-
-{% if tab == 'health' %}
-{% if not demo %}
-<div class="row" style="margin:-6px 0 14px;">
-  <a class="btn secondary" href="{{ url_for('health_demo') }}">샘플 데이터로 화면 확인</a>
-</div>
-{% endif %}
-<p class="muted" style="margin:-10px 0 16px;font-size:13px;">
-  새로 조사하는 화면이 아니라, 품절·마진붕괴·발송지연·미답변문의·반품률·무판매를
-  각자 흩어져 있던 판정에서 모아 심각도순으로 보여줍니다.
-</p>
-
-{% if not issues %}
-<div class="panel" style="background:var(--ok-bg);color:var(--ok);">이상 없음 — 지금 조치할 게 없습니다.</div>
-{% endif %}
-
-{% for i in issues %}
-<div class="panel" style="padding:12px 16px;display:flex;align-items:center;gap:12px;">
-  <span class="{{ 'badge-err' if i.severity == '긴급' else ('badge-warn' if i.severity == '주의' else 'badge') }}">{{ i.severity }}</span>
-  <span class="badge">{{ i.category }}</span>
-  <span style="flex:1;">{{ i.message }}</span>
-  {% if i.detail %}<span class="muted" style="font-size:12px;">{{ i.detail }}</span>{% endif %}
-</div>
-{% endfor %}
-
-{% else %}
 {% if not demo %}
 <div class="row" style="margin:-6px 0 14px;">
   <a class="btn secondary" href="{{ url_for('index_demo') }}">샘플 데이터로 화면 확인</a>
 </div>
-{% else %}
-<div class="flash flash-success">샘플 화면입니다 — 발굴 후보·등록 상품 수는 실제, 주문·매출·반품 수치는 예시입니다.</div>
 {% endif %}
 
 <div class="section">
-  <p class="eyebrow">주문 <span style="text-transform:none;letter-spacing:normal;font-weight:400;">· {{ checked_at }} 기준</span></p>
-  <div class="stat-grid" style="grid-template-columns: repeat(3, 1fr);">
-    <a href="{{ url_for('orders', tab='ready') }}" class="stat-card link">
-      <p class="stat-num {{ 'attn' if pending_orders else '' }}">{{ pending_orders if pending_orders is not none else '확인 필요' }}{{ '건' if pending_orders is not none else '' }}</p>
-      <p class="stat-label">처리할 주문 — 발주 대기열로</p>
+  <h2>오늘 할 일 <span class="badge{{ '-ok' if todo_total == 0 else '-err' }}">{{ todo_total }}건</span></h2>
+
+  {% if todo_total == 0 %}
+  <div class="panel" style="background:var(--ok-bg);color:var(--ok);">지금 할 일 없음 — 전부 정상입니다.</div>
+  {% endif %}
+
+  {% for g in todo_groups %}
+  <p class="eyebrow" style="margin:{{ '18px' if not loop.first }} 0 8px;">{{ g.name }} <span style="text-transform:none;letter-spacing:normal;font-weight:400;">{{ g.count }}건</span></p>
+  {% if g.rows %}
+  <div class="stack">
+    {% for it in g.rows %}
+    <a href="{{ it.link }}" class="todo-row" style="margin-bottom:0;">
+      <p class="todo-title attn">{{ it.text }}</p>
+      <span class="todo-arrow">→</span>
     </a>
-    <div class="stat-card">
-      <p class="stat-num">{{ this_month.order_count }}건</p>
-      <p class="stat-label">이번달 주문</p>
-    </div>
-    <a href="{{ url_for('cs') }}" class="stat-card link">
-      <p class="stat-num {{ 'attn' if returns_count else '' }}">
-        {{ returns_count if returns_count is not none else '확인 필요' }}{{ '건' if returns_count is not none else '' }}
-      </p>
-      <p class="stat-label">반품·취소 (최근 24시간)</p>
-    </a>
-  </div>
-</div>
-
-<div class="section">
-  <p class="eyebrow">판매</p>
-  <div class="stat-grid">
-    <div class="stat-card">
-      <div class="stat-icon" style="font-size:14px;font-weight:700;">₩</div>
-      <p class="stat-num">{{ "{:,}".format(this_month.revenue) }}원</p>
-      <p class="stat-label">이번달 매출</p>
-    </div>
-    <div class="stat-card">
-      <div class="stat-icon money">
-        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 19h16M4 19V9l4-3 4 4 4-6 4 3v12"/></svg>
-      </div>
-      <p class="stat-num money">{{ "{:,}".format(this_month.profit) }}원</p>
-      <p class="stat-label">이번달 순수익{% if this_month.uncertain_count %} <span class="badge-warn" title="등록 상품과 매칭 안 된 주문 — 순수익 미포함">원가미상 {{ this_month.uncertain_count }}건 제외</span>{% endif %}</p>
-    </div>
-  </div>
-
-  <div class="panel" style="margin-top:16px;">
-    <div class="chart-toolbar">
-      <div class="month-nav">
-        <a href="{{ url_for('index', year=prev_year, month=prev_month) }}"><button type="button" aria-label="이전 달">‹</button></a>
-        <span class="month-label">{{ selected_year }}년 {{ selected_month }}월</span>
-        {% if next_disabled %}
-        <button type="button" disabled aria-label="다음 달">›</button>
-        {% else %}
-        <a href="{{ url_for('index', year=next_year, month=next_month) }}"><button type="button" aria-label="다음 달">›</button></a>
-        {% endif %}
-      </div>
-    </div>
-    <div class="chart-legend">
-      <span class="legend-toggle" data-series="revenue"><i class="sw" style="border-color:var(--money);"></i>매출</span>
-      <span class="legend-toggle" data-series="profit"><i class="sw" style="border-color:var(--money-2);border-top-style:dashed;"></i>순수익</span>
-    </div>
-
-    <div class="chart-wrap">
-      <svg id="salesChart" width="100%" viewBox="0 0 680 220" style="overflow:visible;"></svg>
-      <div id="chartTooltip" class="chart-tooltip"></div>
-    </div>
-    <p id="chartEmpty" class="muted" style="display:none;">이 달엔 집계된 매출이 없습니다. 홈 화면을 방문할 때마다 최근 주문이 자동으로 반영돼요.</p>
-
-    <div class="row" style="margin-top:14px;">
-      <a class="btn secondary" href="{{ url_for('report') }}">주간 리포트</a>
-    </div>
-  </div>
-</div>
-
-<div class="section">
-  <p class="eyebrow">상품</p>
-
-  <div class="stat-grid">
-    <div class="stat-card">
-      <p class="stat-num">{{ registered_count }}개</p>
-      <p class="stat-label">등록된 상품</p>
-    </div>
-    <div class="stat-card">
-      <p class="stat-num" style="color:var(--ok);">{{ normal_count }}개</p>
-      <p class="stat-label">정상판매중</p>
-    </div>
-    <div class="stat-card">
-      <p class="stat-num" style="color:{{ 'var(--err)' if watch_count else 'var(--ink)' }};">{{ watch_count }}개</p>
-      <p class="stat-label">점검필요(3개월+ 미판매)</p>
-    </div>
-    <a href="{{ url_for('products_view', tab='action') }}" class="stat-card {{ 'link' if risky_count }}">
-      <p class="stat-num" style="color:{{ 'var(--err)' if risky_count else 'var(--ink)' }};">{{ risky_count }}개</p>
-      <p class="stat-label">자동삭제위험(13개월+)</p>
-      {% if risky_names %}<p class="stat-label" style="margin-top:4px;">{{ risky_names|join(', ') }}</p>{% endif %}
-    </a>
-  </div>
-
-  <div class="panel" style="margin-top:16px;">
-    <h2>추천 상품 ({{ candidate_count }}개 발굴 · {{ recommended_count }}개 진입권장)</h2>
-    {% if top_candidates %}
-    <div class="stack">
-      {% for c in top_candidates %}
-      <a href="{{ url_for('candidates_preview', keyword=c.keyword) }}" class="todo-row" style="margin-bottom:0;">
-        <div>
-          <p class="todo-title">{{ c.keyword }}</p>
-          <p class="todo-sub">
-            <span class="score-badge {{ 'score-high' if c.score >= 90 else ('score-mid' if c.score >= 80 else 'score-low') }}">{{ c.score }}점</span>
-            {{ c.category }}
-          </p>
-        </div>
-        <span class="todo-arrow">→</span>
-      </a>
-      {% endfor %}
-    </div>
-    {% else %}
-    <p class="muted">진입권장 후보가 없습니다.</p>
-    {% endif %}
-    <div class="row" style="margin-top:12px;">
-      <a class="btn secondary" href="{{ url_for('candidates') }}">발굴 후보 전체 보기</a>
-    </div>
-  </div>
-</div>
-
-<div class="panel">
-  <h2>연동 상태</h2>
-  <table>
-    <tr><th>항목</th><th>상태</th></tr>
-    {% for name, status in env_status.items() %}
-    {% set ok, required = status %}
-    <tr>
-      <td>{{ name }}</td>
-      <td>
-        {% if ok %}<span class="badge-ok">설정됨</span>
-        {% elif required %}<span class="badge-err">미설정</span>
-        {% else %}<span class="muted mono">미설정</span>
-        {% endif %}
-      </td>
-    </tr>
     {% endfor %}
-  </table>
+  </div>
+  {% endif %}
+  {% endfor %}
 </div>
+
+<div class="section">
+  <p class="eyebrow">이번 달 · {{ checked_at }} 기준</p>
+  <div class="stat-grid">
+    <a href="{{ url_for('report') }}" class="stat-card link">
+      <p class="stat-num">{{ "{:,}".format(this_month.revenue) }}원</p>
+      <p class="stat-label">매출</p>
+    </a>
+    <a href="{{ url_for('report') }}" class="stat-card link">
+      <p class="stat-num money">{{ "{:,}".format(this_month.profit) }}원</p>
+      <p class="stat-label">순수익{% if this_month.uncertain_count %} <span class="badge-warn" title="등록 상품과 매칭 안 된 주문 — 순수익 미포함">원가미상 {{ this_month.uncertain_count }}건 제외</span>{% endif %}</p>
+    </a>
+    <a href="{{ url_for('orders', tab='history') }}" class="stat-card link">
+      <p class="stat-num">{{ this_month.order_count }}건</p>
+      <p class="stat-label">주문</p>
+    </a>
+    <a href="{{ url_for('cs') }}" class="stat-card link">
+      <p class="stat-num">{{ this_month_returns }}건</p>
+      <p class="stat-label">반품·취소</p>
+    </a>
+  </div>
+
+  <details open style="margin-top:16px;">
+    <summary class="hint" style="cursor:pointer;font-size:13px;">매출 추이 ▾</summary>
+    <div class="panel" style="margin-top:8px;">
+      <div class="chart-legend">
+        <span class="legend-toggle" data-series="revenue"><i class="sw" style="border-color:var(--money);"></i>매출</span>
+        <span class="legend-toggle" data-series="profit"><i class="sw" style="border-color:var(--money-2);border-top-style:dashed;"></i>순수익</span>
+      </div>
+      <div class="chart-wrap">
+        <svg id="salesChart" width="100%" viewBox="0 0 680 220" style="overflow:visible;"></svg>
+        <div id="chartTooltip" class="chart-tooltip"></div>
+      </div>
+      <p id="chartEmpty" class="muted" style="display:none;">이 달엔 집계된 매출이 없습니다. 홈 화면을 방문할 때마다 최근 주문이 자동으로 반영돼요.</p>
+    </div>
+  </details>
+</div>
+
+<details>
+  <summary class="hint" style="cursor:pointer;font-size:13px;margin-bottom:8px;">연동 상태 ▾</summary>
+  <div class="panel">
+    <table>
+      <tr><th>항목</th><th>상태</th></tr>
+      {% for name, status in env_status.items() %}
+      {% set ok, required = status %}
+      <tr>
+        <td>{{ name }}</td>
+        <td>
+          {% if ok %}<span class="badge-ok">설정됨</span>
+          {% elif required %}<span class="badge-err">미설정</span>
+          {% else %}<span class="muted mono">미설정</span>
+          {% endif %}
+        </td>
+      </tr>
+      {% endfor %}
+    </table>
+  </div>
+</details>
 
 <script>
 (function () {
@@ -216,20 +131,31 @@
     return e;
   }
 
-  [0, 0.25, 0.5, 0.75, 1].forEach(function (f) {
-    var val = Math.round(top * f);
-    var yy = y(val);
-    svg.appendChild(el("line", { x1: padL, y1: yy, x2: W - padR, y2: yy, stroke: "var(--line)", "stroke-width": 1 }));
-    var t = el("text", { x: padL - 8, y: yy + 4, "text-anchor": "end", "font-size": 10.5, fill: "var(--ink-muted)" });
-    t.textContent = fmt(val);
-    svg.appendChild(t);
-  });
+  function scale() {
+    var svgRect = svg.getBoundingClientRect();
+    return svgRect.width > 0 ? svgRect.width / W : 1;
+  }
 
-  series.forEach(function (p, i) {
-    if (p.day % 5 !== 0 && p.day !== 1) return;
-    var t = el("text", { x: x(i), y: H - 6, "text-anchor": "middle", "font-size": 10.5, fill: "var(--ink-muted)" });
-    t.textContent = p.day;
-    svg.appendChild(t);
+  function drawAxes() {
+    [0, 0.25, 0.5, 0.75, 1].forEach(function (f) {
+      var val = Math.round(top * f);
+      var yy = y(val);
+      svg.appendChild(el("line", { x1: padL, y1: yy, x2: W - padR, y2: yy, stroke: "var(--line)", "stroke-width": 1 }));
+      var t = el("text", { x: padL - 8, y: yy + 4, "text-anchor": "end", "font-size": 14 / scale(), fill: "var(--ink-muted)" });
+      t.textContent = fmt(val);
+      svg.appendChild(t);
+    });
+
+    series.forEach(function (p, i) {
+      if (p.day % 5 !== 0 && p.day !== 1) return;
+      var t = el("text", { x: x(i), y: H - 6, "text-anchor": "middle", "font-size": 14 / scale(), fill: "var(--ink-muted)" });
+      t.textContent = p.day;
+      svg.appendChild(t);
+    });
+  }
+  drawAxes();
+  window.addEventListener("resize", function () {
+    Array.prototype.slice.call(svg.querySelectorAll("text")).forEach(function (t) { t.setAttribute("font-size", 14 / scale()); });
   });
 
   function pointsFor(key) {
@@ -303,9 +229,9 @@
     tooltip.innerHTML = '<div class="tt-date">' + p.date + '</div>' + lines.join(" · ");
     var svgRect = svg.getBoundingClientRect();
     var wrapRect = wrap.getBoundingClientRect();
-    var scale = svgRect.width / W;
-    tooltip.style.left = (svgRect.left - wrapRect.left + px * scale) + "px";
-    tooltip.style.top = (svgRect.top - wrapRect.top + y(Math.max(p.revenue, p.profit)) * scale - 8) + "px";
+    var s = scale();
+    tooltip.style.left = (svgRect.left - wrapRect.left + px * s) + "px";
+    tooltip.style.top = (svgRect.top - wrapRect.top + y(Math.max(p.revenue, p.profit)) * s - 8) + "px";
     tooltip.style.opacity = 1;
   }
 
@@ -335,5 +261,4 @@
   });
 })();
 </script>
-{% endif %}
 {% endblock %}

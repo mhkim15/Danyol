@@ -113,59 +113,115 @@ def _find_registered_product(order) -> tuple:
     return match_order_to_product(order, _load_json(REGISTERED_PRODUCTS))
 
 
-# ── 스토어 헬스체크 (2026-08 홈 탭으로 흡수 — index()의 tab='health' 분기 참고) ────
+# ── 스토어 헬스체크 (3단계에서 홈과 완전히 분리된 별도 화면, 4단계에서 고도화 예정) ──
+
+@app.route("/health")
+def health_view():
+    """기본은 캐시 기반 빠른 진단(deep=False). ?deep=1이면 도매매 실시간 대조까지
+    포함한 정밀 진단을 돈다 — 상품 수가 늘면 느려지니 방문마다 자동으로 돌리지 않는다."""
+    from bebrave.report import check_store_health
+    deep = request.args.get("deep") == "1"
+    issues = check_store_health(deep=deep)
+    return render_template("health.html", issues=issues, deep=deep)
+
 
 @app.route("/health/demo")
 def health_demo():
     from bebrave.report.health import HealthIssue, SEVERITY_URGENT, SEVERITY_WARN, SEVERITY_INFO
     issues = [
-        HealthIssue(SEVERITY_URGENT, "발송지연", "캠핑용 접이식 미니 테이블 — 결제 후 30시간째 미발송", "주문 DEMO-Q5"),
-        HealthIssue(SEVERITY_URGENT, "품절", "실리콘주걱 대코 브라이트 — 도매매 품절, 판매중지", "도매매 조회 결과"),
-        HealthIssue(SEVERITY_WARN, "마진붕괴", "우산 양산 양우산 — 도매가 3,190→4,200원(+31%) 마진 12% < 최소 15%"),
-        HealthIssue(SEVERITY_WARN, "미답변문의", "실리콘주걱 대코 브라이트 — 재질이 어떻게 되나요?"),
-        HealthIssue(SEVERITY_WARN, "반품률", "최근 30일 반품률 28% — 빠른정산 기준(20%) 초과", "7건 / 25건"),
-        HealthIssue(SEVERITY_INFO, "무판매", "캠핑용 접이식 미니 테이블 — 95일 경과"),
+        HealthIssue(SEVERITY_URGENT, "발송지연", "캠핑용 접이식 미니 테이블 — 결제 후 30시간째 미발송", "주문 DEMO-Q5", link="/orders?tab=dispatch"),
+        HealthIssue(SEVERITY_URGENT, "품절", "실리콘주걱 대코 브라이트 — 도매매 품절, 판매중지", "도매매 조회 결과", link="/products?tab=action"),
+        HealthIssue(SEVERITY_WARN, "마진붕괴", "우산 양산 양우산 — 도매가 3,190→4,200원(+31%) 마진 12% < 최소 15%", link="/products?tab=action"),
+        HealthIssue(SEVERITY_WARN, "미답변문의", "실리콘주걱 대코 브라이트 — 재질이 어떻게 되나요?", link="/cs"),
+        HealthIssue(SEVERITY_WARN, "반품률", "최근 30일 반품률 28% — 빠른정산 기준(20%) 초과", "7건 / 25건", link="/cs"),
+        HealthIssue(SEVERITY_INFO, "무판매", "캠핑용 접이식 미니 테이블 — 95일 경과", link="/products?tab=action"),
     ]
     flash("샘플 데이터입니다 — 실제 진단이 아닙니다.", "success")
-    return render_template("index.html", tab="health", issues=issues, demo=True)
+    return render_template("health.html", issues=issues, deep=False, demo=True)
 
 
-# ── 홈 ────────────────────────────────────────────────────────────────────
+# ── 홈 = 오늘 할 일 (거시 진단은 /health로 분리됨, 4단계) ───────────────────────
+
+def _todo_groups(registered: list, pending_orders, returns_count, inquiry_count) -> list:
+    """앉은 자리에서 처리 가능한 단위로 묶은 "오늘 할 일" 목록. 상품 조치의 그룹
+    이름은 상품 관리 화면(1단계)과 반드시 일치시킨다 — 다른 이름을 쓰면 같은
+    일이 두 개의 다른 일처럼 보인다. 전부 로컬 캐시 기준이라 홈 방문이 느려지지
+    않는다(유일한 예외는 이미 다른 이유로 방문마다 돌던 주문 조회 — 아래 참고)."""
+    from bebrave.smartstore.purchase_queue import load_queue, STATUS_ORDERED
+    from bebrave.report.performance import product_performance
+    from bebrave.smartstore.sync import ACTION_SUSPEND, ACTION_STOCK, ACTION_MARGIN_WARN
+
+    groups = []
+
+    order_items = []
+    if pending_orders:
+        order_items.append({"text": f"발주할 주문 {pending_orders}건 — 결제완료 후 발주 대기",
+                             "link": url_for("orders", tab="ready"), "n": pending_orders})
+    dispatch_wait = len([i for i in load_queue() if i["status"] == STATUS_ORDERED])
+    if dispatch_wait:
+        order_items.append({"text": f"발송할 주문 {dispatch_wait}건 — 송장 입력 대기",
+                             "link": url_for("orders", tab="dispatch"), "n": dispatch_wait})
+    groups.append({"name": "주문 처리", "rows": order_items})
+
+    status_cache = _load_json(PRODUCT_STATUS_CACHE)
+    sync_cache = _load_json(PRODUCT_SYNC_CACHE)
+    registered_ids = {str(p.get("naver_product_id", "")) for p in registered}
+    suspended_n = len([s for s in status_cache if s.get("product_id") in registered_ids and s.get("status_type") == "SUSPENSION"]) if isinstance(status_cache, list) else 0
+    supply_n = len([s for s in sync_cache if s.get("naver_product_id") in registered_ids and s.get("action") in (ACTION_SUSPEND, ACTION_STOCK)]) if isinstance(sync_cache, list) else 0
+    margin_n = len([s for s in sync_cache if s.get("naver_product_id") in registered_ids and s.get("action") == ACTION_MARGIN_WARN]) if isinstance(sync_cache, list) else 0
+    no_sale_n = len([p for p in product_performance(registered=registered) if p["status"].startswith("무판매")])
+
+    product_items = []
+    if suspended_n:
+        product_items.append({"text": f"판매중지 상태 {suspended_n}개 — 스토어에 노출 안 되는 중",
+                               "link": url_for("products_view", tab="action"), "n": suspended_n})
+    if supply_n:
+        product_items.append({"text": f"도매매 품절·재고변동 {supply_n}건 — 스토어에 반영 필요",
+                               "link": url_for("products_view", tab="action"), "n": supply_n})
+    if margin_n:
+        product_items.append({"text": f"마진 붕괴 {margin_n}건 — 가격 판단 필요",
+                               "link": url_for("products_view", tab="action"), "n": margin_n})
+    if no_sale_n:
+        product_items.append({"text": f"무판매 {no_sale_n}개 — 이름 재최적화 또는 교체 검토",
+                               "link": url_for("products_view", tab="action"), "n": no_sale_n})
+    groups.append({"name": "상품 조치", "rows": product_items})
+
+    cs_items = []
+    if returns_count:
+        cs_items.append({"text": f"반품·취소 접수 {returns_count}건 (최근 24시간)",
+                          "link": url_for("cs"), "n": returns_count})
+    if inquiry_count:
+        cs_items.append({"text": f"미답변 문의 {inquiry_count}건", "link": url_for("cs"), "n": inquiry_count})
+    groups.append({"name": "고객 응대", "rows": cs_items})
+
+    settle_items = []
+    try:
+        from bebrave.report.reconcile import reconcile, suggest_fee_rate
+        s = suggest_fee_rate(reconcile())
+        if s and abs(s["diff"]) > 0.01:
+            settle_items.append({"text": f"실측 수수료율이 가정과 {s['diff']:+.1%}p 차이 — 확인 필요",
+                                  "link": url_for("settlement_view", tab="reconcile"), "n": 1})
+    except Exception:
+        pass  # 표본 부족(5건 미만)이면 suggest_fee_rate가 None — 지어내지 않고 그냥 0건으로 둔다
+    groups.append({"name": "정산 확인", "rows": settle_items})
+
+    for g in groups:
+        g["count"] = sum(i["n"] for i in g["rows"])
+    return groups
+
 
 @app.route("/")
 def index():
-    tab = request.args.get("tab", "pipeline")
-    if tab == "health":
-        # 헬스체크는 sync_all·문의조회·반품률·무판매 판정이 전부 도는 무거운 라우트라
-        # 홈 방문마다 자동 실행하지 않고 이 탭을 열 때만 계산한다 (2026-08 홈에 흡수).
-        from bebrave.report import check_store_health
-        issues = check_store_health()
-        return render_template("index.html", tab="health", issues=issues)
-
-    from bebrave.tracker.products import ProductTracker
     from bebrave.report import load_sales_orders, sales_month_series
+    from bebrave.report.claims import load_claims
 
     candidates = _load_json(SOURCING_LOG)
     registered = _load_json(REGISTERED_PRODUCTS)
-    # discover.py의 "진입 권장" 기준(55점)과 통일 — register --from-sourcing과 동일 기준
-    recommended = sorted(
-        (c for c in candidates if c.get("score", 0) >= 55),
-        key=lambda c: c.get("score", 0), reverse=True,
-    )
-
-    tracker = ProductTracker(TRACKED_PRODUCTS)
-    risky = tracker.auto_delete_risk()
-    stale = tracker.stale_products()
-    tracked_total = len(tracker.products)
-    risky_count = len(risky)
-    watch_count = len(stale) - risky_count
-    normal_count = tracked_total - len(stale)
-
     checked_at = datetime.now().strftime("%H:%M")
 
     # 처리 대기 주문 — 최근 24시간 내 결제완료(PAYED)로 바뀐 뒤 아직 발송처리 안 된 건수.
     # 조회한 김에 매출 원장에도 바로 반영해서(record_sales_orders) 방문할 때마다
-    # 자동으로 최신화되게 함 — 별도 "새로고침" 버튼/API 호출 불필요.
+    # 자동으로 최신화되게 함 — 별도 "새로고침" 버튼/API 호출 불필요. (홈의 유일한 실시간 조회)
     pending_orders = None
     try:
         from bebrave.smartstore.auth import get_access_token
@@ -179,7 +235,6 @@ def index():
         pending_orders = None  # API 미연동/실패 시 화면에서 "확인 필요"로 표시
 
     # 반품·취소 — 최근 24시간 내 클레임 접수 건수 (별도 lastChangedType 조회라 실패해도 위 주문 조회엔 영향 없음)
-    # "RETURNED"/"CANCELED"는 실제로는 무효한 값이라 400 오류만 나던 걸 CLAIM_REQUESTED로 수정함 (2026-08).
     returns_count = None
     try:
         from bebrave.smartstore.auth import get_access_token
@@ -189,26 +244,29 @@ def index():
     except Exception:
         returns_count = None
 
+    inquiry_count = None
+    try:
+        from bebrave.smartstore.auth import get_access_token
+        from bebrave.smartstore.inquiries import fetch_inquiries
+        token = get_access_token()
+        inquiry_count = len(fetch_inquiries(token, days=7, answered=False))
+    except Exception:
+        inquiry_count = None
+
+    todo_groups = _todo_groups(registered, pending_orders, returns_count, inquiry_count)
+    todo_total = sum(g["count"] for g in todo_groups)
+
     sales_records = load_sales_orders()
     today = date.today()
-    selected_year = request.args.get("year", type=int) or today.year
-    selected_month = request.args.get("month", type=int) or today.month
-    if (selected_year, selected_month) > (today.year, today.month):
-        selected_year, selected_month = today.year, today.month
-
-    chart_series = sales_month_series(sales_records, selected_year, selected_month)
-    is_current_month = (selected_year, selected_month) == (today.year, today.month)
-    current_series = chart_series if is_current_month else sales_month_series(sales_records, today.year, today.month)
+    chart_series = sales_month_series(sales_records, today.year, today.month)
     this_month = {
-        "revenue": sum(p["revenue"] for p in current_series),
-        "profit": sum(p["profit"] for p in current_series),
-        "order_count": sum(p["order_count"] for p in current_series),
-        "uncertain_count": sum(p.get("uncertain_count", 0) for p in current_series),
+        "revenue": sum(p["revenue"] for p in chart_series),
+        "profit": sum(p["profit"] for p in chart_series),
+        "order_count": sum(p["order_count"] for p in chart_series),
+        "uncertain_count": sum(p.get("uncertain_count", 0) for p in chart_series),
     }
-
-    prev_month, prev_year = (12, selected_year - 1) if selected_month == 1 else (selected_month - 1, selected_year)
-    next_month, next_year = (1, selected_year + 1) if selected_month == 12 else (selected_month + 1, selected_year)
-    next_disabled = (next_year, next_month) > (today.year, today.month)
+    month_prefix = today.strftime("%Y-%m")
+    this_month_returns = len([c for c in load_claims() if c.get("claimed_at", "").startswith(month_prefix)])
 
     # (설정여부, 필수여부) — 카카오 알림·Claude API는 선택 기능이라 미설정이어도 경고색 안 씀
     env_status = {
@@ -221,43 +279,18 @@ def index():
 
     return render_template(
         "index.html",
-        tab="pipeline",
-        candidate_count=len(candidates),
-        recommended_count=len(recommended),
-        registered_count=len(registered),
-        top_candidates=recommended[:3],
-        tracked_total=tracked_total,
-        normal_count=normal_count,
-        watch_count=watch_count,
-        risky_count=risky_count,
-        risky_names=[p.name for p in risky[:3]],
-        pending_orders=pending_orders,
-        checked_at=checked_at,
-        returns_count=returns_count,
-        this_month=this_month,
-        chart_series=chart_series,
-        selected_year=selected_year,
-        selected_month=selected_month,
-        prev_year=prev_year, prev_month=prev_month,
-        next_year=next_year, next_month=next_month,
-        next_disabled=next_disabled,
+        todo_groups=todo_groups, todo_total=todo_total, checked_at=checked_at,
+        this_month=this_month, this_month_returns=this_month_returns, chart_series=chart_series,
         env_status=env_status,
     )
 
 
 @app.route("/demo")
 def index_demo():
-    """홈 화면 전체 구조를 실제 API/데이터 없이 확인하는 샘플 뷰. 발굴 후보·등록 상품 수는
-    이미 실제 데이터가 있어 그대로 쓰고, 지금 비어 있거나 IP 차단으로 막힌 주문·매출·반품만
-    가짜 값으로 채운다 — 전부 새로 지어내면 오히려 실제 화면과 감이 달라진다."""
+    """홈 화면 전체 구조를 실제 API/데이터 없이 확인하는 샘플 뷰. 지금 비어 있거나
+    IP 차단으로 막힌 주문·매출·반품만 가짜 값으로 채운다 — 전부 새로 지어내면
+    오히려 실제 화면과 감이 달라진다."""
     from bebrave.report.sales import month_series
-
-    candidates = _load_json(SOURCING_LOG)
-    registered = _load_json(REGISTERED_PRODUCTS)
-    recommended = sorted(
-        (c for c in candidates if c.get("score", 0) >= 55),
-        key=lambda c: c.get("score", 0), reverse=True,
-    )
 
     today = date.today()
     demo_sales_records = [
@@ -273,18 +306,25 @@ def index_demo():
         "uncertain_count": sum(p.get("uncertain_count", 0) for p in chart_series),
     }
 
-    flash("샘플 데이터입니다 — 주문·매출·반품 수치는 실제가 아닙니다(발굴 후보·등록 상품은 실제 데이터).", "success")
+    demo_groups = [
+        {"name": "주문 처리", "count": 3, "rows": [
+            {"text": "발주할 주문 2건 — 결제완료 후 발주 대기", "link": url_for("orders_demo", tab="ready"), "n": 2},
+            {"text": "발송할 주문 1건 — 송장 입력 대기", "link": url_for("orders_demo", tab="dispatch"), "n": 1},
+        ]},
+        {"name": "상품 조치", "count": 2, "rows": [
+            {"text": "판매중지 상태 2개 — 스토어에 노출 안 되는 중", "link": url_for("products_view", tab="action"), "n": 2},
+        ]},
+        {"name": "고객 응대", "count": 1, "rows": [
+            {"text": "미답변 문의 1건", "link": url_for("cs"), "n": 1},
+        ]},
+        {"name": "정산 확인", "count": 0, "rows": []},
+    ]
+
+    flash("샘플 데이터입니다 — 오늘 할 일·주문·매출·반품 수치는 실제가 아닙니다.", "success")
     return render_template(
         "index.html",
-        tab="pipeline",
-        candidate_count=len(candidates), recommended_count=len(recommended), registered_count=len(registered),
-        top_candidates=recommended[:3],
-        tracked_total=3, normal_count=1, watch_count=1, risky_count=1, risky_names=["자동삭제 위험 상품"],
-        pending_orders=2, checked_at=datetime.now().strftime("%H:%M"), returns_count=1,
-        this_month=this_month, chart_series=chart_series,
-        selected_year=today.year, selected_month=today.month,
-        prev_year=today.year, prev_month=today.month, next_year=today.year, next_month=today.month,
-        next_disabled=True,
+        todo_groups=demo_groups, todo_total=6, checked_at=datetime.now().strftime("%H:%M"),
+        this_month=this_month, this_month_returns=1, chart_series=chart_series,
         env_status={
             "도매매 (Open API)": (True, True), "네이버 커머스 API": (True, True),
             "도매매 발주 (Private, 신규계정)": (True, True),

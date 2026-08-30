@@ -187,6 +187,8 @@ def _todo_groups(registered: list, pending_orders, returns_count, inquiry_count)
 
     # 품절·재고조정·마진붕괴·무판매 판정은 health.py(캐시 기반, deep=False)와 공유한다 —
     # 같은 판정을 두 곳에서 따로 하면 두 화면이 다른 답을 낼 수 있다.
+    # 네이버 판매중지 자체는 여기서 다루지 않는다 — 사람이 일부러 내렸을 수도 있는
+    # 상태라 "할 일"로 단정할 수 없다(상품 관리 화면에서 직접 판단할 문제).
     issues_by_category = {}
     for issue in check_store_health(deep=False):
         issues_by_category.setdefault(issue.category, []).append(issue)
@@ -194,32 +196,13 @@ def _todo_groups(registered: list, pending_orders, returns_count, inquiry_count)
     margin_n = len(issues_by_category.get("마진붕괴", []))
     no_sale_n = len([p for p in product_performance(registered=registered) if p["status"].startswith("무판매")])
 
-    # 네이버 판매중지는 그 자체로 할 일이 아니다 — 사람이 일부러 내렸을 수도 있다.
-    # "도매매는 멀쩡한데 네이버만 막혀 있어 다시 팔 수 있는 것"만 실제로 할 일이다.
-    from bebrave.smartstore.sync import ACTION_OK
-    status_cache = _load_json(PRODUCT_STATUS_CACHE)
-    sync_cache = _load_json(PRODUCT_SYNC_CACHE)
-    registered_ids = {str(p.get("naver_product_id", "")) for p in registered}
-    sync_by_id = {s.get("naver_product_id"): s for s in sync_cache} if isinstance(sync_cache, list) else {}
-    resumable_n = 0
-    if isinstance(status_cache, list):
-        for s in status_cache:
-            pid = s.get("product_id")
-            if pid not in registered_ids or s.get("status_type") != "SUSPENSION":
-                continue
-            sync = sync_by_id.get(pid)
-            if not sync or sync.get("action") == ACTION_OK:
-                resumable_n += 1
-
     product_items = []
-    if resumable_n:
-        product_items.append({"label": "재개 가능", "link": url_for("products_view", tab="action"), "n": resumable_n})
     if supply_n:
-        product_items.append({"label": "재고 반영", "link": url_for("products_view", tab="action"), "n": supply_n})
+        product_items.append({"label": "재고 확인", "link": url_for("products_view", tab="action"), "n": supply_n})
     if margin_n:
-        product_items.append({"label": "마진경고", "link": url_for("products_view", tab="action"), "n": margin_n})
+        product_items.append({"label": "마진 확인", "link": url_for("products_view", tab="action"), "n": margin_n})
     if no_sale_n:
-        product_items.append({"label": "무판매", "link": url_for("products_view", tab="action"), "n": no_sale_n})
+        product_items.append({"label": "품질 점검", "link": url_for("products_view", tab="action"), "n": no_sale_n})
     groups.append({"name": "상품", "rows": product_items})
 
     cs_items = []
@@ -354,7 +337,7 @@ def index_demo():
             {"label": "발송 필요", "link": url_for("orders_demo", tab="dispatch"), "n": 1},
         ]},
         {"name": "상품", "count": 2, "rows": [
-            {"label": "재개 가능", "link": url_for("products_view", tab="action"), "n": 2},
+            {"label": "품질 점검", "link": url_for("products_view", tab="action"), "n": 2},
         ]},
         {"name": "고객응대", "count": 1, "rows": [
             {"label": "미답변 문의", "link": url_for("cs"), "n": 1},
@@ -634,6 +617,7 @@ def products_view():
     from bebrave.smartstore.sync import ACTION_OK
     from bebrave.tracker.products import ProductTracker
     from bebrave.config import AUTO_DELETE_MONTHS
+    from bebrave.report import claim_counts_by_product
 
     registered = _load_json(REGISTERED_PRODUCTS)
     registered.reverse()
@@ -644,6 +628,7 @@ def products_view():
     sync_by_id = {s["naver_product_id"]: s for s in sync_cache} if isinstance(sync_cache, list) else {}
     sync_checked_at = sync_cache[0]["checked_at"] if sync_cache else None
     tracked_by_id = {p.product_id: p for p in ProductTracker(TRACKED_PRODUCTS).products}
+    claims_by_id = claim_counts_by_product()
 
     rows = []
     for p in registered:
@@ -655,6 +640,12 @@ def products_view():
         months_since_sold = tracked.months_since_sold() if tracked else None
         auto_delete_risk = months_since_sold is not None and months_since_sold >= AUTO_DELETE_MONTHS
         is_suspended = bool(live_status and live_status.get("status_type") == "SUSPENSION")
+        sale_status = "확인필요" if not live_status else ("판매중지" if is_suspended else "판매중")
+
+        order_count = perf.get("order_count", 0)
+        claims = claims_by_id.get(pid, {"RETURN": 0, "EXCHANGE": 0})
+        return_rate = claims["RETURN"] / order_count if order_count else None
+        exchange_rate = claims["EXCHANGE"] / order_count if order_count else None
 
         perf_status = perf.get("status", "")
         sync_action = sync["action"] if sync else ""
@@ -689,8 +680,13 @@ def products_view():
             "registered_date": p.get("registered_date", ""),
             "live_status": live_status,
             "is_suspended": is_suspended,
+            "sale_status": sale_status,
             "sync": sync,
-            "order_count": perf.get("order_count", 0),
+            "return_count": claims["RETURN"],
+            "exchange_count": claims["EXCHANGE"],
+            "return_rate": return_rate,
+            "exchange_rate": exchange_rate,
+            "order_count": order_count,
             "revenue": perf.get("revenue", 0),
             "profit": perf.get("profit", 0),
             "uncertain_count": perf.get("uncertain_count", 0),
@@ -793,6 +789,45 @@ def registered_status(product_id):
     except Exception as e:
         flash(f"상태 확인 실패: {e}", "error")
     return redirect(url_for("products_view"))
+
+
+@app.route("/products/detail/<product_id>")
+def products_detail(product_id):
+    """상품명 클릭 시 뜨는 자세히보기 모달 — 등록 기록 + 네이버 실시간 상세를 합쳐 보여준다."""
+    from bebrave.smartstore.listing_quality import score_listing
+
+    registered = _load_json(REGISTERED_PRODUCTS)
+    record = next((p for p in registered if str(p.get("naver_product_id", "")) == product_id), None)
+    if not record:
+        return '<div class="flash flash-error">등록 기록을 찾을 수 없습니다.</div>', 404
+
+    ctx = {"record": record, "images": [], "tags": [], "detail_length": None,
+           "stock": None, "status_type": None, "fetch_error": None}
+    try:
+        from bebrave.smartstore.auth import get_access_token
+        from bebrave.smartstore.register import fetch_registered_product
+        token = get_access_token()
+        info = fetch_registered_product(product_id, token)
+        op = info.get("originProduct", {}) or {}
+        images = op.get("images", {}) or {}
+        img_list = []
+        if images.get("representativeImage", {}).get("url"):
+            img_list.append(images["representativeImage"]["url"])
+        img_list += [i.get("url") for i in (images.get("optionalImages") or []) if i.get("url")]
+        tags = ((op.get("detailAttribute", {}) or {}).get("seoInfo", {}) or {}).get("sellerTags") or []
+        ctx.update(
+            images=img_list,
+            tags=[t.get("text", "") if isinstance(t, dict) else str(t) for t in tags],
+            detail_length=len(op.get("detailContent", "") or ""),
+            stock=op.get("stockQuantity"),
+            status_type=op.get("statusType"),
+            quality=score_listing(record, live_detail=info),
+        )
+    except Exception as e:
+        ctx["fetch_error"] = str(e)
+        ctx["quality"] = score_listing(record)
+
+    return render_template("product_detail.html", **ctx)
 
 
 # ── 주문·발주 (주문확인 + 발주대기열 + 수동발주 통합, 탭: ready/dispatch/manual/history) ──
@@ -1360,8 +1395,14 @@ def _performance_with_quality():
     registered = _load_json(REGISTERED_PRODUCTS)
     by_id = {str(p.get("naver_product_id", "")): p for p in registered}
 
-    # 무판매 상품만 실시간 조회 — 판매중/신규 상품까지 매번 API를 태우면 방문마다 느려진다.
-    # 무판매는 정의상 소수라 비용이 자연히 제한된다.
+    # 전 상품 로컬 채점(상품명·마진, API 호출 없음) — 상품 관리 표의 "상품 상태" 배지용.
+    for p in results:
+        record = by_id.get(p["naver_product_id"])
+        if record:
+            p["quality"] = score_listing(record)
+
+    # 무판매 상품만 이미지·태그·상세설명까지 실시간 조회해 재채점 — 판매중/신규 상품까지
+    # 매번 API를 태우면 방문마다 느려진다. 무판매는 정의상 소수라 비용이 자연히 제한된다.
     token = None
     for p in results:
         if not p["status"].startswith("무판매"):

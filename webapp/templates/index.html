@@ -1,25 +1,21 @@
 {% extends "base.html" %}
 {% block title %}홈{% endblock %}
 {% block content %}
-<h1>홈</h1>
-<p class="page-note">"오늘 뭐부터 해야 하나"에 답하는 화면입니다. 스토어를 거시적으로 진단하려면 <a href="{{ url_for('health_view') }}">헬스체크</a>를 확인하세요.</p>
-
-{% if not demo %}
-<div class="row" style="margin:-6px 0 14px;">
-  <a class="btn secondary" href="{{ url_for('index_demo') }}">샘플 데이터로 화면 확인</a>
+<div class="row" style="justify-content:space-between;align-items:center;margin-bottom:18px;">
+  <h1 style="margin:0;">오늘 할 일 <span class="badge{{ '-ok' if todo_total == 0 else '-err' }}">{{ todo_total }}건</span></h1>
+  {% if not demo %}
+  <a class="btn secondary btn-sm" href="{{ url_for('index_demo') }}">샘플 데이터</a>
+  {% endif %}
 </div>
-{% endif %}
 
 <div class="section">
-  <h2>오늘 할 일 <span class="badge{{ '-ok' if todo_total == 0 else '-err' }}">{{ todo_total }}건</span></h2>
-
   {% if todo_total == 0 %}
-  <div class="panel" style="background:var(--ok-bg);color:var(--ok);">지금 할 일 없음 — 전부 정상입니다.</div>
+  <div class="panel" style="background:var(--ok-bg);color:var(--ok);">지금 할 일 없음</div>
   {% endif %}
 
-  {% for g in todo_groups %}
+  {# 0건인 그룹은 아예 그리지 않는다 — 빈 줄이 깔리면 실제 할 일이 묻힌다. #}
+  {% for g in todo_groups if g.rows %}
   <p class="eyebrow" style="margin:{{ '18px' if not loop.first }} 0 8px;">{{ g.name }} <span style="text-transform:none;letter-spacing:normal;font-weight:400;">{{ g.count }}건</span></p>
-  {% if g.rows %}
   <div class="stack">
     {% for it in g.rows %}
     <a href="{{ it.link }}" class="todo-row" style="margin-bottom:0;">
@@ -28,7 +24,6 @@
     </a>
     {% endfor %}
   </div>
-  {% endif %}
   {% endfor %}
 </div>
 
@@ -53,42 +48,18 @@
     </a>
   </div>
 
-  <details open style="margin-top:16px;">
-    <summary class="hint" style="cursor:pointer;font-size:13px;">매출 추이 ▾</summary>
-    <div class="panel" style="margin-top:8px;">
-      <div class="chart-legend">
-        <span class="legend-toggle" data-series="revenue"><i class="sw" style="border-color:var(--money);"></i>매출</span>
-        <span class="legend-toggle" data-series="profit"><i class="sw" style="border-color:var(--money-2);border-top-style:dashed;"></i>순수익</span>
-      </div>
-      <div class="chart-wrap">
-        <svg id="salesChart" width="100%" viewBox="0 0 680 220" style="overflow:visible;"></svg>
-        <div id="chartTooltip" class="chart-tooltip"></div>
-      </div>
-      <p id="chartEmpty" class="muted" style="display:none;">이 달엔 집계된 매출이 없습니다. 홈 화면을 방문할 때마다 최근 주문이 자동으로 반영돼요.</p>
+  <div class="panel" style="margin-top:16px;">
+    <div class="chart-legend">
+      <span class="legend-toggle" data-series="revenue"><i class="sw" style="border-color:var(--money);"></i>매출</span>
+      <span class="legend-toggle" data-series="profit"><i class="sw" style="border-color:var(--money-2);border-top-style:dashed;"></i>순수익</span>
     </div>
-  </details>
-</div>
-
-<details>
-  <summary class="hint" style="cursor:pointer;font-size:13px;margin-bottom:8px;">연동 상태 ▾</summary>
-  <div class="panel">
-    <table>
-      <tr><th>항목</th><th>상태</th></tr>
-      {% for name, status in env_status.items() %}
-      {% set ok, required = status %}
-      <tr>
-        <td>{{ name }}</td>
-        <td>
-          {% if ok %}<span class="badge-ok">설정됨</span>
-          {% elif required %}<span class="badge-err">미설정</span>
-          {% else %}<span class="muted mono">미설정</span>
-          {% endif %}
-        </td>
-      </tr>
-      {% endfor %}
-    </table>
+    <div class="chart-wrap">
+      <svg id="salesChart" width="100%" viewBox="0 0 680 220" style="overflow:visible;"></svg>
+      <div id="chartTooltip" class="chart-tooltip"></div>
+    </div>
+    <p id="chartEmpty" class="muted" style="display:none;">집계된 매출 없음</p>
   </div>
-</details>
+</div>
 
 <script>
 (function () {

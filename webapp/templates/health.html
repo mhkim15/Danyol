@@ -1,19 +1,15 @@
 {% extends "base.html" %}
 {% block title %}헬스체크{% endblock %}
 {% block content %}
-<h1>헬스체크</h1>
-<p class="page-note">
-  개별 문제 목록이 아니라 스토어를 거시적으로 봅니다 — 매출이 늘고 있는지 줄고 있는지,
-  원인은 뭘로 추정되는지, 지금 놓치고 있는 기회는 없는지. 표본이 부족하면 지어내지 않고
-  "판단 불가"라고 표시합니다. 개별 문제(품절·무판매 등)는 <a href="{{ url_for('index') }}">홈의 오늘 할 일</a>에서 확인하세요.
-</p>
-
-<div class="row" style="margin:-6px 0 14px;">
-  {% if not demo %}
-  <a class="btn secondary" href="{{ url_for('health_demo') }}">샘플 데이터로 화면 확인</a>
-  <a class="btn secondary" href="{{ url_for('health_view', deep=1) }}">정밀 진단 다시 돌리기 (검색량 계절성 포함)</a>
-  {% endif %}
-  <span class="muted" style="font-size:12px;">최근 진단 {{ checked_at.replace('T', ' ') }}</span>
+<div class="row" style="justify-content:space-between;align-items:center;margin-bottom:18px;">
+  <h1 style="margin:0;">헬스체크</h1>
+  <span class="row" style="gap:8px;">
+    <span class="muted" style="font-size:12px;">{{ checked_at.replace('T', ' ') }}</span>
+    {% if not demo %}
+    <a class="btn secondary btn-sm" href="{{ url_for('health_demo') }}">샘플 데이터</a>
+    <a class="btn secondary btn-sm" href="{{ url_for('health_view', deep=1) }}">정밀 진단</a>
+    {% endif %}
+  </span>
 </div>
 
 <div class="panel" style="background:{{ 'var(--err-bg)' if verdict.level == '주의' else ('var(--ok-bg)' if verdict.level == '양호' else 'var(--paper)') }};color:{{ 'var(--err)' if verdict.level == '주의' else ('var(--ok)' if verdict.level == '양호' else 'var(--ink-soft)') }};">
@@ -21,11 +17,10 @@
 </div>
 
 <div class="section">
-  <h2>1. 추세 — 나아지고 있나</h2>
+  <h2>추세</h2>
   {% if not trend.enough_sample %}
-  <p class="hint">판단 불가 — 표본 {{ trend.sample_count }}건 (5건 미만). 주문이 쌓이면 자동으로 채워집니다.</p>
+  <div class="panel muted">판단 불가 — 표본 {{ trend.sample_count }}건</div>
   {% else %}
-  <p class="hint" style="margin-bottom:8px;">최근 {{ trend.window_days }}일 vs 직전 {{ trend.window_days }}일 (같은 일수 비교)</p>
   <div class="stat-grid">
     <div class="stat-card">
       <p class="stat-num {{ 'delta-down' if trend.revenue_delta is not none and trend.revenue_delta < 0 else 'delta-up' if trend.revenue_delta is not none and trend.revenue_delta > 0 }}">
@@ -56,7 +51,7 @@
 </div>
 
 <div class="section">
-  <h2>2. 이 변화의 원인 (추정)</h2>
+  <h2>원인 추정</h2>
   <div class="stack">
     {% for c in causes %}
     <div class="panel" style="padding:12px 16px;">
@@ -70,16 +65,16 @@
 </div>
 
 <div class="section">
-  <h2>3. 놓치고 있는 것</h2>
+  <h2>기회</h2>
   <div class="stack">
     <div class="panel" style="padding:12px 16px;">
       틈새(바로 등록) <b>{{ opportunities.niche_count }}개</b> · 리메이크(손봐서 등록) <b>{{ opportunities.remake_count }}개</b>
-      {% if opportunities.unclassified_count %}· 미분류 <b>{{ opportunities.unclassified_count }}개</b> — 6단계 트랙 데이터 복구 후 재스캔 필요{% endif %}
+      {% if opportunities.unclassified_count %}· 미분류 <b>{{ opportunities.unclassified_count }}개</b>{% endif %}
       <a class="btn secondary btn-sm" href="{{ url_for('candidates') }}" style="margin-left:8px;">발굴 후보 →</a>
     </div>
     {% if opportunities.concentration %}
     <div class="panel" style="padding:12px 16px;">
-      매출 쏠림 위험 — 상품ID {{ opportunities.concentration.naver_product_id }} 하나가 전체 매출의 {{ "{:.0%}".format(opportunities.concentration.share) }}를 차지합니다.
+      매출 쏠림 — 상품ID {{ opportunities.concentration.naver_product_id }}가 전체 매출의 {{ "{:.0%}".format(opportunities.concentration.share) }}
     </div>
     {% endif %}
     {% if deep %}
@@ -94,20 +89,18 @@
       </div>
       {% endfor %}
       {% endif %}
-    {% else %}
-    <p class="hint">(정밀) 진입권장 후보의 검색량 추세·계절 진입 시점은 위 "정밀 진단 다시 돌리기"로 확인하세요.</p>
     {% endif %}
   </div>
 </div>
 
 <div class="section">
-  <h2>4. 스토어 체력</h2>
+  <h2>체력</h2>
   <div class="stat-grid">
     <div class="stat-card">
       <p class="stat-num">
         {% if vitals.fast_settlement_ok is none %}판단 불가{% elif vitals.fast_settlement_ok %}자격 있음{% else %}자격 미달{% endif %}
       </p>
-      <p class="stat-label">빠른정산 자격 (반품률 20% 미만)</p>
+      <p class="stat-label">빠른정산 자격</p>
     </div>
     <a href="{{ url_for('orders', tab='dispatch') }}" class="stat-card link">
       <p class="stat-num {{ 'attn' if vitals.dispatch_delay_count }}">{{ vitals.dispatch_delay_count if vitals.dispatch_delay_count is not none else "판단 불가" }}</p>
@@ -123,8 +116,28 @@
     </a>
     <div class="stat-card">
       <p class="stat-num">{{ "{:,}".format(vitals.cash_balance) + "원" if vitals.cash_balance is not none else "데이터 없음" }}</p>
-      <p class="stat-label">현금 흐름 (나간 돈 − 들어올 돈)</p>
+      <p class="stat-label">현금 흐름</p>
     </div>
+  </div>
+</div>
+
+<div class="section">
+  <h2>연동 상태</h2>
+  <div class="panel">
+    <table>
+      <tr><th>항목</th><th style="width:20%;">상태</th></tr>
+      {% for name, status in env_status.items() %}
+      {% set ok, required = status %}
+      <tr>
+        <td>{{ name }}</td>
+        <td>
+          {% if ok %}<span class="badge-ok">설정됨</span>
+          {% elif required %}<span class="badge-err">미설정</span>
+          {% else %}<span class="muted mono">미설정</span>{% endif %}
+        </td>
+      </tr>
+      {% endfor %}
+    </table>
   </div>
 </div>
 {% endblock %}

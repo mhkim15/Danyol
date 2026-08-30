@@ -115,6 +115,18 @@ def _find_registered_product(order) -> tuple:
 
 # ── 스토어 헬스체크 (거시 진단, 3단계에서 홈과 분리·4단계에서 고도화) ────────────────
 
+def _env_status() -> dict:
+    """(설정여부, 필수여부) — 카카오 알림·Claude API는 선택 기능이라 미설정이어도 경고색 안 씀.
+    "내 스토어 괜찮나"를 묻는 화면(헬스체크)에 속하는 정보라 홈에서 이관함."""
+    return {
+        "도매매 (Open API)": (bool(os.environ.get("DOMEMAE_API_KEY")), True),
+        "네이버 커머스 API": (bool(os.environ.get("NAVER_COMMERCE_CLIENT_ID")), True),
+        "도매매 발주 (Private)": (bool(os.environ.get("DOMEMAE_USER_ID")), True),
+        "카카오 알림": (bool(os.environ.get("KAKAO_REST_API_KEY")), False),
+        "Claude API": (bool(os.environ.get("ANTHROPIC_API_KEY")), False),
+    }
+
+
 @app.route("/health")
 def health_view():
     """기본은 로컬 파일만 읽는 빠른 진단(deep=False). ?deep=1이면 검색량 계절성까지
@@ -122,7 +134,7 @@ def health_view():
     from bebrave.report import check_store_health_macro
     deep = request.args.get("deep") == "1"
     result = check_store_health_macro(deep=deep)
-    return render_template("health.html", **result)
+    return render_template("health.html", env_status=_env_status(), **result)
 
 
 @app.route("/health/demo")
@@ -149,7 +161,7 @@ def health_demo():
         "deep": False,
     }
     flash("샘플 데이터입니다 — 실제 진단이 아닙니다.", "success")
-    return render_template("health.html", demo=True, **demo_result)
+    return render_template("health.html", demo=True, env_status=_env_status(), **demo_result)
 
 
 # ── 홈 = 오늘 할 일 (거시 진단은 /health로 분리됨, 4단계) ───────────────────────
@@ -282,20 +294,10 @@ def index():
     month_prefix = today.strftime("%Y-%m")
     this_month_returns = len([c for c in load_claims() if c.get("claimed_at", "").startswith(month_prefix)])
 
-    # (설정여부, 필수여부) — 카카오 알림·Claude API는 선택 기능이라 미설정이어도 경고색 안 씀
-    env_status = {
-        "도매매 (Open API)": (bool(os.environ.get("DOMEMAE_API_KEY")), True),
-        "네이버 커머스 API": (bool(os.environ.get("NAVER_COMMERCE_CLIENT_ID")), True),
-        "도매매 발주 (Private, 신규계정)": (bool(os.environ.get("DOMEMAE_USER_ID")), True),
-        "카카오 알림 (선택)": (bool(os.environ.get("KAKAO_REST_API_KEY")), False),
-        "Claude API (선택 — AI 상품명)": (bool(os.environ.get("ANTHROPIC_API_KEY")), False),
-    }
-
     return render_template(
         "index.html",
         todo_groups=todo_groups, todo_total=todo_total, checked_at=checked_at,
         this_month=this_month, this_month_returns=this_month_returns, chart_series=chart_series,
-        env_status=env_status,
     )
 
 
@@ -339,12 +341,6 @@ def index_demo():
         "index.html",
         todo_groups=demo_groups, todo_total=6, checked_at=datetime.now().strftime("%H:%M"),
         this_month=this_month, this_month_returns=1, chart_series=chart_series,
-        env_status={
-            "도매매 (Open API)": (True, True), "네이버 커머스 API": (True, True),
-            "도매매 발주 (Private, 신규계정)": (True, True),
-            "카카오 알림 (선택)": (bool(os.environ.get("KAKAO_REST_API_KEY")), False),
-            "Claude API (선택 — AI 상품명)": (bool(os.environ.get("ANTHROPIC_API_KEY")), False),
-        },
         demo=True,
     )
 

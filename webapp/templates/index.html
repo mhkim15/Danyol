@@ -11,19 +11,22 @@
 <div class="section">
   {% if todo_total == 0 %}
   <div class="panel" style="background:var(--ok-bg);color:var(--ok);">지금 할 일 없음</div>
-  {% endif %}
-
-  {# 카테고리당 행 하나 — 안에 항목을 칩으로 나열한다. 0건 그룹은 그리지 않는다. #}
-  <div class="stack">
+  {% else %}
+  {# 화면 전체가 한 행 — 카테고리(주문/상품/고객응대/정산)별로 열을 나누고,
+     그 열 안에서 다시 항목명·건수 두 열로 나눠 보여준다. 0건 그룹은 열 자체를 안 만든다. #}
+  <div class="panel todo-cols">
     {% for g in todo_groups if g.rows %}
-    <div class="todo-row" style="align-items:flex-start;">
-      <p class="todo-title" style="flex-shrink:0;width:88px;">{{ g.name }}</p>
-      <div style="flex:1;line-height:2;">
-        {% for it in g.rows %}<a href="{{ it.link }}" class="chip-link">{{ it.text }}</a>{% endfor %}
-      </div>
+    <div class="todo-col">
+      <p class="eyebrow" style="margin-bottom:8px;">{{ g.name }}</p>
+      {% for it in g.rows %}
+      <a href="{{ it.link }}" class="todo-line">
+        <span>{{ it.label }}</span><b>{{ it.n }}건</b>
+      </a>
+      {% endfor %}
     </div>
     {% endfor %}
   </div>
+  {% endif %}
 </div>
 
 <div class="section">

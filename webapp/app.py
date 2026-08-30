@@ -179,13 +179,11 @@ def _todo_groups(registered: list, pending_orders, returns_count, inquiry_count)
 
     order_items = []
     if pending_orders:
-        order_items.append({"text": f"발주 필요 {pending_orders}건",
-                             "link": url_for("orders", tab="ready"), "n": pending_orders})
+        order_items.append({"label": "발주 필요", "link": url_for("orders", tab="ready"), "n": pending_orders})
     dispatch_wait = len([i for i in load_queue() if i["status"] == STATUS_ORDERED])
     if dispatch_wait:
-        order_items.append({"text": f"발송 필요 {dispatch_wait}건",
-                             "link": url_for("orders", tab="dispatch"), "n": dispatch_wait})
-    groups.append({"name": "주문 처리", "rows": order_items})
+        order_items.append({"label": "발송 필요", "link": url_for("orders", tab="dispatch"), "n": dispatch_wait})
+    groups.append({"name": "주문", "rows": order_items})
 
     # 품절·판매중지·마진붕괴·무판매 판정은 health.py(캐시 기반, deep=False)와 공유한다 —
     # 같은 판정을 두 곳에서 따로 하면 두 화면이 다른 답을 낼 수 있다.
@@ -199,37 +197,32 @@ def _todo_groups(registered: list, pending_orders, returns_count, inquiry_count)
 
     product_items = []
     if suspended_n:
-        product_items.append({"text": f"판매중지 {suspended_n}개",
-                               "link": url_for("products_view", tab="action"), "n": suspended_n})
+        product_items.append({"label": "판매중지", "link": url_for("products_view", tab="action"), "n": suspended_n})
     if supply_n:
-        product_items.append({"text": f"재고 반영 {supply_n}건",
-                               "link": url_for("products_view", tab="action"), "n": supply_n})
+        product_items.append({"label": "재고 반영", "link": url_for("products_view", tab="action"), "n": supply_n})
     if margin_n:
-        product_items.append({"text": f"마진경고 {margin_n}건",
-                               "link": url_for("products_view", tab="action"), "n": margin_n})
+        product_items.append({"label": "마진경고", "link": url_for("products_view", tab="action"), "n": margin_n})
     if no_sale_n:
-        product_items.append({"text": f"무판매 {no_sale_n}개",
-                               "link": url_for("products_view", tab="action"), "n": no_sale_n})
-    groups.append({"name": "상품 조치", "rows": product_items})
+        product_items.append({"label": "무판매", "link": url_for("products_view", tab="action"), "n": no_sale_n})
+    groups.append({"name": "상품", "rows": product_items})
 
     cs_items = []
     if returns_count:
-        cs_items.append({"text": f"반품·취소 {returns_count}건",
-                          "link": url_for("cs"), "n": returns_count})
+        cs_items.append({"label": "반품·취소", "link": url_for("cs"), "n": returns_count})
     if inquiry_count:
-        cs_items.append({"text": f"미답변 문의 {inquiry_count}건", "link": url_for("cs"), "n": inquiry_count})
-    groups.append({"name": "고객 응대", "rows": cs_items})
+        cs_items.append({"label": "미답변 문의", "link": url_for("cs"), "n": inquiry_count})
+    groups.append({"name": "고객응대", "rows": cs_items})
 
     settle_items = []
     try:
         from bebrave.report.reconcile import reconcile, suggest_fee_rate
         s = suggest_fee_rate(reconcile())
         if s and abs(s["diff"]) > 0.01:
-            settle_items.append({"text": f"수수료율 확인 ({s['diff']:+.1%}p 차이)",
+            settle_items.append({"label": f"수수료율 확인({s['diff']:+.1%}p)",
                                   "link": url_for("settlement_view", tab="reconcile"), "n": 1})
     except Exception:
         pass  # 표본 부족(5건 미만)이면 suggest_fee_rate가 None — 지어내지 않고 그냥 0건으로 둔다
-    groups.append({"name": "정산 확인", "rows": settle_items})
+    groups.append({"name": "정산", "rows": settle_items})
 
     for g in groups:
         g["count"] = sum(i["n"] for i in g["rows"])
@@ -324,17 +317,17 @@ def index_demo():
     }
 
     demo_groups = [
-        {"name": "주문 처리", "count": 3, "rows": [
-            {"text": "발주 필요 2건", "link": url_for("orders_demo", tab="ready"), "n": 2},
-            {"text": "발송 필요 1건", "link": url_for("orders_demo", tab="dispatch"), "n": 1},
+        {"name": "주문", "count": 3, "rows": [
+            {"label": "발주 필요", "link": url_for("orders_demo", tab="ready"), "n": 2},
+            {"label": "발송 필요", "link": url_for("orders_demo", tab="dispatch"), "n": 1},
         ]},
-        {"name": "상품 조치", "count": 2, "rows": [
-            {"text": "판매중지 2개", "link": url_for("products_view", tab="action"), "n": 2},
+        {"name": "상품", "count": 2, "rows": [
+            {"label": "판매중지", "link": url_for("products_view", tab="action"), "n": 2},
         ]},
-        {"name": "고객 응대", "count": 1, "rows": [
-            {"text": "미답변 문의 1건", "link": url_for("cs"), "n": 1},
+        {"name": "고객응대", "count": 1, "rows": [
+            {"label": "미답변 문의", "link": url_for("cs"), "n": 1},
         ]},
-        {"name": "정산 확인", "count": 0, "rows": []},
+        {"name": "정산", "count": 0, "rows": []},
     ]
 
     flash("샘플 데이터입니다 — 오늘 할 일·주문·매출·반품 수치는 실제가 아닙니다.", "success")

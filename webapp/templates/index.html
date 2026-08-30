@@ -30,7 +30,7 @@
 </div>
 
 <div class="section">
-  <p class="eyebrow">이번 달 · {{ checked_at }} 기준</p>
+  <h1 style="margin-bottom:12px;">매출 현황 <span class="muted" style="font-size:13px;font-weight:400;">· {{ checked_at }} 기준</span></h1>
   <div class="stat-grid">
     <a href="{{ url_for('report') }}" class="stat-card link">
       <p class="stat-num">{{ "{:,}".format(this_month.revenue) }}원</p>
@@ -51,6 +51,17 @@
   </div>
 
   <div class="panel" style="margin-top:16px;">
+    <div class="chart-toolbar">
+      <div class="month-nav">
+        <a href="{{ url_for('index', year=prev_year, month=prev_month) }}"><button type="button" aria-label="이전 달">‹</button></a>
+        <span class="month-label">{{ selected_year }}년 {{ selected_month }}월</span>
+        {% if next_disabled %}
+        <button type="button" disabled aria-label="다음 달">›</button>
+        {% else %}
+        <a href="{{ url_for('index', year=next_year, month=next_month) }}"><button type="button" aria-label="다음 달">›</button></a>
+        {% endif %}
+      </div>
+    </div>
     <div class="chart-legend">
       <span class="legend-toggle" data-series="revenue"><i class="sw" style="border-color:var(--money);"></i>매출</span>
       <span class="legend-toggle" data-series="profit"><i class="sw" style="border-color:var(--money-2);border-top-style:dashed;"></i>순수익</span>

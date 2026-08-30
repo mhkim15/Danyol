@@ -185,19 +185,35 @@ def _todo_groups(registered: list, pending_orders, returns_count, inquiry_count)
         order_items.append({"label": "발송 필요", "link": url_for("orders", tab="dispatch"), "n": dispatch_wait})
     groups.append({"name": "주문", "rows": order_items})
 
-    # 품절·판매중지·마진붕괴·무판매 판정은 health.py(캐시 기반, deep=False)와 공유한다 —
+    # 품절·재고조정·마진붕괴·무판매 판정은 health.py(캐시 기반, deep=False)와 공유한다 —
     # 같은 판정을 두 곳에서 따로 하면 두 화면이 다른 답을 낼 수 있다.
     issues_by_category = {}
     for issue in check_store_health(deep=False):
         issues_by_category.setdefault(issue.category, []).append(issue)
-    suspended_n = len(issues_by_category.get("판매중지", []))
     supply_n = len(issues_by_category.get("품절", [])) + len(issues_by_category.get("재고조정", []))
     margin_n = len(issues_by_category.get("마진붕괴", []))
     no_sale_n = len([p for p in product_performance(registered=registered) if p["status"].startswith("무판매")])
 
+    # 네이버 판매중지는 그 자체로 할 일이 아니다 — 사람이 일부러 내렸을 수도 있다.
+    # "도매매는 멀쩡한데 네이버만 막혀 있어 다시 팔 수 있는 것"만 실제로 할 일이다.
+    from bebrave.smartstore.sync import ACTION_OK
+    status_cache = _load_json(PRODUCT_STATUS_CACHE)
+    sync_cache = _load_json(PRODUCT_SYNC_CACHE)
+    registered_ids = {str(p.get("naver_product_id", "")) for p in registered}
+    sync_by_id = {s.get("naver_product_id"): s for s in sync_cache} if isinstance(sync_cache, list) else {}
+    resumable_n = 0
+    if isinstance(status_cache, list):
+        for s in status_cache:
+            pid = s.get("product_id")
+            if pid not in registered_ids or s.get("status_type") != "SUSPENSION":
+                continue
+            sync = sync_by_id.get(pid)
+            if not sync or sync.get("action") == ACTION_OK:
+                resumable_n += 1
+
     product_items = []
-    if suspended_n:
-        product_items.append({"label": "판매중지", "link": url_for("products_view", tab="action"), "n": suspended_n})
+    if resumable_n:
+        product_items.append({"label": "재개 가능", "link": url_for("products_view", tab="action"), "n": resumable_n})
     if supply_n:
         product_items.append({"label": "재고 반영", "link": url_for("products_view", tab="action"), "n": supply_n})
     if margin_n:
@@ -277,20 +293,36 @@ def index():
 
     sales_records = load_sales_orders()
     today = date.today()
-    chart_series = sales_month_series(sales_records, today.year, today.month)
+    selected_year = request.args.get("year", type=int) or today.year
+    selected_month = request.args.get("month", type=int) or today.month
+    if (selected_year, selected_month) > (today.year, today.month):
+        selected_year, selected_month = today.year, today.month
+
+    # 차트는 이동 가능하지만, "이번 달" 숫자카드 4개는 항상 실제 이번 달 기준이다 —
+    # 지난달을 보고 있다고 이번달 매출 카드까지 지난달 값으로 바뀌면 헷갈린다.
+    chart_series = sales_month_series(sales_records, selected_year, selected_month)
+    is_current_month = (selected_year, selected_month) == (today.year, today.month)
+    current_series = chart_series if is_current_month else sales_month_series(sales_records, today.year, today.month)
     this_month = {
-        "revenue": sum(p["revenue"] for p in chart_series),
-        "profit": sum(p["profit"] for p in chart_series),
-        "order_count": sum(p["order_count"] for p in chart_series),
-        "uncertain_count": sum(p.get("uncertain_count", 0) for p in chart_series),
+        "revenue": sum(p["revenue"] for p in current_series),
+        "profit": sum(p["profit"] for p in current_series),
+        "order_count": sum(p["order_count"] for p in current_series),
+        "uncertain_count": sum(p.get("uncertain_count", 0) for p in current_series),
     }
     month_prefix = today.strftime("%Y-%m")
     this_month_returns = len([c for c in load_claims() if c.get("claimed_at", "").startswith(month_prefix)])
+
+    prev_month, prev_year = (12, selected_year - 1) if selected_month == 1 else (selected_month - 1, selected_year)
+    next_month, next_year = (1, selected_year + 1) if selected_month == 12 else (selected_month + 1, selected_year)
+    next_disabled = (next_year, next_month) > (today.year, today.month)
 
     return render_template(
         "index.html",
         todo_groups=todo_groups, todo_total=todo_total, checked_at=checked_at,
         this_month=this_month, this_month_returns=this_month_returns, chart_series=chart_series,
+        selected_year=selected_year, selected_month=selected_month,
+        prev_year=prev_year, prev_month=prev_month, next_year=next_year, next_month=next_month,
+        next_disabled=next_disabled,
         env_status=_env_status(),
     )
 
@@ -322,7 +354,7 @@ def index_demo():
             {"label": "발송 필요", "link": url_for("orders_demo", tab="dispatch"), "n": 1},
         ]},
         {"name": "상품", "count": 2, "rows": [
-            {"label": "판매중지", "link": url_for("products_view", tab="action"), "n": 2},
+            {"label": "재개 가능", "link": url_for("products_view", tab="action"), "n": 2},
         ]},
         {"name": "고객응대", "count": 1, "rows": [
             {"label": "미답변 문의", "link": url_for("cs"), "n": 1},
@@ -335,6 +367,9 @@ def index_demo():
         "index.html",
         todo_groups=demo_groups, todo_total=6, checked_at=datetime.now().strftime("%H:%M"),
         this_month=this_month, this_month_returns=1, chart_series=chart_series,
+        selected_year=today.year, selected_month=today.month,
+        prev_year=today.year, prev_month=today.month, next_year=today.year, next_month=today.month,
+        next_disabled=True,
         env_status=_env_status(), demo=True,
     )
 

@@ -199,11 +199,15 @@ function updateBulkBar() {
 
 (function () {
   // 홈·헬스체크의 "확인하러 가기" 링크가 ?tab=action 으로 들어온다 — 필터 초기값으로 받는다.
-  var tab = new URLSearchParams(window.location.search).get('tab');
+  var params = new URLSearchParams(window.location.search);
+  var tab = params.get('tab');
   if (tab) {
     var sel = document.getElementById('statusFilter');
     if (Array.prototype.some.call(sel.options, function (o) { return o.value === tab; })) sel.value = tab;
   }
+  // CS에서 "이 상품 보러가기"로 넘어올 때 상품명이 ?q= 로 들어온다.
+  var q = params.get('q');
+  if (q) document.getElementById('searchInput').value = q;
   applyFilters();
 })();
 </script>

@@ -1176,9 +1176,19 @@ def orders_dispatch():
 
 # ── CS (반품·취소·상품문의) ────────────────────────────────────────────────
 
+CS_PERIODS = (7, 30, 90)  # 조회 기간 선택지(일) — 화면 드롭다운과 서버가 같은 목록을 쓴다
+
+
 @app.route("/cs")
 def cs():
-    hours = int(request.args.get("hours", 24 * 7))
+    from bebrave.config import FAST_SETTLEMENT_MAX_RETURN
+    from bebrave.report import return_rate
+
+    days = request.args.get("days", type=int) or 7
+    if days not in CS_PERIODS:
+        days = 7
+    hours = days * 24
+
     claims = []
     error = None
     try:
@@ -1200,13 +1210,18 @@ def cs():
         from bebrave.smartstore.auth import get_access_token
         from bebrave.smartstore.inquiries import fetch_inquiries
         token = get_access_token()
-        inquiries = fetch_inquiries(token, days=max(1, hours // 24))
+        inquiries = fetch_inquiries(token, days=days)
         inquiries.sort(key=lambda i: i.answered)  # 미답변(False) 먼저
     except Exception as e:
         inquiry_error = str(e)
 
-    return render_template("cs.html", claims=claims, hours=hours, error=error,
-                            inquiries=inquiries, inquiry_error=inquiry_error)
+    # 표에 뿌리는 건 실시간 조회분(최근 N일)뿐이라, 그동안 쌓아온 누적 원장은 이 화면에서
+    # 한 번도 안 쓰였다 — 반품률은 빠른정산 자격이 걸린 수치라 CS 화면에 있어야 한다.
+    rate = return_rate(days=30)
+    return render_template("cs.html", claims=claims, hours=hours, days=days, error=error,
+                            inquiries=inquiries, inquiry_error=inquiry_error,
+                            return_stat=rate, return_limit=FAST_SETTLEMENT_MAX_RETURN,
+                            periods=CS_PERIODS)
 
 
 @app.route("/cs/demo")
@@ -1231,9 +1246,12 @@ def cs_demo():
                         answered=True, questioner_name="최지은", created_date="2026-08-13T11:30:00",
                         answer_content="현재는 네이비 단일 색상만 판매 중입니다."),
     ]
+    from bebrave.config import FAST_SETTLEMENT_MAX_RETURN
     flash("샘플 데이터입니다 — 실제 반품·문의가 아닙니다.", "success")
-    return render_template("cs.html", claims=demo_claims, hours=168, error=None,
-                            inquiries=demo_inquiries, inquiry_error=None, demo=True)
+    return render_template("cs.html", claims=demo_claims, hours=168, days=7, error=None,
+                            inquiries=demo_inquiries, inquiry_error=None, demo=True,
+                            return_stat={"rate": 0.08, "claim_count": 2, "order_count": 25},
+                            return_limit=FAST_SETTLEMENT_MAX_RETURN, periods=CS_PERIODS)
 
 
 # ── 재고·가격 동기화 (판정은 /products 캐시로 보여주고, 반영 액션만 여기 남김) ──────────

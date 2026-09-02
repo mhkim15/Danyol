@@ -10,8 +10,29 @@
 </div>
 
 <div class="tabs">
-  <a href="{{ url_for(endpoint, tab='claims') }}" class="{{ 'active' if active_tab == 'claims' }}">반품·취소 <span class="tab-count">{{ claims | length }}</span></a>
-  <a href="{{ url_for(endpoint, tab='inquiries') }}" class="{{ 'active' if active_tab == 'inquiries' }}">상품문의{% if unanswered %} <span class="tab-count">{{ unanswered }}</span>{% endif %}</a>
+  <a href="{{ url_for(endpoint, tab='claims', days=days) }}" class="{{ 'active' if active_tab == 'claims' }}">반품·취소 <span class="tab-count">{{ claims | length }}</span></a>
+  <a href="{{ url_for(endpoint, tab='inquiries', days=days) }}" class="{{ 'active' if active_tab == 'inquiries' }}">상품문의{% if unanswered %} <span class="tab-count">{{ unanswered }}</span>{% endif %}</a>
+</div>
+
+<div class="filterbar">
+  {# 지금까지 조회 기간이 7일로 고정돼 있었고, 그게 며칠치인지도 화면에 없었다 #}
+  <select onchange="location.href=this.value">
+    {% for d in periods %}
+    <option value="{{ url_for(endpoint, tab=active_tab, days=d) }}" {{ 'selected' if d == days }}>최근 {{ d }}일</option>
+    {% endfor %}
+  </select>
+  <span class="spacer"></span>
+  {% if return_stat and return_stat.rate is not none %}
+  {% set over = return_stat.rate >= return_limit %}
+  <span class="{{ 'badge-err' if over else 'badge-ok' }}"
+        title="빠른정산 자격 기준은 {{ '{:.0%}'.format(return_limit) }} 미만입니다">
+    누적 반품률 {{ "%.1f"|format(return_stat.rate * 100) }}%
+  </span>
+  <span class="muted" style="font-size:12px;">최근 30일 {{ return_stat.claim_count }}건 / 주문 {{ return_stat.order_count }}건 · 빠른정산 기준 {{ "{:.0%}".format(return_limit) }} 미만</span>
+  {% else %}
+  <span class="badge">누적 반품률 판단 불가</span>
+  <span class="muted" style="font-size:12px;">최근 30일 주문이 없어 비율을 낼 수 없습니다</span>
+  {% endif %}
 </div>
 
 
@@ -25,18 +46,25 @@
   <div class="panel">
     <div class="table-wrap">
     <table>
-      <tr><th>일시</th><th>상품</th><th>수량</th><th>유형</th><th>사유</th><th>주문자</th></tr>
+      <tr>
+        <th style="width:13%;">일시</th><th>상품</th><th style="width:7%;">수량</th>
+        <th style="width:11%;">환불액</th><th style="width:9%;">유형</th>
+        <th style="width:18%;">사유</th><th style="width:18%;">주문자</th>
+      </tr>
       {% for o in claims %}
       <tr>
         <td class="muted mono" style="font-size:11.5px;">{{ o.ordered_at }}</td>
-        <td>{{ o.product_name }} {{ o.option_name }}</td>
+        {# 상품명이 그냥 글자였다 — 여기서 문제 상품을 발견해도 조치하러 갈 수 없었다 #}
+        <td><a href="{{ url_for('products_view') }}?q={{ o.product_name }}">{{ o.product_name }}</a> {{ o.option_name }}</td>
         <td class="mono">{{ o.quantity }}</td>
-        <td><span class="badge">{{ o.claim_type or o.status }}</span></td>
+        {# 몇 건인지만 알고 얼마가 빠지는지 몰랐다 #}
+        <td class="mono">{{ "{:,}".format((o.unit_price or 0) * o.quantity) }}원</td>
+        <td><span class="{{ 'badge-err' if (o.claim_type or o.status) in ('RETURN', 'EXCHANGE') else 'badge' }}">{{ o.claim_type or o.status }}</span></td>
         <td class="muted">{{ o.claim_reason or '사유 미제공' }}</td>
         <td class="muted">{{ o.orderer_name }} ({{ o.orderer_tel }})</td>
       </tr>
       {% else %}
-      <tr><td colspan="6" class="muted">해당 기간 반품·취소 없음</td></tr>
+      <tr><td colspan="7" class="muted">해당 기간 반품·취소 없음{% if error %} — 조회에 실패해 확인하지 못했습니다{% endif %}</td></tr>
       {% endfor %}
     </table>
     </div>
@@ -53,17 +81,31 @@
   <div class="panel">
     <div class="table-wrap">
     <table>
-      <tr><th>일시</th><th>상품</th><th>문의내용</th><th>작성자</th><th>답변상태</th></tr>
+      <tr>
+        <th style="width:13%;">일시</th><th style="width:22%;">상품</th>
+        <th>문의내용</th><th style="width:12%;">작성자</th><th style="width:11%;">답변상태</th>
+      </tr>
       {% for q in inquiries %}
       <tr>
         <td class="muted mono" style="font-size:11.5px;">{{ q.created_date }}</td>
-        <td>{{ q.product_name }}</td>
-        <td>{{ q.content }}</td>
+        <td><a href="{{ url_for('products_view') }}?q={{ q.product_name }}">{{ q.product_name }}</a></td>
+        <td>
+          {{ q.content }}
+          {# 답변 내용을 가져오면서도 화면엔 "답변완료" 배지만 떠서, 내가 뭐라고 답했는지 못 봤다 #}
+          {% if q.answer_content %}
+          <details style="margin-top:4px;">
+            <summary class="hint" style="cursor:pointer;">내 답변 보기</summary>
+            <div class="muted" style="font-size:12.5px;margin-top:4px;">{{ q.answer_content }}</div>
+          </details>
+          {% elif q.answered %}
+          <div class="hint">답변 내용을 불러오지 못했습니다</div>
+          {% endif %}
+        </td>
         <td class="muted">{{ q.questioner_name }}</td>
         <td><span class="{{ 'badge-ok' if q.answered else 'badge-err' }}">{{ '답변완료' if q.answered else '미답변' }}</span></td>
       </tr>
       {% else %}
-      <tr><td colspan="5" class="muted">해당 기간 상품문의 없음</td></tr>
+      <tr><td colspan="5" class="muted">해당 기간 상품문의 없음{% if inquiry_error %} — 조회에 실패해 확인하지 못했습니다{% endif %}</td></tr>
       {% endfor %}
     </table>
     </div>

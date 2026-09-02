@@ -42,6 +42,15 @@
   <a href="{{ url_for('candidates', tab='hold', unconfirmed=unconfirmed_only) }}" class="{{ 'active' if tab == 'hold' }}">보류·제외 <span class="tab-count">{{ counts.hold }}</span></a>
 </div>
 
+{% if tab == 'unclassified' and candidates %}
+{# 설명문을 일괄 제거할 때 이 안내까지 같이 사라져서, 왜 전부 미분류인지 알 수 없었다 #}
+<div class="panel" style="background:var(--warn-bg);color:var(--warn);">
+  <b>분류 정보가 없는 예전 스캔 결과입니다.</b>
+  틈새/리메이크를 나누는 데 필요한 월검색수·트랙이 저장 단계에서 빠졌습니다(현재는 고쳐짐).
+  위 <b>새로 스캔하기</b>를 한 번 돌리면 새 후보부터 두 갈래로 나뉩니다 — 기존 건은 되살릴 수 없습니다.
+</div>
+{% endif %}
+
 <div class="panel">
   <div class="filterbar">
     <input type="text" id="candSearch" placeholder="키워드·상품명 검색" oninput="filterCands()">
@@ -55,7 +64,7 @@
     <input type="hidden" name="tab" value="{{ tab }}">
   </form>
 
-  <div class="bulkbar" id="candBar" hidden>
+  <div class="bulkbar" id="candBar" style="background:none;border:none;padding:10px 0;">
     <div class="row" style="align-items:center;">
       <span class="sel-count" id="candSel">0건 선택</span>
       <span class="spacer"></span>
@@ -69,26 +78,23 @@
     <tr>
       <th style="width:24px;"><input type="checkbox" id="candAll" onclick="toggleCands(this)"></th>
       <th style="width:14%;">키워드</th>
-      <th style="width:7%;">점수
+      <th style="width:11%;">판정
         <button type="button" class="tip-btn" data-tip-toggle>?<span class="tip-bubble">
-          <p><b>수요 × 진입가능성 × 수익성</b> 3축을 가중평균한 0~100점입니다.</p>
+          <p><b>수요 × 진입가능성 × 수익성</b> 3축을 가중평균한 0~100점을 합격선으로 나눈 것입니다.</p>
           <ul>
-            <li><b>신규 틈새 발굴(트랙A)</b> — 수요35% + 진입가능성45% + 수익성20%<br>55점 이상 = 진입 권장 · 40점 이상 = 진입 가능</li>
+            <li><b>신규 틈새 발굴(트랙A)</b> — 수요35% + 진입가능성45% + 수익성20%<br>55점 이상 = 진입 권장 · 40점 이상 = 진입 가능 · 25점 이상 = 보류</li>
             <li><b>리메이크 후보(트랙B)</b> — 수요45% + 진입가능성35% + 수익성20%<br>60점 이상 = 리메이크 권장 · 40점 이상 = 리메이크 검토</li>
           </ul>
         </span></button>
       </th>
-      <th style="width:9%;">마진율
+      <th style="width:13%;">가격·마진
         <button type="button" class="tip-btn" data-tip-toggle>?<span class="tip-bubble">
-          <p><b>(판매가 − 도매가 − 수수료·배송비) ÷ 판매가</b></p>
-          <ul>
-            <li>판매가는 도매가에서 역산 — 목표마진율 20%와 최소이익 5,000원을 <b>동시에</b> 만족하는 선에서 정해집니다.</li>
-            <li>도매매에서 상품을 못 찾았으면(도매가 미조회) 계산 자체가 안 돼 "—"로 표시됩니다.</li>
-          </ul>
+          <p>예상 판매가는 도매가에서 역산합니다 — 목표마진율 20%와 최소이익 5,000원을 <b>동시에</b> 만족하는 선.</p>
+          <p>마진율이 높아도 <b>개당 이익</b>이 작으면 남는 게 없습니다. 그래서 금액을 함께 봅니다.</p>
+          <p>도매매에서 상품을 못 찾았으면(도매가 미조회) 계산 자체가 안 돼 "—"로 표시됩니다.</p>
         </span></button>
       </th>
-      <th style="width:32%;">도매매 상품</th>
-      <th style="width:8%;">도매가</th>
+      <th style="width:28%;">도매매 상품</th>
       <th style="width:10%;">확인여부
         <button type="button" class="tip-btn" data-tip-toggle>?<span class="tip-bubble">
           <p>도매매에서 찾은 상품이 이 키워드와 <b>같은 종류인지</b> 자동으로 확인됐는지 여부입니다.</p>
@@ -105,24 +111,40 @@
     {% for c in candidates %}
     <tr data-name="{{ (c.keyword ~ ' ' ~ (c.supply_name or ''))|lower }}">
       <td>{% if c.supply_name and not c.supply_matched and not c.human_confirmed %}<input type="checkbox" form="candForm" class="cand-check" name="ids" value="{{ c.keyword }}||{{ c.track }}" onclick="updateCandBar()">{% endif %}</td>
-      <td>{{ c.keyword }}</td>
       <td>
-        <span class="score-badge {{ 'score-high' if c.score >= 55 else ('score-mid' if c.score >= 40 else 'score-low') }}">{{ c.score }}</span>
+        {{ c.keyword }}
+        <div style="margin-top:3px;">
+          {% if c.track == 'A' %}<span class="badge-ok" title="경쟁이 적어 상품명만 다듬어 바로 등록">틈새</span>
+          {% elif c.track == 'B' %}<span class="badge-warn" title="이미 경쟁이 있어 상세페이지까지 새로 만들어야 함">리메이크</span>{% endif %}
+          {# 시즌 상품인지가 진입 시점 판단에 직결되는데 지금까지 화면에 없었다 #}
+          {% if c.is_seasonal %}<span class="badge" title="검색량이 계절을 탑니다 — 진입 시점 확인 필요">계절성</span>{% endif %}
+        </div>
       </td>
-      <td class="mono" style="{{ 'color:var(--ok);font-weight:600;' if c.margin_rate and c.margin_rate >= 0.5 }}">
-        {{ "%.1f%%"|format(c.margin_rate * 100) if c.margin_rate else "—" }}
+      <td>
+        <span class="{{ 'badge-ok' if '권장' in c.verdict else ('badge-warn' if c.verdict in ('진입 가능', '리메이크 검토') else 'badge') }}"
+              title="{{ c.score }}점">{{ c.verdict }}</span>
+      </td>
+      <td class="mono" style="font-size:12px;line-height:1.7;">
+        {% if c.est_sale_price %}
+        {{ "{:,}".format(c.est_sale_price) }}원<br>
+        <span class="muted">도매 {{ "{:,}".format(c.est_cost_price) if c.est_cost_price else '—' }}</span><br>
+        <span class="{{ 'muted' if c.margin_amount and c.margin_amount >= 5000 else 'badge-warn' }}">
+          {{ "%.0f%%"|format(c.margin_rate * 100) if c.margin_rate else "—" }}{% if c.margin_amount is not none %} ({{ "{:,}".format(c.margin_amount) }}원){% endif %}
+        </span>
+        {% else %}
+        <span class="muted">미조회</span>
+        {% endif %}
       </td>
       <td>
         {% if c.supply_name %}
           <a href="{{ url_for('candidates_preview', keyword=c.keyword, track=c.track) }}"
              data-modal-url="{{ url_for('candidates_preview', keyword=c.keyword, track=c.track) }}&modal=1"
              onclick="openPreviewModal(this.dataset.modalUrl); return false;"
-             style="color:var(--ink);font-size:12.5px;">{{ c.supply_name[:32] }}{{ "…" if c.supply_name|length > 32 }}</a>
+             style="font-size:12.5px;">{{ c.supply_name[:32] }}{{ "…" if c.supply_name|length > 32 }}</a>
         {% else %}
           <span class="muted" style="font-size:12px;">미조회</span>
         {% endif %}
       </td>
-      <td class="mono muted" style="font-size:12px;">{{ "{:,}원".format(c.est_cost_price) if c.est_cost_price else "—" }}</td>
       <td>
         {% if not c.supply_name %}
           <span class="muted" style="font-size:12px;">—</span>
@@ -137,7 +159,7 @@
       <td class="muted">{{ c.category }}</td>
     </tr>
     {% else %}
-    <tr><td colspan="8" class="muted">해당 조건의 후보가 없습니다</td></tr>
+    <tr><td colspan="7" class="muted">해당 조건의 후보가 없습니다</td></tr>
     {% endfor %}
     </tbody>
   </table>
@@ -172,8 +194,6 @@ function filterCands() {
 }
 function updateCandBar() {
   var n = document.querySelectorAll('.cand-check:checked').length;
-  var bar = document.getElementById('candBar');
-  bar.hidden = n === 0;
   document.getElementById('candSel').textContent = n + '건 선택';
   document.getElementById('candSubmit').textContent = '실물확인 완료 (' + n + ')';
 }

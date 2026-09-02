@@ -396,6 +396,9 @@ def _candidate_bucket(c: dict) -> str:
 @app.route("/candidates")
 def candidates():
     from bebrave.config import TARGET_CATEGORIES
+    from bebrave.margin.calculator import calculate as calc_margin
+    from bebrave.sourcing.discover import _recommendation
+
     items = _load_json(SOURCING_LOG)
     items.sort(key=lambda c: c.get("score", 0), reverse=True)
 
@@ -403,15 +406,26 @@ def candidates():
     for c in items:
         counts[_candidate_bucket(c)] += 1
 
-    tab = request.args.get("tab", "niche")
+    # 기본 탭이 틈새 고정이라, 옛 스캔 데이터처럼 전부 미분류면 첫 화면이 빈 표였다.
+    default_tab = next((t for t in ("niche", "remake", "unclassified", "hold") if counts[t]), "niche")
+    tab = request.args.get("tab", default_tab)
     if tab not in counts:
-        tab = "niche"
+        tab = default_tab
     unconfirmed_only = request.args.get("unconfirmed") == "1"
 
     filtered = [c for c in items if _candidate_bucket(c) == tab]
     if unconfirmed_only:
         filtered = [c for c in filtered
                     if c.get("supply_name") and not c.get("supply_matched") and not c.get("human_confirmed")]
+
+    for c in filtered:
+        # 점수 숫자만으로는 진입해도 되는지 판단이 안 된다 — 합격선 판정을 화면에도 쓴다.
+        # 판정 기준은 소싱 로직과 같은 함수를 그대로 재사용(두 곳에서 따로 정하지 않는다).
+        c["verdict"] = _recommendation(c.get("score", 0), "", track=c.get("track", "A"))
+        # 마진율만 보면 "50%인데 개당 900원"을 못 거른다 — 등록 단계로 넘기기 전에 절대금액.
+        sale = c.get("est_sale_price") or 0
+        cost = c.get("est_cost_price") or 0
+        c["margin_amount"] = calc_margin(sale_price=sale, cost_price=cost).net_profit if sale and cost else None
 
     return render_template("candidates.html", candidates=filtered, target_categories=TARGET_CATEGORIES,
                             tab=tab, counts=counts, unconfirmed_only=unconfirmed_only)

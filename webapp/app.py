@@ -896,8 +896,22 @@ def products_detail(product_id):
     if not record:
         return '<div class="flash flash-error">등록 기록을 찾을 수 없습니다.</div>', 404
 
+    # 표에서 뺀 판매 실적·자동삭제 위험은 여기서 본다 — 계산은 계속 되고 있었는데
+    # 재설계 때 화면에서만 사라져 있었다.
+    from bebrave.tracker.products import ProductTracker
+    from bebrave.config import AUTO_DELETE_MONTHS
+
+    perf = next((p for p in _performance_with_quality()
+                 if p["naver_product_id"] == product_id), {})
+    tracked = next((p for p in ProductTracker(TRACKED_PRODUCTS).products
+                    if p.product_id == product_id), None)
+    months_since_sold = tracked.months_since_sold() if tracked else None
+
     ctx = {"record": record, "images": [], "tags": [], "detail_content": "",
-           "stock": None, "status_type": None, "fetch_error": None}
+           "stock": None, "status_type": None, "fetch_error": None,
+           "perf": perf, "months_since_sold": months_since_sold,
+           "auto_delete_months": AUTO_DELETE_MONTHS,
+           "auto_delete_risk": months_since_sold is not None and months_since_sold >= AUTO_DELETE_MONTHS}
     try:
         from bebrave.smartstore.auth import get_access_token
         from bebrave.smartstore.register import fetch_registered_product
@@ -1628,7 +1642,13 @@ def settlement_sync_cases():
 
 # ── 판매 성과 (진단점수·상태 판정 — /products가 이 결과를 표에 합쳐서 보여줌) ──────────
 
-def _performance_with_quality():
+def _performance_with_quality(live_quality: bool = False):
+    """상품별 판매성과 + 리스팅 품질.
+
+    live_quality=False(목록 기본)면 네트워크를 전혀 안 탄다. 품질 점수는 표에서
+    빠지고 상세 모달로 옮겨갔는데(모달은 자체적으로 실시간 조회를 한다), 목록이
+    계속 무판매 상품 수만큼 네이버를 호출하고 있어 방문마다 값 없는 비용을 냈다.
+    """
     from bebrave.report import product_performance
     from bebrave.smartstore.listing_quality import score_listing
 
@@ -1636,31 +1656,32 @@ def _performance_with_quality():
     registered = _load_json(REGISTERED_PRODUCTS)
     by_id = {str(p.get("naver_product_id", "")): p for p in registered}
 
-    # 전 상품 로컬 채점(상품명·마진, API 호출 없음) — 상품 관리 표의 "상품 상태" 배지용.
+    # 전 상품 로컬 채점(상품명·마진, API 호출 없음).
     for p in results:
         record = by_id.get(p["naver_product_id"])
         if record:
             p["quality"] = score_listing(record)
 
-    # 무판매 상품만 이미지·태그·상세설명까지 실시간 조회해 재채점 — 판매중/신규 상품까지
-    # 매번 API를 태우면 방문마다 느려진다. 무판매는 정의상 소수라 비용이 자연히 제한된다.
-    token = None
-    for p in results:
-        if not p["status"].startswith("무판매"):
-            continue
-        record = by_id.get(p["naver_product_id"])
-        if not record:
-            continue
-        live_detail = None
-        try:
-            if token is None:
-                from bebrave.smartstore.auth import get_access_token
-                token = get_access_token()
-            from bebrave.smartstore.register import fetch_registered_product
-            live_detail = fetch_registered_product(p["naver_product_id"], token)
-        except Exception:
-            pass  # 실시간 조회 실패해도 로컬 채점만으로 진행
-        p["quality"] = score_listing(record, live_detail)
+    if live_quality:
+        # 무판매 상품만 이미지·태그·상세설명까지 실시간 조회해 재채점 — 판매중/신규까지
+        # 태우면 느려진다. 무판매는 정의상 소수라 비용이 자연히 제한된다.
+        token = None
+        for p in results:
+            if not p["status"].startswith("무판매"):
+                continue
+            record = by_id.get(p["naver_product_id"])
+            if not record:
+                continue
+            live_detail = None
+            try:
+                if token is None:
+                    from bebrave.smartstore.auth import get_access_token
+                    token = get_access_token()
+                from bebrave.smartstore.register import fetch_registered_product
+                live_detail = fetch_registered_product(p["naver_product_id"], token)
+            except Exception:
+                pass  # 실시간 조회 실패해도 로컬 채점만으로 진행
+            p["quality"] = score_listing(record, live_detail)
 
     from bebrave.report.name_changes import load_name_changes, compare_before_after
     from bebrave.report import load_sales_orders, suggest_replacements

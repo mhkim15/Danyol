@@ -9,7 +9,30 @@
   <div class="row">
     <div class="badge">{{ status_type or '미확인' }}</div>
     <div class="badge">재고 {{ "{:,}".format(stock) + "개" if stock is not none else '—' }}</div>
+    {% if record.registered_date %}<div class="badge">등록일 {{ record.registered_date }}</div>{% endif %}
+    {% if auto_delete_risk %}
+    <div class="badge-err" title="네이버는 {{ auto_delete_months }}개월 이상 판매가 없는 상품을 자동으로 삭제합니다">
+      자동삭제 위험 — {{ months_since_sold }}개월 미판매
+    </div>
+    {% endif %}
   </div>
+</div>
+
+<div class="panel">
+  <h2>판매 실적</h2>
+  <div class="row">
+    <div class="badge">{{ perf.get('order_count', 0) }}건</div>
+    <div class="badge">매출 {{ "{:,}".format(perf.get('revenue', 0)) }}원</div>
+    <div class="badge">순수익 {{ "{:,}".format(perf.get('profit', 0)) }}원</div>
+    {% if perf.get('uncertain_count') %}
+    <div class="badge-warn" title="등록 상품과 원가가 매칭되지 않아 순수익에 포함되지 않은 주문입니다">
+      원가미상 {{ perf.uncertain_count }}건 제외
+    </div>
+    {% endif %}
+  </div>
+  {% if perf.get('days_since_registered') is not none %}
+  <p class="hint">등록 후 {{ perf.days_since_registered }}일 · {{ perf.get('status', '') }}</p>
+  {% endif %}
 </div>
 
 <div class="panel">

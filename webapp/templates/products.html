@@ -13,10 +13,11 @@
   <select id="statusFilter" onchange="applyFilters()">
     <option value="all">전체 {{ total }}</option>
     <option value="action">조치 필요 {{ action_count }}</option>
-    <option value="suspended">판매중지</option>
+    <option value="suspended">판매중지 상태</option>
     <option value="stock">품절·재고조정</option>
     <option value="margin">마진경고</option>
-    <option value="nosale">무판매</option>
+    {# 표의 "상품 상태" 배지와 같은 말을 쓴다 — 필터는 무판매인데 행은 점검필요면 헷갈린다 #}
+    <option value="nosale">판매 점검필요</option>
     <option value="ok">정상 {{ ok_count }}</option>
   </select>
   <span id="filterCount" class="muted" style="font-size:12px;"></span>

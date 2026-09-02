@@ -17,34 +17,42 @@
 </div>
 
 <div class="section">
-  <h2>추세</h2>
+  {# 증감률만 있고 무엇 대비인지가 화면에 없었다 — 기간과 직전 실값을 같이 보여준다 #}
+  <h2>추세 <span class="muted" style="font-size:13px;font-weight:400;">
+    · 최근 {{ trend.window_days }}일 vs 직전 {{ trend.window_days }}일</span></h2>
   {% if not trend.enough_sample %}
-  <div class="panel muted">판단 불가 — 표본 {{ trend.sample_count }}건</div>
+  <div class="panel muted">판단 불가 — 표본 {{ trend.sample_count }}건. 주문이 더 쌓여야 비교할 수 있습니다.</div>
   {% else %}
   <div class="stat-grid">
-    <div class="stat-card">
+    <div class="stat-card" title="직전 {{ trend.window_days }}일: {{ "{:,}".format(trend.prev.revenue) }}원">
       <p class="stat-num {{ 'delta-down' if trend.revenue_delta is not none and trend.revenue_delta < 0 else 'delta-up' if trend.revenue_delta is not none and trend.revenue_delta > 0 }}">
         {{ "{:+.0%}".format(trend.revenue_delta) if trend.revenue_delta is not none else "—" }}
       </p>
       <p class="stat-label">매출 ({{ "{:,}".format(trend.this.revenue) }}원)</p>
+      <p class="hint">직전 {{ "{:,}".format(trend.prev.revenue) }}원</p>
     </div>
-    <div class="stat-card">
+    <div class="stat-card" title="직전 {{ trend.window_days }}일: {{ "{:,}".format(trend.prev.profit) }}원">
       <p class="stat-num {{ 'delta-down' if trend.profit_delta is not none and trend.profit_delta < 0 else 'delta-up' if trend.profit_delta is not none and trend.profit_delta > 0 }}">
         {{ "{:+.0%}".format(trend.profit_delta) if trend.profit_delta is not none else "—" }}
       </p>
-      <p class="stat-label">순수익 ({{ "{:,}".format(trend.this.profit) }}원)</p>
+      <p class="stat-label">순수익 ({{ "{:,}".format(trend.this.profit) }}원)
+        {% if trend.this.uncertain_count %}<span class="badge-warn" title="등록 상품과 매칭 안 된 주문 — 순수익 미포함">원가미상 {{ trend.this.uncertain_count }}건 제외</span>{% endif %}
+      </p>
+      <p class="hint">직전 {{ "{:,}".format(trend.prev.profit) }}원</p>
     </div>
-    <div class="stat-card">
+    <div class="stat-card" title="직전 {{ trend.window_days }}일: {{ trend.prev.order_count }}건">
       <p class="stat-num {{ 'delta-down' if trend.order_delta is not none and trend.order_delta < 0 else 'delta-up' if trend.order_delta is not none and trend.order_delta > 0 }}">
         {{ "{:+.0%}".format(trend.order_delta) if trend.order_delta is not none else "—" }}
       </p>
       <p class="stat-label">주문건수 ({{ trend.this.order_count }}건)</p>
+      <p class="hint">직전 {{ trend.prev.order_count }}건</p>
     </div>
-    <div class="stat-card">
+    <div class="stat-card" title="직전 {{ trend.window_days }}일: {{ "{:,.0f}".format(trend.aov_prev) }}원">
       <p class="stat-num {{ 'delta-down' if trend.aov_delta is not none and trend.aov_delta < 0 else 'delta-up' if trend.aov_delta is not none and trend.aov_delta > 0 }}">
         {{ "{:+.0%}".format(trend.aov_delta) if trend.aov_delta is not none else "—" }}
       </p>
       <p class="stat-label">객단가 ({{ "{:,.0f}".format(trend.aov_this) }}원)</p>
+      <p class="hint">직전 {{ "{:,.0f}".format(trend.aov_prev) }}원</p>
     </div>
   </div>
   {% endif %}

@@ -92,9 +92,13 @@ def _product_contribution(sales_records: list, today: date, window_days: int) ->
     return contrib
 
 
-def causes(registered: list, today: Optional[date] = None) -> list:
+def causes(registered: list, today: Optional[date] = None,
+            return_stat: Optional[dict] = None) -> list:
     """원인 추정 — 전부 "추정" 표시 + 근거 수치 동반. 순서는 무게순(팔 수 없는
-    상태 > 매출 쏠림 > 반품 > 수수료 > 마진)."""
+    상태 > 매출 쏠림 > 반품 > 수수료 > 마진).
+
+    return_stat: 이미 계산해둔 return_rate 결과. 안 넘기면 여기서 다시 계산한다 —
+    한 화면에서 원인추정과 체력이 각각 계산하면 같은 원장을 두 번 훑게 된다."""
     import json
     from pathlib import Path
     from ..config import FAST_SETTLEMENT_MAX_RETURN
@@ -136,7 +140,7 @@ def causes(registered: list, today: Optional[date] = None) -> list:
                 "link": "/products",
             })
 
-    r = return_rate(days=30)
+    r = return_stat if return_stat is not None else return_rate(days=30)
     if r["rate"] is not None:
         flag = "기준 초과" if r["rate"] > FAST_SETTLEMENT_MAX_RETURN else "기준 이내"
         out.append({
@@ -215,15 +219,15 @@ def deep_opportunities(candidates: list, limit: int = 3) -> list:
     return results
 
 
-def vitals(registered: list) -> dict:
+def vitals(registered: list, return_stat: Optional[dict] = None) -> dict:
     """스토어 체력 — 기준 대비 판정. 데이터가 없으면 지어내지 않고 None으로 둔다."""
-    from ..config import FAST_SETTLEMENT_MAX_RETURN, MIN_MARGIN
+    from ..config import FAST_SETTLEMENT_MAX_RETURN, FREE_SHIPPING_THRESHOLD
     from .claims import return_rate
     from .health import _dispatch_delay_issues
     from .cashflow import cash_events
     from ..margin.calculator import calculate as calc_margin
 
-    r = return_rate(days=30)
+    r = return_stat if return_stat is not None else return_rate(days=30)
     fast_settlement_ok = None if r["rate"] is None else r["rate"] < FAST_SETTLEMENT_MAX_RETURN
 
     try:
@@ -237,7 +241,7 @@ def vitals(registered: list) -> dict:
     below_min_profit = 0
     for p in registered:
         m = calc_margin(sale_price=p.get("sale_price", 0), cost_price=p.get("supply_price", 0),
-                         free_shipping=(p.get("sale_price", 0) >= 30_000))
+                         free_shipping=(p.get("sale_price", 0) >= FREE_SHIPPING_THRESHOLD))
         if not m.passes_abs_floor:
             below_min_profit += 1
 
@@ -300,14 +304,18 @@ def check_store_health_macro(registered: Optional[list] = None, today: Optional[
         if Path("data/sourcing_log.json").exists() else []
     )
 
+    from .claims import return_rate
+
     t = trend(sales_records, today)
+    # 원인추정과 체력이 각각 계산하면 한 화면을 열 때 같은 원장을 두 번 훑는다.
+    return_stat = return_rate(days=30)
     result = {
         "checked_at": datetime.now().isoformat(timespec="minutes"),
         "verdict": _verdict(registered, t),
         "trend": t,
-        "causes": causes(registered, today),
+        "causes": causes(registered, today, return_stat=return_stat),
         "opportunities": opportunities(candidates, sales_records),
-        "vitals": vitals(registered),
+        "vitals": vitals(registered, return_stat=return_stat),
         "deep": deep,
     }
     if deep:

@@ -178,6 +178,14 @@ def _todo_groups(registered: list, pending_orders, returns_count, inquiry_count)
 
     groups = []
 
+    # 품절·재고조정·마진붕괴·발송지연 판정은 health.py(캐시 기반, deep=False)와 공유한다 —
+    # 같은 판정을 두 곳에서 따로 하면 두 화면이 다른 답을 낼 수 있다.
+    # 네이버 판매중지 자체는 여기서 다루지 않는다 — 사람이 일부러 내렸을 수도 있는
+    # 상태라 "할 일"로 단정할 수 없다(상품 관리 화면에서 직접 판단할 문제).
+    issues_by_category = {}
+    for issue in check_store_health(deep=False):
+        issues_by_category.setdefault(issue.category, []).append(issue)
+
     order_items = []
     # None은 "0건"이 아니라 "조회 실패"다 — 둘을 같이 취급하면 발주할 주문이 쌓여 있는데도
     # 홈이 "지금 할 일 없음"을 띄운다(네트워크가 끊긴 화면과 깨끗한 화면이 구별 안 됨).
@@ -185,29 +193,30 @@ def _todo_groups(registered: list, pending_orders, returns_count, inquiry_count)
         order_items.append({"label": "발주", "unknown": True})
     elif pending_orders:
         order_items.append({"label": "발주", "link": url_for("orders", tab="ready"), "n": pending_orders})
+    # 발송을 한 덩어리로 세면 페널티가 걸린 지연 건이 평범한 대기 건에 묻힌다 —
+    # 결제 후 24시간 넘은 건을 따로 뽑는다(합은 전체 발송 대기와 같다).
     dispatch_wait = len([i for i in load_queue() if i["status"] == STATUS_ORDERED])
-    if dispatch_wait:
-        order_items.append({"label": "발송", "link": url_for("orders", tab="dispatch"), "n": dispatch_wait})
+    delay_n = len(issues_by_category.get("발송지연", []))
+    if delay_n:
+        order_items.append({"label": "발송 지연", "link": url_for("orders", tab="dispatch"), "n": delay_n})
+    if dispatch_wait - delay_n > 0:
+        order_items.append({"label": "발송", "link": url_for("orders", tab="dispatch"),
+                            "n": dispatch_wait - delay_n})
     groups.append({"name": "주문", "rows": order_items})
 
-    # 품절·재고조정·마진붕괴·무판매 판정은 health.py(캐시 기반, deep=False)와 공유한다 —
-    # 같은 판정을 두 곳에서 따로 하면 두 화면이 다른 답을 낼 수 있다.
-    # 네이버 판매중지 자체는 여기서 다루지 않는다 — 사람이 일부러 내렸을 수도 있는
-    # 상태라 "할 일"로 단정할 수 없다(상품 관리 화면에서 직접 판단할 문제).
-    issues_by_category = {}
-    for issue in check_store_health(deep=False):
-        issues_by_category.setdefault(issue.category, []).append(issue)
     supply_n = len(issues_by_category.get("품절", [])) + len(issues_by_category.get("재고조정", []))
     margin_n = len(issues_by_category.get("마진붕괴", []))
     no_sale_n = len([p for p in product_performance(registered=registered) if p["status"].startswith("무판매")])
 
+    # 셋이 서로 다른 일인데 링크가 전부 같은 "조치 필요" 필터로 가고 있었다 —
+    # 상품 관리에 성격별 필터가 이미 있으므로 각각 그리로 보낸다.
     product_items = []
     if supply_n:
-        product_items.append({"label": "재고 확인", "link": url_for("products_view", tab="action"), "n": supply_n})
+        product_items.append({"label": "재고 확인", "link": url_for("products_view", tab="stock"), "n": supply_n})
     if margin_n:
-        product_items.append({"label": "마진 확인", "link": url_for("products_view", tab="action"), "n": margin_n})
+        product_items.append({"label": "마진 확인", "link": url_for("products_view", tab="margin"), "n": margin_n})
     if no_sale_n:
-        product_items.append({"label": "품질 점검", "link": url_for("products_view", tab="action"), "n": no_sale_n})
+        product_items.append({"label": "판매 점검", "link": url_for("products_view", tab="nosale"), "n": no_sale_n})
     groups.append({"name": "상품", "rows": product_items})
 
     cs_items = []
@@ -344,10 +353,10 @@ def index_demo():
     demo_groups = [
         {"name": "주문", "count": 3, "rows": [
             {"label": "발주", "link": url_for("orders_demo", tab="ready"), "n": 2},
-            {"label": "발송", "link": url_for("orders_demo", tab="dispatch"), "n": 1},
+            {"label": "발송 지연", "link": url_for("orders_demo", tab="dispatch"), "n": 1},
         ]},
         {"name": "상품", "count": 2, "rows": [
-            {"label": "품질 점검", "link": url_for("products_view", tab="action"), "n": 2},
+            {"label": "판매 점검", "link": url_for("products_view", tab="nosale"), "n": 2},
         ]},
         {"name": "고객응대", "count": 1, "rows": [
             {"label": "답변", "link": url_for("cs"), "n": 1},

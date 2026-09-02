@@ -1467,10 +1467,23 @@ def _settlement_calendar_ctx():
 
 def _settlement_reconcile_ctx():
     from bebrave.report.reconcile import reconcile, suggest_fee_rate
+    from bebrave.config import ORDER_FEE, SALES_FEE_MAX, CS_RESERVE
+
     results = reconcile()
-    results.sort(key=lambda r: r["product_order_id"], reverse=True)
+    # 주문ID 역순은 사람에게 아무 의미가 없다 — 최근 매출부터 보이게 날짜 역순으로.
+    results.sort(key=lambda r: (r.get("date", ""), r["product_order_id"]), reverse=True)
+
+    names = {str(p.get("naver_product_id", "")): p.get("name", "")
+             for p in _load_json(REGISTERED_PRODUCTS)}
+    assumed_rate = ORDER_FEE + SALES_FEE_MAX + CS_RESERVE
+    for r in results:
+        r["product_name"] = names.get(str(r.get("naver_product_id", "")), "")
+        # 공제율(%)만 보여주면 "예상보다 더 떼였는지"를 사람이 암산해야 한다 — 차액을 같이 낸다.
+        r["expected_deduction"] = round(r["revenue"] * assumed_rate)
+        r["deduction_diff"] = r["deduction"] - r["expected_deduction"]
+
     suggestion = suggest_fee_rate(results)
-    return dict(results=results, suggestion=suggestion)
+    return dict(results=results, suggestion=suggestion, assumed_rate=assumed_rate)
 
 
 def _settlement_cashflow_ctx():
@@ -1501,19 +1514,41 @@ def settlement_demo():
     today = date.today()
 
     if tab == "reconcile":
+        from bebrave.config import ORDER_FEE, SALES_FEE_MAX, CS_RESERVE
+        assumed_rate = ORDER_FEE + SALES_FEE_MAX + CS_RESERVE
+        # 실제 대사 결과와 같은 키 구성을 쓴다 — 샘플만 다른 모양이면 검증 도구가 못 된다.
         demo_results = [
             {"product_order_id": "DEMO-R1", "revenue": 10000, "settle_amount": 8950,
-             "deduction": 1050, "deduction_rate": 0.105, "settle_type": "NORMAL_SETTLE_ORIGINAL"},
+             "deduction": 1050, "deduction_rate": 0.105, "settle_type": "NORMAL_SETTLE_ORIGINAL",
+             "date": (today - timedelta(days=9)).isoformat(), "naver_product_id": "DEMO-P1",
+             "settle_date": (today - timedelta(days=2)).isoformat(), "commission_amount": 1020,
+             "product_name": "실리콘주걱 대코 브라이트 미니볶음주걱"},
             {"product_order_id": "DEMO-R2", "revenue": 20000, "settle_amount": 17800,
-             "deduction": 2200, "deduction_rate": 0.11, "settle_type": "QUICK_SETTLE_ORIGINAL"},
+             "deduction": 2200, "deduction_rate": 0.11, "settle_type": "QUICK_SETTLE_ORIGINAL",
+             "date": (today - timedelta(days=8)).isoformat(), "naver_product_id": "DEMO-P2",
+             "settle_date": (today - timedelta(days=6)).isoformat(), "commission_amount": 2180,
+             "product_name": "우산 양산 양우산 자동우산 3단자동우산"},
             {"product_order_id": "DEMO-R3", "revenue": 15000, "settle_amount": 13350,
-             "deduction": 1650, "deduction_rate": 0.11, "settle_type": "NORMAL_SETTLE_ORIGINAL"},
+             "deduction": 1650, "deduction_rate": 0.11, "settle_type": "NORMAL_SETTLE_ORIGINAL",
+             "date": (today - timedelta(days=7)).isoformat(), "naver_product_id": "DEMO-P1",
+             "settle_date": "", "commission_amount": None,
+             "product_name": "실리콘주걱 대코 브라이트 미니볶음주걱"},
             {"product_order_id": "DEMO-R4", "revenue": 8000, "settle_amount": 7120,
-             "deduction": 880, "deduction_rate": 0.11, "settle_type": "NORMAL_SETTLE_ORIGINAL"},
+             "deduction": 880, "deduction_rate": 0.11, "settle_type": "NORMAL_SETTLE_ORIGINAL",
+             "date": (today - timedelta(days=5)).isoformat(), "naver_product_id": "",
+             "settle_date": "", "commission_amount": None, "product_name": ""},
             {"product_order_id": "DEMO-R5", "revenue": 12000, "settle_amount": 10680,
-             "deduction": 1320, "deduction_rate": 0.11, "settle_type": "QUICK_SETTLE_ORIGINAL"},
+             "deduction": 1320, "deduction_rate": 0.11, "settle_type": "QUICK_SETTLE_ORIGINAL",
+             "date": (today - timedelta(days=4)).isoformat(), "naver_product_id": "DEMO-P2",
+             "settle_date": (today - timedelta(days=1)).isoformat(), "commission_amount": 1300,
+             "product_name": "우산 양산 양우산 자동우산 3단자동우산"},
         ]
-        ctx = dict(results=demo_results, suggestion=suggest_fee_rate(demo_results))
+        for r in demo_results:
+            r["expected_deduction"] = round(r["revenue"] * assumed_rate)
+            r["deduction_diff"] = r["deduction"] - r["expected_deduction"]
+        demo_results.sort(key=lambda r: (r["date"], r["product_order_id"]), reverse=True)
+        ctx = dict(results=demo_results, suggestion=suggest_fee_rate(demo_results),
+                   assumed_rate=assumed_rate)
     elif tab == "cashflow":
         purchase_items = [
             {"status": "ordered", "updated_at": (today - timedelta(days=5)).isoformat(),

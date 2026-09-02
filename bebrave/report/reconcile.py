@@ -47,6 +47,13 @@ def reconcile(sales_records: Optional[list] = None, settlement_records: Optional
             "deduction": deduction,
             "deduction_rate": round(deduction / revenue, 4) if revenue else None,
             "settle_type": s.get("settle_type", ""),
+            # 아래 넷은 양쪽 원장에 이미 있는데 결과로 옮기지 않아, 화면에 20자리 주문ID만
+            # 남고 "무슨 상품이 언제 얼마나 떼였는지"를 사람이 알 수 없었다.
+            "date": r.get("date", ""),
+            "naver_product_id": r.get("naver_product_id", ""),
+            "settle_date": s.get("settle_date", ""),
+            # 네이버가 알려준 실제 수수료. deduction(매출−정산 역산)과 달리 실측값이다.
+            "commission_amount": s.get("commission_amount"),
         })
     return results
 
@@ -72,12 +79,15 @@ def suggest_fee_rate(results: list) -> Optional[dict]:
 def _demo() -> None:
     """실행 가능한 자체 점검 — 대사 매칭과 공제율 계산만 검증 (파일 IO 없음)."""
     sales = [
-        {"product_order_id": "PO-1", "revenue": 10000, "profit": 2000},
-        {"product_order_id": "PO-2", "revenue": 20000, "profit": 4000},
+        {"product_order_id": "PO-1", "revenue": 10000, "profit": 2000,
+         "date": "2026-08-10", "naver_product_id": "P1"},
+        {"product_order_id": "PO-2", "revenue": 20000, "profit": 4000,
+         "date": "2026-08-11", "naver_product_id": "P2"},
         {"product_order_id": "PO-3", "revenue": 10000, "profit": 2000},  # 정산 미매칭 — 제외돼야 함
     ]
     settlements = [
-        {"product_order_id": "PO-1", "settle_amount": 9000, "settle_type": "NORMAL_SETTLE_ORIGINAL"},
+        {"product_order_id": "PO-1", "settle_amount": 9000, "settle_type": "NORMAL_SETTLE_ORIGINAL",
+         "settle_date": "2026-08-13", "commission_amount": 900},
         {"product_order_id": "PO-2", "settle_amount": 18000, "settle_type": "NORMAL_SETTLE_ORIGINAL"},
     ]
     results = reconcile(sales, settlements)
@@ -85,6 +95,14 @@ def _demo() -> None:
     by_id = {r["product_order_id"]: r for r in results}
     assert by_id["PO-1"]["deduction"] == 1000 and by_id["PO-1"]["deduction_rate"] == 0.1
     assert by_id["PO-2"]["deduction_rate"] == 0.1
+
+    # 화면이 "어떤 상품이 언제" 건인지 보여주려면 이 넷이 결과에 살아 있어야 한다.
+    assert by_id["PO-1"]["date"] == "2026-08-10", "매출 날짜가 대사 결과에서 사라짐"
+    assert by_id["PO-1"]["naver_product_id"] == "P1", "상품ID가 대사 결과에서 사라짐"
+    assert by_id["PO-1"]["settle_date"] == "2026-08-13", "정산일이 대사 결과에서 사라짐"
+    assert by_id["PO-1"]["commission_amount"] == 900, "실측 수수료가 대사 결과에서 사라짐"
+    # 원장에 없는 값은 조용히 0으로 채우지 않는다 — 모르는 것과 0원은 다르다.
+    assert by_id["PO-2"]["commission_amount"] is None and by_id["PO-2"]["settle_date"] == ""
 
     assert suggest_fee_rate(results) is None, "표본 2건인데 제안이 나옴 — 최소 표본 가드 실패"
 

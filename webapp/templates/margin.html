@@ -9,7 +9,8 @@
     <input type="number" name="price" value="{{ result.sale_price if result else '' }}" required>
     <label>도매가 (원)</label>
     <input type="number" name="cost" value="{{ result.cost_price if result else '' }}" required>
-    <label><input type="checkbox" name="free_shipping" {{ "checked" if result and result.shipping_cost == 0 }}> 무료배송</label>
+    {# 무료배송이면 배송비를 판매자가 부담한다 — shipping_cost가 0이 아닌 쪽이 "무료배송 선택함"이다 #}
+    <label><input type="checkbox" name="free_shipping" {{ "checked" if result and result.shipping_cost != 0 }}> 무료배송</label>
     <div class="row" style="margin-top:12px;">
       <button type="submit">계산</button>
     </div>

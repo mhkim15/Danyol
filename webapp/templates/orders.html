@@ -252,7 +252,7 @@
       <tr>
         <td>{{ i.product_name }}{% if demo %} <span class="badge">샘플</span>{% endif %}</td>
         <td class="mono">{{ i.quantity }}개</td>
-        <td>{{ i.get('company', '—') }}</td>
+        <td>{{ i.get('delivery_company') or '—' }}</td>
         <td class="mono" style="font-size:12px;">{{ i.get('tracking_number', '—') }}</td>
         <td class="muted mono" style="font-size:12px;">{{ i.get('updated_at', '') }}</td>
       </tr>

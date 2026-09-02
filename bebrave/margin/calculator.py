@@ -118,3 +118,31 @@ def calculate(
         passes_target=margin_rate >= TARGET_MARGIN,
         passes_abs_floor=net_profit >= MIN_ABS_PROFIT,
     )
+
+
+def _demo() -> None:
+    """실행 가능한 자체 점검 — 배송비 방향과 판정 4상태 (네트워크 호출 없음)."""
+    # 무료배송이면 배송비를 판매자가 부담한다 → shipping_cost가 0이 "아니어야" 한다.
+    # 화면 체크박스가 이 방향을 반대로 읽어 체크가 뒤집혀 보이던 적이 있다.
+    assert calculate(10_000, 5_000, free_shipping=True).shipping_cost == SHIPPING_FEE
+    assert calculate(10_000, 5_000, free_shipping=False).shipping_cost == 0
+    # 3만원 이상은 무료배송을 안 골라도 자동으로 판매자 부담
+    assert calculate(30_000, 5_000, free_shipping=False).shipping_cost == SHIPPING_FEE
+
+    # 마진율은 목표를 넘는데 절대이익이 기준 미달인 구간 — 화면이 "목표 달성"만 보고
+    # 통과시키면 안 되는 케이스다.
+    r = calculate(8_000, 3_000)
+    assert r.passes_target and not r.passes_abs_floor, f"절대이익 판정이 무의미해짐: {r}"
+    assert "절대이익" in r.summary(), "절대이익 부족이 판정 문구에 안 드러남"
+
+    good = calculate(30_000, 10_000)
+    assert good.passes_target and good.passes_abs_floor and "목표" in good.summary()
+
+    bad = calculate(10_000, 9_500)
+    assert not bad.passes_min and not bad.passes_target
+
+    print("calculator self-check OK")
+
+
+if __name__ == "__main__":
+    _demo()

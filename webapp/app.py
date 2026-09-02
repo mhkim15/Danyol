@@ -179,7 +179,11 @@ def _todo_groups(registered: list, pending_orders, returns_count, inquiry_count)
     groups = []
 
     order_items = []
-    if pending_orders:
+    # None은 "0건"이 아니라 "조회 실패"다 — 둘을 같이 취급하면 발주할 주문이 쌓여 있는데도
+    # 홈이 "지금 할 일 없음"을 띄운다(네트워크가 끊긴 화면과 깨끗한 화면이 구별 안 됨).
+    if pending_orders is None:
+        order_items.append({"label": "발주", "unknown": True})
+    elif pending_orders:
         order_items.append({"label": "발주", "link": url_for("orders", tab="ready"), "n": pending_orders})
     dispatch_wait = len([i for i in load_queue() if i["status"] == STATUS_ORDERED])
     if dispatch_wait:
@@ -207,9 +211,13 @@ def _todo_groups(registered: list, pending_orders, returns_count, inquiry_count)
     groups.append({"name": "상품", "rows": product_items})
 
     cs_items = []
-    if returns_count:
+    if returns_count is None:
+        cs_items.append({"label": "반품·취소", "unknown": True})
+    elif returns_count:
         cs_items.append({"label": "반품·취소", "link": url_for("cs"), "n": returns_count})
-    if inquiry_count:
+    if inquiry_count is None:
+        cs_items.append({"label": "답변", "unknown": True})
+    elif inquiry_count:
         cs_items.append({"label": "답변", "link": url_for("cs"), "n": inquiry_count})
     groups.append({"name": "고객응대", "rows": cs_items})
 
@@ -225,7 +233,8 @@ def _todo_groups(registered: list, pending_orders, returns_count, inquiry_count)
     groups.append({"name": "정산", "rows": settle_items})
 
     for g in groups:
-        g["count"] = sum(i["n"] for i in g["rows"])
+        # 조회 실패 행은 건수를 모르므로 합계에 넣지 않는다 — 모르는 걸 0으로도 1로도 세지 않는다.
+        g["count"] = sum(i["n"] for i in g["rows"] if not i.get("unknown"))
     return groups
 
 
@@ -342,6 +351,9 @@ def index_demo():
         ]},
         {"name": "고객응대", "count": 1, "rows": [
             {"label": "답변", "link": url_for("cs"), "n": 1},
+            # 조회 실패 상태도 샘플에 넣는다 — 실제 화면에서 이 줄이 어떻게 보이는지
+            # 확인할 방법이 달리 없다(API가 정상일 땐 재현이 안 됨).
+            {"label": "반품·취소", "unknown": True},
         ]},
         {"name": "정산", "count": 0, "rows": []},
     ]
@@ -1029,7 +1041,7 @@ def orders_demo():
         {"product_order_id": "DEMO-Q7", "product_name": "실리콘주걱 대코 브라이트 미니볶음주걱",
          "option_name": "", "quantity": 3, "unit_price": 3300, "status": "dispatched",
          "hold_reason": "", "domemae_order_no": "OR9990002", "tracking_number": "123456789012",
-         "company": "CJ대한통운", "updated_at": "2026-08-28"},
+         "delivery_company": "CJ대한통운", "updated_at": "2026-08-28", "spent_amount": 6900},
     ]
     tab = request.args.get("tab", "ready")
     if tab not in ORDER_TABS:
@@ -1060,9 +1072,13 @@ def orders_dispatch():
     try:
         from bebrave.smartstore.auth import get_access_token
         from bebrave.smartstore.orders import dispatch_order
+        from bebrave.smartstore.purchase_queue import mark_dispatched
 
         token = get_access_token()
         dispatch_order(product_order_id, tracking_number, company, token)
+        # 네이버에만 알리고 끝내면 로컬 큐가 계속 "발주완료"로 남아 발송 대기 탭에서
+        # 사라지지 않고 완료 이력에도 안 올라간다 — 송장 자동확인 경로와 같은 마감 처리를 한다.
+        mark_dispatched(product_order_id, tracking_number, company)
         flash(f"주문 {product_order_id} 발송처리 완료 (송장: {tracking_number})", "success")
     except Exception as e:
         flash(f"발송처리 실패: {e}", "error")

@@ -260,6 +260,18 @@ def _demo() -> None:
             {"domemae_goods_no": "111", "supply_price": 1000}, "id", quantity=5, option_code="A2")
         assert status == STATUS_READY, "재고 충분한 옵션인데 hold 처리됨"
 
+    # 발송처리 마감 — 상태가 dispatched로 넘어가고 택배사가 화면이 읽는 이름으로 저장되는지.
+    # (예전엔 저장은 delivery_company인데 화면은 company를 읽어 택배사가 항상 빈칸이었다)
+    import tempfile
+    from pathlib import Path as _Path
+    with tempfile.TemporaryDirectory() as tmp, _patch(f"{__name__}.QUEUE_PATH", _Path(tmp) / "q.json"):
+        _save_queue([{"product_order_id": "po1", "status": STATUS_ORDERED}])
+        mark_dispatched("po1", "1234567890", "CJ대한통운")
+        item = load_queue()[0]
+        assert item["status"] == STATUS_DISPATCHED, "발송처리 후에도 상태가 안 바뀜"
+        assert item["delivery_company"] == "CJ대한통운", "택배사가 저장되지 않음"
+        assert item["tracking_number"] == "1234567890", "송장번호가 저장되지 않음"
+
     print("purchase_queue self-check OK")
 
 

@@ -113,6 +113,9 @@
   .todo-line:last-child { border-bottom: none; }
   .todo-line:hover span:first-child { color: var(--accent); }
   .todo-line b { color: var(--err); font-weight: 700; flex-shrink: 0; }
+  /* 조회 실패 — 0건과 반드시 구분돼야 한다. 갈 곳이 없으므로 링크가 아니다. */
+  .todo-line.unknown { color: var(--ink-soft); cursor: default; }
+  .todo-line.unknown b { color: var(--warn); }
 
   .stat-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(110px, 1fr)); gap: 12px; }
   .stat-card {

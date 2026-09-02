@@ -27,7 +27,9 @@
   {% if emoney %}
   <div class="filterbar">
     <span class="{{ 'badge-err' if emoney.short else 'badge-ok' }}">{{ '이머니 부족' if emoney.short else '이머니 충분' }}</span>
-    <span class="mono" style="font-size:13px;">필요 {{ "{:,}".format(emoney.needed) }}원 / 잔액 {{ "{:,}".format(emoney.cash) }}원</span>
+    <span class="mono" style="font-size:13px;">필요 {{ "{:,}".format(emoney.needed) }}원 / 현금 {{ "{:,}".format(emoney.cash) }}원</span>
+    {# 발주는 현금 이머니로만 빠지지만, 충전 여부를 판단하려면 포인트도 같이 보여야 한다. #}
+    {% if emoney.point %}<span class="muted" style="font-size:12px;">포인트 {{ "{:,}".format(emoney.point) }}원 (발주에는 안 쓰임)</span>{% endif %}
   </div>
   {% elif emoney_error %}
   <div class="filterbar"><span class="badge-warn">이머니 확인 실패</span><span class="muted" style="font-size:12px;">{{ emoney_error }}</span></div>
@@ -38,7 +40,7 @@
   {% else %}
   <form id="readyForm" method="post" action="{{ url_for('purchase_bulk_place') }}"></form>
 
-  <div class="bulkbar" id="readyBar" hidden>
+  <div class="bulkbar" id="readyBar" style="background:none;border:none;padding:10px 0;">
     <div class="row" style="align-items:center;">
       <span class="sel-count" id="readyCount">0건 선택</span>
       <span class="divider"></span>
@@ -55,21 +57,45 @@
       <tr>
         <th style="width:24px;"><input type="checkbox" id="readyAll" checked onclick="document.querySelectorAll('.ready-check').forEach(c=>c.checked=this.checked);updateReadyBar()"></th>
         <th>상품</th>
-        <th style="width:10%;">수량</th>
-        <th class="num" style="width:12%;">도매가</th>
-        <th style="width:28%;">배송지</th>
-        <th style="width:12%;"></th>
+        <th style="width:8%;">수량</th>
+        <th style="width:16%;">금액
+          <button type="button" class="tip-btn" data-tip-toggle>?<span class="tip-bubble">
+            <p>판매가 아래에 도매가와 예상 마진(수수료·배송비·CS예비비 차감 후)을 함께 보여줍니다.</p>
+            <p>도매매에서 도매가를 못 찾으면 마진 계산이 안 됩니다 — 그 건은 이머니 필요금액 집계에서도 빠집니다.</p>
+          </span></button>
+        </th>
+        <th style="width:13%;">주문일시
+          <button type="button" class="tip-btn" data-tip-toggle>?<span class="tip-bubble">
+            <p>결제 후 <b>24시간</b>이 지나도록 발송하지 않으면 발송지연으로 스토어 페널티를 받습니다. 오래된 주문이 위로 옵니다.</p>
+          </span></button>
+        </th>
+        <th style="width:22%;">배송지</th>
+        <th style="width:10%;"></th>
       </tr>
       {% for i in ready %}
       <tr>
         <td><input type="checkbox" name="product_order_ids" form="readyForm" value="{{ i.product_order_id }}" class="ready-check"
                    data-amount="{{ i.supply_cost if i.supply_cost is not none else 0 }}" checked onclick="updateReadyBar()"></td>
         <td>
-          {{ i.product_name }}{% if i.option_name %} <span class="muted">{{ i.option_name }}</span>{% endif %}
+          <a href="#" onclick="openPreviewModal('{{ url_for('orders_detail', product_order_id=i.product_order_id) }}'); return false;">{{ i.product_name }}</a>{% if i.option_name %} <span class="muted">{{ i.option_name }}</span>{% endif %}
           <div class="mono muted" style="font-size:11.5px;">도매매 {{ i.matched_goods_no }}{% if i.matched_option_code %} · 옵션 {{ i.matched_option_code }}{% endif %}</div>
         </td>
         <td class="mono">{{ i.quantity }}개</td>
-        <td class="num">{{ "{:,}".format(i.supply_cost) if i.supply_cost is not none else '—' }}</td>
+        <td class="mono" style="font-size:12px;line-height:1.7;">
+          {{ "{:,}".format(i.unit_price or 0) }}원<br>
+          <span class="muted">도매 {{ "{:,}".format(i.supply_cost) if i.supply_cost is not none else '—' }}</span><br>
+          {% if i.margin_amount is not none %}
+          <span class="muted">마진 {{ "{:,}".format(i.margin_amount) }}원</span>
+          {% else %}
+          <span class="badge-warn" title="등록 상품과 매칭되지 않아 도매가를 모릅니다">도매가 미상</span>
+          {% endif %}
+        </td>
+        <td style="font-size:12px;line-height:1.7;">
+          {% if i.hours_since_order is not none %}
+          <span class="{{ 'badge-err' if i.is_delayed else 'muted' }}">{{ "%.0f"|format(i.hours_since_order) }}시간 경과</span>
+          {% if i.is_delayed %}<br><span class="badge-err">발송지연</span>{% endif %}
+          {% else %}<span class="muted">—</span>{% endif %}
+        </td>
         <td class="muted" style="font-size:12px;">{{ i.receiver_name }} · {{ i.receiver_address1 }} {{ i.receiver_address2 }}</td>
         <td>
           <a class="btn secondary btn-sm" href="{{ url_for(endpoint,
@@ -90,34 +116,57 @@
 <div{% if tab != 'dispatch' %} style="display:none;"{% endif %}>
   {% if not dispatch_wait %}
   <div class="panel muted">없음</div>
-  {% endif %}
-  {% for i in dispatch_wait %}
+  {% else %}
   <div class="panel">
-    <div class="row" style="align-items:center;">
-      <span class="badge-ok">발주완료</span>{% if demo %} <span class="badge">샘플</span>{% endif %}
-      <span style="flex:1;">{{ i.product_name }}</span>
-      <span class="mono muted" style="font-size:12px;">{{ i.get('domemae_order_no', '') }}</span>
-      <form method="post" action="{{ url_for('purchase_sync_tracking') }}" style="margin:0;">
-        <input type="hidden" name="product_order_id" value="{{ i.product_order_id }}">
-        <input type="hidden" name="domemae_order_no" value="{{ i.get('domemae_order_no', '') }}">
-        <button type="submit" class="secondary btn-sm">송장 자동확인</button>
-      </form>
+    <div class="table-wrap">
+    <table>
+      <tr>
+        <th style="width:26%;">상품</th>
+        <th style="width:7%;">수량</th>
+        <th style="width:11%;">발주금액</th>
+        <th style="width:12%;">주문일시
+          <button type="button" class="tip-btn" data-tip-toggle>?<span class="tip-bubble">
+            <p>결제 후 <b>24시간</b>이 지나도록 발송하지 않으면 발송지연으로 스토어 페널티를 받습니다.</p>
+          </span></button>
+        </th>
+        <th style="width:44%;">송장 입력</th>
+      </tr>
+      {% for i in dispatch_wait %}
+      <tr>
+        <td>
+          <a href="#" onclick="openPreviewModal('{{ url_for('orders_detail', product_order_id=i.product_order_id) }}'); return false;">{{ i.product_name }}</a>{% if demo %} <span class="badge">샘플</span>{% endif %}
+          <div class="mono muted" style="font-size:11.5px;">도매매 주문 {{ i.get('domemae_order_no') or '—' }}</div>
+        </td>
+        <td class="mono">{{ i.quantity }}개</td>
+        <td class="mono">{{ "{:,}".format(i.spent_amount) + "원" if i.get('spent_amount') else '—' }}</td>
+        <td style="font-size:12px;line-height:1.7;">
+          {% if i.hours_since_order is not none %}
+          <span class="{{ 'badge-err' if i.is_delayed else 'muted' }}">{{ "%.0f"|format(i.hours_since_order) }}시간 경과</span>
+          {% if i.is_delayed %}<br><span class="badge-err">발송지연</span>{% endif %}
+          {% else %}<span class="muted">—</span>{% endif %}
+        </td>
+        <td>
+          <form method="post" action="{{ url_for('orders_dispatch') }}" class="row" style="margin:0;align-items:center;gap:6px;">
+            <input type="hidden" name="product_order_id" value="{{ i.product_order_id }}">
+            <select name="company" style="width:auto;flex:0 0 108px;">
+              <option>CJ대한통운</option><option>롯데택배</option><option>우체국택배</option>
+              <option>한진택배</option><option>로젠택배</option>
+            </select>
+            <input type="text" name="tracking_number" placeholder="송장번호" required style="flex:1 1 110px;min-width:90px;">
+            <button type="submit" class="btn-sm" style="flex:0 0 auto;white-space:nowrap;" {{ 'disabled' if demo }}>발송처리</button>
+          </form>
+          <form method="post" action="{{ url_for('purchase_sync_tracking') }}" style="margin:6px 0 0;">
+            <input type="hidden" name="product_order_id" value="{{ i.product_order_id }}">
+            <input type="hidden" name="domemae_order_no" value="{{ i.get('domemae_order_no', '') }}">
+            <button type="submit" class="secondary btn-sm" {{ 'disabled' if demo }}>송장 자동확인</button>
+          </form>
+        </td>
+      </tr>
+      {% endfor %}
+    </table>
     </div>
-    <form method="post" action="{{ url_for('orders_dispatch') }}" class="row" style="margin-top:10px;align-items:flex-end;">
-      <input type="hidden" name="product_order_id" value="{{ i.product_order_id }}">
-      <div style="flex:1;min-width:140px;">
-        <select name="company">
-          <option>CJ대한통운</option><option>롯데택배</option><option>우체국택배</option>
-          <option>한진택배</option><option>로젠택배</option>
-        </select>
-      </div>
-      <div style="flex:2;min-width:180px;">
-        <input type="text" name="tracking_number" placeholder="송장번호" required>
-      </div>
-      <button type="submit" class="btn-sm">발송처리</button>
-    </form>
   </div>
-  {% endfor %}
+  {% endif %}
 </div>
 
 {# ── 발주 실패 ───────────────────────────────────────────────────────────── #}
@@ -127,7 +176,7 @@
   {% else %}
   <form id="retryForm" method="post" action="{{ url_for('orders_retry') }}"></form>
 
-  <div class="bulkbar" id="retryBar" hidden>
+  <div class="bulkbar" id="retryBar" style="background:none;border:none;padding:10px 0;">
     <div class="row" style="align-items:center;">
       <span class="sel-count" id="retryCount">0건 선택</span>
       <span class="spacer"></span>
@@ -141,13 +190,18 @@
       <tr>
         <th style="width:24px;"><input type="checkbox" id="retryAll" onclick="document.querySelectorAll('.retry-check').forEach(c=>c.checked=this.checked);updateRetryBar()"></th>
         <th>상품</th>
-        <th style="width:35%;">실패 사유</th>
+        <th style="width:12%;">발주금액</th>
+        <th style="width:32%;">실패 사유</th>
         <th style="width:14%;">발생일</th>
       </tr>
       {% for i in failed %}
       <tr>
         <td><input type="checkbox" name="ids" form="retryForm" value="{{ i.product_order_id }}" class="retry-check" onclick="updateRetryBar()"></td>
-        <td>{{ i.product_name }} × {{ i.quantity }}</td>
+        <td>
+          <a href="#" onclick="openPreviewModal('{{ url_for('orders_detail', product_order_id=i.product_order_id) }}'); return false;">{{ i.product_name }}</a> × {{ i.quantity }}
+        </td>
+        {# 얼마짜리 주문이 실패했는지가 재시도 우선순위 — 큐에 있는데 지금까지 안 보였다 #}
+        <td class="mono">{{ "{:,}".format(i.supply_cost) + "원" if i.get('supply_cost') else ("{:,}원".format(i.spent_amount) if i.get('spent_amount') else '—') }}</td>
         <td><span class="badge-err">{{ i.hold_reason }}</span></td>
         <td class="muted mono" style="font-size:12px;">{{ i.get('updated_at', '') }}</td>
       </tr>
@@ -243,15 +297,20 @@
     <table>
       <tr>
         <th>상품</th>
-        <th style="width:10%;">수량</th>
-        <th style="width:16%;">택배사</th>
-        <th style="width:20%;">송장번호</th>
-        <th style="width:14%;">발송일</th>
+        <th style="width:8%;">수량</th>
+        <th style="width:12%;">발주금액</th>
+        <th style="width:14%;">택배사</th>
+        <th style="width:18%;">송장번호</th>
+        <th style="width:12%;">발송일</th>
       </tr>
       {% for i in done %}
       <tr>
-        <td>{{ i.product_name }}{% if demo %} <span class="badge">샘플</span>{% endif %}</td>
+        <td>
+          <a href="#" onclick="openPreviewModal('{{ url_for('orders_detail', product_order_id=i.product_order_id) }}'); return false;">{{ i.product_name }}</a>{% if demo %} <span class="badge">샘플</span>{% endif %}
+          <div class="mono muted" style="font-size:11.5px;">도매매 주문 {{ i.get('domemae_order_no') or '—' }}</div>
+        </td>
         <td class="mono">{{ i.quantity }}개</td>
+        <td class="mono">{{ "{:,}".format(i.spent_amount) + "원" if i.get('spent_amount') else '—' }}</td>
         <td>{{ i.get('delivery_company') or '—' }}</td>
         <td class="mono" style="font-size:12px;">{{ i.get('tracking_number', '—') }}</td>
         <td class="muted mono" style="font-size:12px;">{{ i.get('updated_at', '') }}</td>
@@ -269,9 +328,7 @@ var READY_CASH = {{ (emoney.cash if emoney else 0)|tojson }};
 function updateReadyBar() {
   var boxes = Array.prototype.filter.call(
     document.querySelectorAll('.ready-check'), function (c) { return c.checked; });
-  var bar = document.getElementById('readyBar');
-  if (!bar) return;
-  bar.hidden = boxes.length === 0;
+  if (!document.getElementById('readyBar')) return;
   var needed = boxes.reduce(function (s, c) { return s + Number(c.dataset.amount || 0); }, 0);
   var short = needed > READY_CASH;
   document.getElementById('readyCount').textContent = boxes.length + '건 선택';
@@ -288,9 +345,7 @@ function updateReadyBar() {
 
 function updateRetryBar() {
   var boxes = document.querySelectorAll('.retry-check:checked');
-  var bar = document.getElementById('retryBar');
-  if (!bar) return;
-  bar.hidden = boxes.length === 0;
+  if (!document.getElementById('retryBar')) return;
   document.getElementById('retryCount').textContent = boxes.length + '건 선택';
   document.getElementById('retrySubmit').textContent = '발주 대기로 되돌리기 (' + boxes.length + ')';
 }

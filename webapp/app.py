@@ -907,6 +907,39 @@ def products_detail(product_id):
 ORDER_TABS = ("ready", "dispatch", "failed", "manual", "history")
 
 
+def _annotate_orders(items: list) -> None:
+    """큐 아이템에 화면용 파생값을 심는다(원본 파일은 안 건드림).
+
+    결제 후 경과시간은 지금까지 헬스체크만 알고 주문 화면은 몰랐다 — 발송지연은
+    스토어 페널티로 직결되므로 정작 주문을 처리하는 화면에서 보여야 한다.
+    판정 기준(24시간)은 헬스체크와 같은 상수를 쓴다 — 두 화면이 다른 답을 내면 안 된다.
+    """
+    from bebrave.report.health import DISPATCH_DELAY_HOURS
+    from bebrave.margin.calculator import calculate as calc_margin
+    from bebrave.config import FREE_SHIPPING_THRESHOLD
+
+    now = datetime.now()
+    for i in items:
+        try:
+            elapsed = (now - datetime.fromisoformat(i.get("ordered_at", ""))).total_seconds() / 3600
+        except ValueError:
+            elapsed = None
+        i["hours_since_order"] = elapsed
+        i["is_delayed"] = elapsed is not None and elapsed >= DISPATCH_DELAY_HOURS
+
+        # 발주를 누르는 순간 "이 건 얼마 남는지"가 화면에 없었다 — 도매가만 보였다.
+        unit_price = i.get("unit_price") or 0
+        supply_unit = i.get("supply_unit_price")
+        if unit_price and supply_unit:
+            m = calc_margin(sale_price=unit_price, cost_price=supply_unit,
+                            free_shipping=(unit_price >= FREE_SHIPPING_THRESHOLD))
+            i["margin_amount"] = m.net_profit * i.get("quantity", 1)
+            i["margin_rate"] = m.margin_rate
+        else:
+            i["margin_amount"] = None
+            i["margin_rate"] = None
+
+
 @app.route("/orders")
 def orders():
     """탭 5개: 처리할 주문(ready) | 발송 대기(ordered) | 발주 실패(failed) |
@@ -941,6 +974,9 @@ def orders():
     failed = [i for i in items if i["status"] == STATUS_FAILED]
     done = [i for i in items if i["status"] == STATUS_DISPATCHED]
     done.sort(key=lambda i: i.get("updated_at", ""), reverse=True)
+    # 오래된 주문이 위로 — 발송기한이 급한 것부터 처리하도록.
+    ready.sort(key=lambda i: i.get("ordered_at", ""))
+    dispatch_wait.sort(key=lambda i: i.get("ordered_at", ""))
 
     # 이머니 잔액 — ready 건이 있을 때만 확인(로그인 호출 비용이 있어 빈 큐에서는 생략).
     # 필요 금액은 도매가×수량 기준(실제 이머니에서 빠지는 값) — 판매가가 아니다.
@@ -952,6 +988,7 @@ def orders():
         needed = 0
         for i in ready:
             supply_price = _lookup_supply_price(i["matched_goods_no"])
+            i["supply_unit_price"] = supply_price
             i["supply_cost"] = supply_price * i["quantity"] if supply_price is not None else None
             if supply_price is not None:
                 needed += supply_price * i["quantity"]
@@ -964,6 +1001,8 @@ def orders():
         except Exception as e:
             emoney_error = str(e)
 
+    _annotate_orders(items)
+
     manual_prefill = {k: request.args.get(k, "") for k in
                        ("goods_no", "option_code", "qty", "receiver_name", "phone", "zipcode", "address1", "address2",
                         "shop_name", "product_order_id")}
@@ -974,6 +1013,24 @@ def orders():
         emoney=emoney, emoney_error=emoney_error,
         **manual_prefill,
     )
+
+
+@app.route("/orders/detail/<product_order_id>")
+def orders_detail(product_order_id):
+    """주문명 클릭 시 뜨는 자세히보기 모달 — 발주 큐에 저장돼 있지만 표에는 자리가
+    없던 것들을 모은다(주문번호·판매가·수령인 연락처·매칭 방식·발주 결과).
+    특히 매칭 방식은 엉뚱한 상품이 발주되는 사고의 원인이라 사람이 볼 수 있어야 한다."""
+    from bebrave.smartstore.purchase_queue import load_queue
+
+    pool = _demo_order_items() if product_order_id.startswith("DEMO-") else load_queue()
+    item = next((i for i in pool if i.get("product_order_id") == product_order_id), None)
+    if not item:
+        return '<div class="flash flash-error">주문을 찾을 수 없습니다.</div>', 404
+
+    if item.get("supply_unit_price") is None:
+        item["supply_unit_price"] = _lookup_supply_price(item.get("matched_goods_no", ""))
+    _annotate_orders([item])
+    return render_template("order_detail.html", i=item)
 
 
 @app.route("/orders/retry", methods=["POST"])
@@ -1002,47 +1059,79 @@ def orders_retry():
     return redirect(url_for("orders", tab="ready"))
 
 
+def _demo_order_items() -> list:
+    """샘플 주문 목록 — 실제 발주 큐와 **같은 키 이름**을 쓴다. 예전에 택배사만 다른
+    이름(company)을 써서, 실제 화면에서는 항상 빈칸인 버그가 샘플에서는 정상으로
+    보였다. 상세 모달도 이 목록을 그대로 읽는다(샘플 정의가 한 곳에만 있도록)."""
+    now = datetime.now()
+
+    def _ago(hours):
+        return (now - timedelta(hours=hours)).isoformat(timespec="minutes")
+
+    return [
+        {"product_order_id": "DEMO-Q1", "order_id": "DEMO-O1",
+         "product_name": "실리콘주걱 대코 브라이트 미니볶음주걱 실리콘 이유식주걱",
+         "option_name": "", "quantity": 2, "unit_price": 3300, "matched_goods_no": "11013443",
+         "matched_option_code": None, "matched_name": "실리콘주걱 대코 브라이트 미니볶음주걱 실리콘 이유식주걱",
+         "match_method": "id", "ordered_at": _ago(5),
+         "receiver_name": "김철수", "receiver_tel": "010-1111-2222", "receiver_zipcode": "06000",
+         "receiver_address1": "서울시 강남구", "receiver_address2": "101호", "status": "ready", "hold_reason": "",
+         "supply_unit_price": 2300, "supply_cost": 4600},
+        # 결제 후 30시간 — 발송지연 배지가 실제로 어떻게 보이는지 확인하는 샘플
+        {"product_order_id": "DEMO-Q2", "order_id": "DEMO-O2",
+         "product_name": "우산 양산 양우산 자동우산  3단자동우산 우양산 골프우",
+         "option_name": "", "quantity": 1, "unit_price": 4600, "matched_goods_no": "13187678",
+         "matched_option_code": None, "matched_name": "우산 양산 양우산 자동우산  3단자동우산 우양산 골프우",
+         "match_method": "name", "ordered_at": _ago(30),
+         "receiver_name": "최지은", "receiver_tel": "010-7777-8888", "receiver_zipcode": "42000",
+         "receiver_address1": "대구시 수성구", "receiver_address2": "", "status": "ready", "hold_reason": "",
+         "supply_unit_price": 3190, "supply_cost": 3190},
+        {"product_order_id": "DEMO-Q3", "order_id": "DEMO-O3",
+         "product_name": "캠핑용 접이식 미니 테이블", "option_name": "카키",
+         "quantity": 5, "unit_price": 13000, "matched_goods_no": "20000001", "matched_option_code": "02",
+         "matched_name": "캠핑용 접이식 미니 테이블", "match_method": "id", "ordered_at": _ago(9),
+         "receiver_name": "박민수", "receiver_tel": "010-5555-6666",
+         "receiver_zipcode": "48000", "receiver_address1": "부산시 해운대구", "receiver_address2": "",
+         "status": "hold", "hold_reason": "도매매 옵션 재고 부족 — '카키' 필요 5개, 재고 3개"},
+        {"product_order_id": "DEMO-Q4", "order_id": "DEMO-O4",
+         "product_name": "완전 다른 상품 XYZ", "option_name": "",
+         "quantity": 1, "unit_price": 9900, "matched_goods_no": "", "matched_option_code": None,
+         "matched_name": "", "match_method": "none", "ordered_at": _ago(12),
+         "receiver_name": "한소망", "receiver_tel": "010-1212-3434",
+         "receiver_zipcode": "61900", "receiver_address1": "광주시 서구", "receiver_address2": "",
+         "status": "hold", "hold_reason": "도매매 상품 매칭 실패 — 수동 확인 필요"},
+        {"product_order_id": "DEMO-Q5", "order_id": "DEMO-O5",
+         "product_name": "실리콘주걱 대코 브라이트 미니볶음주걱 실리콘 이유식주걱",
+         "option_name": "", "quantity": 1, "unit_price": 3300, "status": "ordered",
+         "match_method": "id", "ordered_at": _ago(28), "spent_amount": 2300,
+         "hold_reason": "", "domemae_order_no": "OR9990001",
+         "receiver_name": "정하늘", "receiver_tel": "010-2222-3333", "receiver_zipcode": "03000",
+         "receiver_address1": "서울시 마포구", "receiver_address2": "202호"},
+        {"product_order_id": "DEMO-Q6", "order_id": "DEMO-O6",
+         "product_name": "우산 양산 양우산 자동우산 3단자동우산",
+         "option_name": "", "quantity": 1, "unit_price": 4600, "matched_goods_no": "13187678",
+         "matched_option_code": None, "matched_name": "우산 양산 양우산 자동우산",
+         "match_method": "name", "ordered_at": _ago(40), "supply_cost": 3190,
+         "receiver_name": "이서준", "receiver_tel": "010-3434-5656", "receiver_zipcode": "13500",
+         "receiver_address1": "성남시 분당구", "receiver_address2": "", "status": "failed",
+         "hold_reason": "도매매 이머니 잔액 부족 — 4,600원 필요", "updated_at": "2026-08-29"},
+        {"product_order_id": "DEMO-Q7", "order_id": "DEMO-O7",
+         "product_name": "실리콘주걱 대코 브라이트 미니볶음주걱",
+         "option_name": "", "quantity": 3, "unit_price": 3300, "status": "dispatched",
+         "match_method": "id", "ordered_at": _ago(72), "spent_amount": 6900,
+         "hold_reason": "", "domemae_order_no": "OR9990002", "tracking_number": "123456789012",
+         "delivery_company": "CJ대한통운", "updated_at": "2026-08-28",
+         "receiver_name": "오지훈", "receiver_tel": "010-9999-0000", "receiver_zipcode": "21000",
+         "receiver_address1": "인천시 연수구", "receiver_address2": ""},
+    ]
+
+
 @app.route("/orders/demo")
 def orders_demo():
     """주문이 아직 없거나 API가 안 될 때도 화면 구조(체크박스·일괄발주·보류사유·발송처리)를
     눈으로 확인할 수 있도록 가짜 데이터로 렌더링. 저장은 전혀 안 함."""
-    demo_items = [
-        {"product_order_id": "DEMO-Q1", "product_name": "실리콘주걱 대코 브라이트 미니볶음주걱 실리콘 이유식주걱",
-         "option_name": "", "quantity": 2, "unit_price": 3300, "matched_goods_no": "11013443",
-         "matched_option_code": None, "matched_name": "실리콘주걱 대코 브라이트 미니볶음주걱 실리콘 이유식주걱",
-         "receiver_name": "김철수", "receiver_tel": "010-1111-2222", "receiver_zipcode": "06000",
-         "receiver_address1": "서울시 강남구", "receiver_address2": "101호", "status": "ready", "hold_reason": "",
-         "supply_cost": 6260},
-        {"product_order_id": "DEMO-Q2", "product_name": "우산 양산 양우산 자동우산  3단자동우산 우양산 골프우",
-         "option_name": "", "quantity": 1, "unit_price": 4600, "matched_goods_no": "13187678",
-         "matched_option_code": None, "matched_name": "우산 양산 양우산 자동우산  3단자동우산 우양산 골프우",
-         "receiver_name": "최지은", "receiver_tel": "010-7777-8888", "receiver_zipcode": "42000",
-         "receiver_address1": "대구시 수성구", "receiver_address2": "", "status": "ready", "hold_reason": "",
-         "supply_cost": 3630},
-        {"product_order_id": "DEMO-Q3", "product_name": "캠핑용 접이식 미니 테이블", "option_name": "카키",
-         "quantity": 5, "unit_price": 13000, "matched_goods_no": "20000001", "matched_option_code": "02",
-         "matched_name": "캠핑용 접이식 미니 테이블", "receiver_name": "박민수", "receiver_tel": "010-5555-6666",
-         "receiver_zipcode": "48000", "receiver_address1": "부산시 해운대구", "receiver_address2": "",
-         "status": "hold", "hold_reason": "도매매 옵션 재고 부족 — '카키' 필요 5개, 재고 3개"},
-        {"product_order_id": "DEMO-Q4", "product_name": "완전 다른 상품 XYZ", "option_name": "",
-         "quantity": 1, "unit_price": 9900, "matched_goods_no": "", "matched_option_code": None,
-         "matched_name": "", "receiver_name": "한소망", "receiver_tel": "010-1212-3434",
-         "receiver_zipcode": "61900", "receiver_address1": "광주시 서구", "receiver_address2": "",
-         "status": "hold", "hold_reason": "도매매 상품 매칭 실패 — 수동 확인 필요"},
-        {"product_order_id": "DEMO-Q5", "product_name": "실리콘주걱 대코 브라이트 미니볶음주걱 실리콘 이유식주걱",
-         "option_name": "", "quantity": 1, "unit_price": 3300, "status": "ordered",
-         "hold_reason": "", "domemae_order_no": "OR9990001"},
-        {"product_order_id": "DEMO-Q6", "product_name": "우산 양산 양우산 자동우산 3단자동우산",
-         "option_name": "", "quantity": 1, "unit_price": 4600, "matched_goods_no": "13187678",
-         "matched_option_code": None, "matched_name": "우산 양산 양우산 자동우산",
-         "receiver_name": "이서준", "receiver_tel": "010-3434-5656", "receiver_zipcode": "13500",
-         "receiver_address1": "성남시 분당구", "receiver_address2": "", "status": "failed",
-         "hold_reason": "도매매 이머니 잔액 부족 — 4,600원 필요", "updated_at": "2026-08-29"},
-        {"product_order_id": "DEMO-Q7", "product_name": "실리콘주걱 대코 브라이트 미니볶음주걱",
-         "option_name": "", "quantity": 3, "unit_price": 3300, "status": "dispatched",
-         "hold_reason": "", "domemae_order_no": "OR9990002", "tracking_number": "123456789012",
-         "delivery_company": "CJ대한통운", "updated_at": "2026-08-28", "spent_amount": 6900},
-    ]
+    demo_items = _demo_order_items()
+    _annotate_orders(demo_items)
     tab = request.args.get("tab", "ready")
     if tab not in ORDER_TABS:
         tab = "ready"

@@ -1,0 +1,78 @@
+<h1>{{ i.product_name }}{% if i.option_name %} <span class="muted">{{ i.option_name }}</span>{% endif %}</h1>
+
+<div class="panel">
+  <h2>주문</h2>
+  <div class="row">
+    <span class="badge">{{ i.quantity }}개</span>
+    {% if i.hours_since_order is not none %}
+    <span class="{{ 'badge-err' if i.is_delayed else 'badge' }}">결제 후 {{ "%.0f"|format(i.hours_since_order) }}시간</span>
+    {% endif %}
+    {% if i.is_delayed %}<span class="badge-err">발송지연</span>{% endif %}
+  </div>
+  <table style="margin-top:10px;">
+    <tr><td style="width:34%;">주문일시</td><td class="mono">{{ i.ordered_at or '—' }}</td></tr>
+    <tr><td>상품주문번호</td><td class="mono">{{ i.product_order_id }}</td></tr>
+    <tr><td>주문번호</td><td class="mono">{{ i.order_id or '—' }}</td></tr>
+  </table>
+</div>
+
+<div class="panel">
+  <h2>금액</h2>
+  <table>
+    <tr><td style="width:34%;">판매가</td><td class="mono">{{ "{:,}".format(i.unit_price or 0) }}원 × {{ i.quantity }}개</td></tr>
+    <tr><td>도매가</td><td class="mono">{{ "{:,}".format(i.supply_unit_price) + "원" if i.supply_unit_price else '조회 실패 — 등록 상품과 매칭 안 됨' }}</td></tr>
+    <tr>
+      <td>예상 마진</td>
+      <td class="mono">
+        {% if i.margin_amount is not none %}
+        {{ "{:,}".format(i.margin_amount) }}원 ({{ "%.1f"|format(i.margin_rate * 100) }}%)
+        {% else %}<span class="muted">계산 불가 — 도매가 미상</span>{% endif %}
+      </td>
+    </tr>
+    {% if i.spent_amount %}
+    <tr><td>실제 발주금액</td><td class="mono">{{ "{:,}".format(i.spent_amount) }}원</td></tr>
+    {% endif %}
+  </table>
+</div>
+
+<div class="panel">
+  <h2>도매매 매칭</h2>
+  <table>
+    <tr><td style="width:34%;">상품번호</td><td class="mono">{{ i.matched_goods_no or '—' }}</td></tr>
+    <tr><td>옵션코드</td><td class="mono">{{ i.matched_option_code or '—' }}</td></tr>
+    <tr><td>매칭된 상품명</td><td>{{ i.matched_name or '—' }}</td></tr>
+    <tr>
+      <td>매칭 방식</td>
+      <td>
+        {% if i.match_method == 'id' %}
+        <span class="badge-ok">상품ID</span> <span class="muted" style="font-size:12px;">정확 매칭</span>
+        {% elif i.match_method == 'name' %}
+        <span class="badge-warn">상품명</span> <span class="muted" style="font-size:12px;">이름이 비슷한 다른 상품일 수 있음 — 발주 전 확인</span>
+        {% else %}
+        <span class="badge-err">매칭 실패</span> <span class="muted" style="font-size:12px;">수동 발주 필요</span>
+        {% endif %}
+      </td>
+    </tr>
+    {% if i.domemae_order_no %}
+    <tr><td>도매매 주문번호</td><td class="mono">{{ i.domemae_order_no }}</td></tr>
+    {% endif %}
+  </table>
+</div>
+
+<div class="panel">
+  <h2>배송</h2>
+  <table>
+    <tr><td style="width:34%;">수령인</td><td>{{ i.receiver_name }} · {{ i.receiver_tel or '—' }}</td></tr>
+    <tr><td>주소</td><td>({{ i.receiver_zipcode or '—' }}) {{ i.receiver_address1 }} {{ i.receiver_address2 }}</td></tr>
+    {% if i.tracking_number %}
+    <tr><td>송장</td><td class="mono">{{ i.delivery_company or '—' }} {{ i.tracking_number }}</td></tr>
+    {% endif %}
+  </table>
+</div>
+
+{% if i.hold_reason %}
+<div class="panel">
+  <h2>보류·실패 사유</h2>
+  <p class="badge-warn">{{ i.hold_reason }}</p>
+</div>
+{% endif %}

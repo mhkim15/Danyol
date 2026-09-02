@@ -3,36 +3,83 @@
 {% block content %}
 <h1>마진 계산기</h1>
 
+{% if error %}
+<div class="flash flash-error">{{ error }}</div>
+{% endif %}
+
+<div class="tabs">
+  <a href="#" onclick="setMode('forward'); return false;" id="tabForward" class="{{ 'active' if mode != 'reverse' }}">판매가로 마진 보기</a>
+  <a href="#" onclick="setMode('reverse'); return false;" id="tabReverse" class="{{ 'active' if mode == 'reverse' }}">도매가로 판매가 정하기</a>
+</div>
+
 <div class="panel">
-  <form method="post">
-    <label>판매가 (원)</label>
-    <input type="number" name="price" value="{{ result.sale_price if result else '' }}" required>
+  <form method="post" id="marginForm">
+    <input type="hidden" name="mode" id="modeInput" value="{{ mode }}">
+    <div id="priceField" {% if mode == 'reverse' %}style="display:none;"{% endif %}>
+      <label>판매가 (원)</label>
+      <input type="number" name="price" value="{{ result.sale_price if result and mode != 'reverse' else '' }}" min="0">
+    </div>
     <label>도매가 (원)</label>
-    <input type="number" name="cost" value="{{ result.cost_price if result else '' }}" required>
-    {# 무료배송이면 배송비를 판매자가 부담한다 — shipping_cost가 0이 아닌 쪽이 "무료배송 선택함"이다 #}
-    <label><input type="checkbox" name="free_shipping" {{ "checked" if result and result.shipping_cost != 0 }}> 무료배송</label>
+    <input type="number" name="cost" value="{{ result.cost_price if result else '' }}" min="0" required>
+    <div id="shippingField" {% if mode == 'reverse' %}style="display:none;"{% endif %}>
+      {# 무료배송이면 배송비를 판매자가 부담한다 — shipping_cost가 0이 아닌 쪽이 "무료배송 선택함"이다 #}
+      <label><input type="checkbox" name="free_shipping" {{ "checked" if result and result.shipping_cost != 0 }}> 무료배송</label>
+    </div>
     <div class="row" style="margin-top:12px;">
-      <button type="submit">계산</button>
+      <button type="submit">{{ '권장 판매가 계산' if mode == 'reverse' else '계산' }}</button>
     </div>
   </form>
+  <p class="hint" style="margin-top:10px;">
+    적용 수수료 — 주문관리 {{ "%.2f"|format(fee_rates.order * 100) }}% · 판매 {{ "%.0f"|format(fee_rates.sales * 100) }}%(최대치로 보수적 계산) · CS예비비 {{ "%.1f"|format(fee_rates.cs * 100) }}%
+  </p>
 </div>
 
 {% if result %}
+{% if suggested %}
+<div class="panel" style="background:var(--ok-bg);color:var(--ok);">
+  <b>권장 판매가 {{ "{:,}".format(suggested) }}원</b> — 목표 마진율과 최소이익 {{ "{:,}".format(min_abs_profit) }}원을 동시에 만족하는 선입니다.
+</div>
+{% endif %}
+
 <div class="panel">
   <h2>결과</h2>
   <table>
+    <tr><td>판매가</td><td class="mono">{{ "{:,}".format(result.sale_price) }}원</td></tr>
+    <tr><td>도매가</td><td class="mono">{{ "{:,}".format(result.cost_price) }}원</td></tr>
     <tr><td>주문관리수수료</td><td class="mono">{{ "{:,}".format(result.order_fee) }}원</td></tr>
     <tr><td>판매수수료</td><td class="mono">{{ "{:,}".format(result.sales_fee) }}원</td></tr>
-    <tr><td>배송비</td><td class="mono">{{ "{:,}".format(result.shipping_cost) }}원</td></tr>
+    <tr><td>배송비</td><td class="mono">{{ "{:,}".format(result.shipping_cost) }}원{% if result.shipping_cost %} <span class="muted">(판매자 부담)</span>{% endif %}</td></tr>
     <tr><td>CS 예비비</td><td class="mono">{{ "{:,}".format(result.cs_reserve) }}원</td></tr>
     <tr><td><b>순이익</b></td><td class="mono"><b>{{ "{:,}".format(result.net_profit) }}원</b></td></tr>
     <tr><td><b>마진율</b></td><td class="mono"><b>{{ "%.1f"|format(result.margin_rate * 100) }}%</b></td></tr>
   </table>
   <div class="row" style="margin-top:12px;">
-    {% if result.passes_target %}<span class="badge-ok">목표 마진율 달성</span>
-    {% elif result.passes_min %}<span class="badge-warn">최소 마진율 통과</span>
-    {% else %}<div class="flash flash-error">최소 마진율 미달</div>{% endif %}
+    {# 절대이익 판정을 계산은 하면서 화면에 안 보여줬다 — 마진율이 목표를 넘어도
+       개당 이익이 기준 미달이면 팔수록 손해에 가깝다. 헬스체크는 이 기준으로 센다. #}
+    {% if not result.passes_abs_floor %}
+      <span class="badge-err">절대이익 부족</span>
+      <span class="muted" style="font-size:12.5px;">개당 {{ "{:,}".format(result.net_profit) }}원 — 기준 {{ "{:,}".format(min_abs_profit) }}원 미달{% if result.passes_target %} (마진율은 목표를 넘지만 금액이 작습니다){% endif %}</span>
+    {% elif result.passes_target %}
+      <span class="badge-ok">목표 마진율 달성</span>
+    {% elif result.passes_min %}
+      <span class="badge-warn">최소 마진율 통과</span>
+    {% else %}
+      <span class="badge-err">최소 마진율 미달</span>
+    {% endif %}
   </div>
 </div>
 {% endif %}
+
+<script>
+function setMode(m) {
+  document.getElementById('modeInput').value = m;
+  document.getElementById('priceField').style.display = m === 'reverse' ? 'none' : '';
+  document.getElementById('shippingField').style.display = m === 'reverse' ? 'none' : '';
+  document.getElementById('tabForward').classList.toggle('active', m !== 'reverse');
+  document.getElementById('tabReverse').classList.toggle('active', m === 'reverse');
+  var price = document.querySelector('input[name=price]');
+  price.required = m !== 'reverse';
+}
+setMode({{ mode|tojson }});
+</script>
 {% endblock %}

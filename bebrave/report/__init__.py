@@ -1,4 +1,4 @@
-from .weekly import weekly_summary
+from .weekly import weekly_summary, weekly_checklist
 from .sales import (
     load_orders as load_sales_orders,
     record_orders as record_sales_orders,
@@ -12,7 +12,7 @@ from .cashflow import cash_events
 from .replacement import suggest_replacements
 
 __all__ = [
-    "weekly_summary", "load_sales_orders", "record_sales_orders", "sales_month_series",
+    "weekly_summary", "weekly_checklist", "load_sales_orders", "record_sales_orders", "sales_month_series",
     "product_performance", "recent_order_counts", "sales_tier",
     "load_claims", "record_claims", "return_rate", "claim_counts_by_product",
     "check_store_health", "check_store_health_macro", "cash_events", "suggest_replacements",

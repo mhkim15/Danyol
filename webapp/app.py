@@ -1846,23 +1846,60 @@ def tracker_sync():
 
 @app.route("/report")
 def report():
-    from bebrave.report import weekly_summary
-    return render_template("report.html", summary=weekly_summary())
+    """주간 체크리스트. 주문 실조회는 30일치 API 호출이라 방문마다 돌리면 가장 느린
+    화면이 된다 — ?live=1(새로고침 버튼)일 때만 태우고, 평소엔 로컬 데이터로 그린다."""
+    from bebrave.report import weekly_checklist, load_sales_orders, sales_month_series
+
+    live = request.args.get("live") == "1"
+    rows = weekly_checklist(live_orders=live)
+
+    # 홈 매출 카드가 여기로 오던 시절 정작 매출 수치가 없었다 — 이번 달 요약을 같이 낸다.
+    today = date.today()
+    series = sales_month_series(load_sales_orders(), today.year, today.month)
+    this_month = {
+        "revenue": sum(p["revenue"] for p in series),
+        "profit": sum(p["profit"] for p in series),
+        "order_count": sum(p["order_count"] for p in series),
+        "uncertain_count": sum(p.get("uncertain_count", 0) for p in series),
+    }
+    return render_template("report.html", rows=rows, live=live, this_month=this_month, today=today)
 
 
 # ── 마진 계산기 ────────────────────────────────────────────────────────────
 
 @app.route("/margin", methods=["GET", "POST"])
 def margin():
+    """판매가로 마진을 보는 정방향과, 도매가로 권장 판매가를 뽑는 역방향 둘 다.
+    역산은 소싱 파이프라인이 쓰는 estimate_sale_price를 그대로 재사용한다 —
+    계산기와 실제 등록가가 다른 답을 내면 안 된다."""
+    from bebrave.config import ORDER_FEE, SALES_FEE_MAX, CS_RESERVE, MIN_ABS_PROFIT
+
     result = None
+    suggested = None
+    mode = request.form.get("mode", "forward")
+    error = None
     if request.method == "POST":
-        from bebrave.margin.calculator import calculate as calc_margin
-        result = calc_margin(
-            sale_price=int(request.form.get("price", 0)),
-            cost_price=int(request.form.get("cost", 0)),
-            free_shipping=request.form.get("free_shipping") == "on",
-        )
-    return render_template("margin.html", result=result)
+        from bebrave.margin.calculator import calculate as calc_margin, estimate_sale_price
+        try:
+            cost = int(request.form.get("cost") or 0)
+            if mode == "reverse":
+                if cost <= 0:
+                    raise ValueError("도매가를 입력하세요")
+                suggested = estimate_sale_price(cost)
+                result = calc_margin(sale_price=suggested, cost_price=cost)
+            else:
+                price = int(request.form.get("price") or 0)
+                if price <= 0 or cost <= 0:
+                    raise ValueError("판매가와 도매가를 입력하세요")
+                result = calc_margin(sale_price=price, cost_price=cost,
+                                      free_shipping=request.form.get("free_shipping") == "on")
+        except ValueError as e:
+            # 숫자가 아닌 값이 들어오면 500으로 죽던 자리 — 화면에서 알려준다.
+            error = "숫자를 입력하세요" if "invalid literal" in str(e) else str(e)
+
+    return render_template("margin.html", result=result, mode=mode, suggested=suggested, error=error,
+                            fee_rates={"order": ORDER_FEE, "sales": SALES_FEE_MAX, "cs": CS_RESERVE},
+                            min_abs_profit=MIN_ABS_PROFIT)
 
 
 # ── 도매매 발주 (실제 결제 — 확인 필수, 페이지는 /orders로 통합됨) ─────────────────

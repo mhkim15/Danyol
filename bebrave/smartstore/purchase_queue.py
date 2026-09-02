@@ -137,6 +137,13 @@ def build_queue(orders: list, refresh_hold: bool = True) -> list:
             "quantity": o.quantity,
             "unit_price": o.unit_price,
             "ordered_at": o.ordered_at,
+            # 도매처가 고객에게 직배송하므로 배송요청사항이 발주에 실려야 한다 —
+            # 지금까지 네이버에서 가져와 놓고 큐에 안 담아 통째로 사라지고 있었다
+            # ("부재시 경비실에 맡겨주세요"가 전달 안 돼 배송 실패로 이어짐).
+            "delivery_memo": getattr(o, "delivery_memo", ""),
+            # CS가 생기면 연락할 사람은 수령인이 아니라 주문자다.
+            "orderer_name": getattr(o, "orderer_name", ""),
+            "orderer_tel": getattr(o, "orderer_tel", ""),
             "receiver_name": o.receiver_name,
             "receiver_tel": o.receiver_tel,
             "receiver_zipcode": o.receiver_zipcode,
@@ -223,6 +230,9 @@ def _demo() -> None:
         receiver_zipcode: str = ""
         receiver_address1: str = ""
         receiver_address2: str = ""
+        delivery_memo: str = ""
+        orderer_name: str = ""
+        orderer_tel: str = ""
 
     registered = [{
         "name": "실리콘주걱", "naver_product_id": "999", "domemae_goods_no": "111",
@@ -260,10 +270,24 @@ def _demo() -> None:
             {"domemae_goods_no": "111", "supply_price": 1000}, "id", quantity=5, option_code="A2")
         assert status == STATUS_READY, "재고 충분한 옵션인데 hold 처리됨"
 
-    # 발송처리 마감 — 상태가 dispatched로 넘어가고 택배사가 화면이 읽는 이름으로 저장되는지.
-    # (예전엔 저장은 delivery_company인데 화면은 company를 읽어 택배사가 항상 빈칸이었다)
     import tempfile
     from pathlib import Path as _Path
+
+    # 배송요청사항·주문자가 큐까지 실려야 발주에 태울 수 있다. 도매처가 직배송하므로
+    # 여기서 끊기면 고객 요청이 아무 데도 도달하지 않는다(예전에 실제로 끊겨 있었다).
+    with tempfile.TemporaryDirectory() as tmp2, _patch(f"{__name__}.QUEUE_PATH", _Path(tmp2) / "q.json"):
+        o_memo = FakeOrder("po9", "o9", "실리콘주걱", "999", "", 1, 2000, "PAYED",
+                            ordered_at="2026-09-01T10:00", receiver_name="받는이",
+                            delivery_memo="부재시 경비실에 맡겨주세요",
+                            orderer_name="주문자", orderer_tel="010-0000-1111")
+        q = build_queue([o_memo], refresh_hold=False)
+        item = next(i for i in q if i["product_order_id"] == "po9")
+        assert item["delivery_memo"] == "부재시 경비실에 맡겨주세요", "배송요청사항이 큐에서 사라짐"
+        assert item["orderer_name"] == "주문자" and item["orderer_tel"] == "010-0000-1111", \
+            "주문자 정보가 큐에서 사라짐"
+
+    # 발송처리 마감 — 상태가 dispatched로 넘어가고 택배사가 화면이 읽는 이름으로 저장되는지.
+    # (예전엔 저장은 delivery_company인데 화면은 company를 읽어 택배사가 항상 빈칸이었다)
     with tempfile.TemporaryDirectory() as tmp, _patch(f"{__name__}.QUEUE_PATH", _Path(tmp) / "q.json"):
         _save_queue([{"product_order_id": "po1", "status": STATUS_ORDERED}])
         mark_dispatched("po1", "1234567890", "CJ대한통운")

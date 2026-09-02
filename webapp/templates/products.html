@@ -58,7 +58,13 @@
       <th style="width:24px;"><input type="checkbox" id="checkAll" onclick="toggleAll(this)"></th>
       <th>상품</th>
       <th style="width:10%;">판매상태</th>
-      <th style="width:9%;">재고수량</th>
+      <th style="width:11%;">도매처 재고
+        <button type="button" class="tip-btn" data-tip-toggle>?<span class="tip-bubble">
+          <p>위탁판매는 내가 재고를 갖고 있지 않으므로 <b>도매처에 남은 수량이 곧 팔 수 있는 수량</b>입니다.</p>
+          <p>스마트스토어에 걸어둔 수량(등록 시 999)은 판단에 쓸모가 없어 표시하지 않습니다.</p>
+          <p>10개 이하면 품절 임박으로 봅니다 — 주문이 몰리면 발주가 실패합니다.</p>
+        </span></button>
+      </th>
       <th style="width:14%;">판매가</th>
       <th style="width:11%;">상품 상태
         <button type="button" class="tip-btn" data-tip-toggle>?<span class="tip-bubble">
@@ -72,9 +78,11 @@
         </span></button>
       </th>
       <th style="width:11%;">반품률·교환률</th>
-      <th style="width:9%;">가격 경쟁력
+      <th style="width:11%;">11번가 대비가
         <button type="button" class="tip-btn" data-tip-toggle>?<span class="tip-bubble">
-          <p>11번가 동일 키워드 검색결과 평균가 대비 내 판매가 위치. ±5% 안이면 보통.</p>
+          <p>11번가에서 같은 키워드로 검색한 결과의 <b>평균가</b> 대비 내 판매가 위치입니다. ±5% 안이면 보통.</p>
+          <p><b>주의</b> — 내가 파는 곳은 스마트스토어입니다. 네이버 쇼핑 리스팅 API가 종료돼(2026-07-31) 같은 채널 비교가 불가능해 11번가로 대신 봅니다.</p>
+          <p>키워드가 넓으면 다른 상품군이 섞여 평균가가 실제 경쟁 상품과 어긋납니다 — 배지보다 툴팁의 표본 수·평균가를 확인하세요.</p>
         </span></button>
       </th>
     </tr>
@@ -100,15 +108,21 @@
         <span class="{{ 'badge-ok' if p.sale_status == '판매중' else ('badge-err' if p.sale_status == '판매중지' else 'badge') }}">{{ p.sale_status }}</span>
       </td>
       <td>
-        {% if p.live_status and p.live_status.stock is not none %}
-          <span class="mono">{{ "{:,}".format(p.live_status.stock) }}개</span>
+        {# "지금 확인"을 다시 누르기 전까지는 옛 캐시라 이 항목이 없다 — get으로 읽는다 #}
+        {% set s = p.sync.get('supply_stock') if p.sync else none %}
+        {% if s is not none %}
+          {% if s <= 0 %}
+            <span class="badge-err">품절</span>
+          {% elif s <= 10 %}
+            <span class="badge-warn" title="도매처에 {{ s }}개 남았습니다 — 주문이 몰리면 발주가 실패합니다">{{ "{:,}".format(s) }}개 · 임박</span>
+          {% else %}
+            <span class="mono">{{ "{:,}".format(s) }}개</span>
+          {% endif %}
         {% else %}
-          <span class="muted mono">—</span>
+          <span class="muted mono" title="'지금 확인'을 눌러야 도매처 재고를 가져옵니다">미확인</span>
         {% endif %}
-        {% if p.sync and p.sync.action == '판매중지' %}
-          <div style="margin-top:4px;"><span class="badge-err" title="{{ p.sync.detail }}">도매매 품절</span></div>
-        {% elif p.sync and p.sync.action == '재고조정' %}
-          <div style="margin-top:4px;"><span class="badge-warn" title="{{ p.sync.detail }}">→ {{ p.sync.new_stock }}개</span></div>
+        {% if p.sync and p.sync.action == '재고조정' %}
+          <div style="margin-top:4px;"><span class="badge-warn" title="{{ p.sync.detail }}">내 등록수량 조정 필요</span></div>
         {% elif p.sync and p.sync.action == '확인실패' %}
           <div style="margin-top:4px;"><span class="badge-err" title="{{ p.sync.detail }}">확인실패</span></div>
         {% endif %}
@@ -116,7 +130,7 @@
       <td class="mono" style="font-size:12px;line-height:1.7;">
         {{ "{:,}".format(p.sale_price) }}원<br>
         <span class="muted">도매가 {{ "{:,}".format(p.supply_price) if p.supply_price else '—' }}</span><br>
-        <span class="muted">마진 {{ "%.1f"|format(p.margin_rate * 100) }}% ({{ "{:,}".format((p.sale_price * p.margin_rate) | round | int) }}원)</span>
+        <span class="muted">개당 마진 {{ "%.1f"|format(p.margin_rate * 100) }}% ({{ "{:,}".format((p.sale_price * p.margin_rate) | round | int) }}원)</span>
         {% if p.sync and p.sync.action == '마진경고' %}
           <div style="margin-top:4px;"><span class="badge-warn" title="{{ p.sync.detail }}">권장 {{ "{:,}".format(p.sync.suggested_price) }}원</span></div>
         {% endif %}

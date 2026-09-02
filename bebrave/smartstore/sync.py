@@ -20,7 +20,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import List, Optional
 
-from ..config import MIN_MARGIN
+from ..config import MIN_MARGIN, FREE_SHIPPING_THRESHOLD
 from ..margin.calculator import calculate, estimate_sale_price
 from ..sourcing.domemae import fetch_product_detail
 from .register import update_registered_product
@@ -43,6 +43,11 @@ class SyncResult:
     detail: str
     new_stock: Optional[int] = None   # ACTION_STOCK일 때 반영할 재고 수량
     suggested_price: Optional[int] = None  # ACTION_MARGIN_WARN일 때 목표마진 회복 참고가(자동 반영 안 함)
+    # 도매처 실재고 — 위탁판매는 내가 재고를 안 갖고 있어서 이 숫자가 곧 판매 가능 수량이다.
+    # 예전엔 "이상없음"이면 저장조차 안 해, 도매처에 3개 남은 상품(=곧 품절)을
+    # 0이 될 때까지 알 수 없었다.
+    supply_stock: Optional[int] = None
+    supply_price: Optional[int] = None
 
     def line(self) -> str:
         mark = {
@@ -76,19 +81,29 @@ def check_product(record: dict) -> SyncResult:
     try:
         p = fetch_product_detail(goods_no)
     except Exception as e:
-        # 도매매에서 상품이 내려갔거나 조회 실패 — 팔 수 없는 상태로 간주하고 내린다
-        return SyncResult(pid, name, ACTION_SUSPEND,
-                          f"도매매 조회 실패 ({type(e).__name__}) — 공급 중단 가능성, 판매중지")
+        # 조회가 안 됐다는 것과 상품이 내려갔다는 것은 다르다. API 키 미설정·네트워크
+        # 오류·레이트리밋도 모두 여기로 오는데, 이걸 "판매중지"로 판정하면 일괄 반영
+        # 한 번에 멀쩡한 상품이 전부 내려가 매출이 통째로 멈춘다(실제로 API 키가
+        # 빠진 상태에서 전 상품이 판매중지 판정으로 나왔다).
+        # 판매중지는 되돌리기 번거롭고 노출 순위에도 영향이 있으므로, 원인을 사람이
+        # 확인하도록 "확인실패"로 남기고 자동 반영 대상에서 뺀다.
+        return SyncResult(pid, name, ACTION_ERROR,
+                          f"도매매 조회 실패 ({type(e).__name__}: {str(e)[:60]}) — "
+                          f"공급 중단인지 연동 문제인지 확인 필요")
+
+    # 판정이 뭐로 끝나든 도매처 재고·도매가는 항상 담는다 — 화면이 "몇 개 남았나"를
+    # 보여줄 수 있어야 품절 임박을 미리 잡는다.
+    stock_info = {"supply_stock": p.stock, "supply_price": p.supply_price}
 
     if p.stock <= 0:
-        return SyncResult(pid, name, ACTION_SUSPEND, "도매매 품절 — 판매중지")
+        return SyncResult(pid, name, ACTION_SUSPEND, "도매매 품절 — 판매중지", **stock_info)
 
     # 도매가 변동 → 현재 판매가 기준으로 마진 재계산
     sale_price = int(record.get("sale_price", 0) or 0)
     old_cost = int(record.get("supply_price", 0) or 0)
     if sale_price and p.supply_price and p.supply_price != old_cost:
         m = calculate(sale_price=sale_price, cost_price=p.supply_price,
-                      free_shipping=(sale_price >= 30_000))
+                      free_shipping=(sale_price >= FREE_SHIPPING_THRESHOLD))
         moved = p.supply_price - old_cost
         if not m.passes_min:
             # 판매가를 자동으로 올리지는 않는다(노출 순위·구매전환에 영향) — 참고용 권장가만 계산해 보여준다.
@@ -97,20 +112,21 @@ def check_product(record: dict) -> SyncResult:
                 pid, name, ACTION_MARGIN_WARN,
                 f"도매가 {old_cost:,}→{p.supply_price:,}원({moved:+,}) "
                 f"마진 {m.margin_rate:.1%} < 최소 {MIN_MARGIN:.0%} — 현재가 {sale_price:,}원, 목표마진 회복가 {suggested:,}원 참고",
-                suggested_price=suggested,
+                suggested_price=suggested, **stock_info,
             )
         return SyncResult(
             pid, name, ACTION_OK,
             f"도매가 {old_cost:,}→{p.supply_price:,}원({moved:+,}) 마진 {m.margin_rate:.1%} 유지",
+            **stock_info,
         )
 
     registered_stock = int(record.get("stock_quantity", 0) or 0)
     if p.stock < registered_stock:
         return SyncResult(pid, name, ACTION_STOCK,
                           f"재고 {registered_stock:,}→{p.stock:,}개로 조정",
-                          new_stock=p.stock)
+                          new_stock=p.stock, **stock_info)
 
-    return SyncResult(pid, name, ACTION_OK, f"도매가 {p.supply_price:,}원 — 이상없음")
+    return SyncResult(pid, name, ACTION_OK, f"도매가 {p.supply_price:,}원 — 이상없음", **stock_info)
 
 
 def apply_result(result: SyncResult, access_token: str) -> None:
@@ -164,3 +180,42 @@ def print_results(results: List[SyncResult], dry_run: bool = True) -> None:
     else:
         print(f"  전체 {len(results)}건 이상 없음")
     print()
+
+
+def _demo() -> None:
+    """실행 가능한 자체 점검 — 판정 분기만 검증 (네트워크 호출은 가짜로 대체)."""
+    import types
+    from unittest.mock import patch as _patch
+
+    record = {"naver_product_id": "1", "name": "테스트", "domemae_goods_no": "111",
+              "sale_price": 20_000, "supply_price": 10_000, "stock_quantity": 999}
+
+    def fake(stock, supply_price):
+        return types.SimpleNamespace(stock=stock, supply_price=supply_price, options=[])
+
+    # 조회가 안 된 것을 "판매중지"로 판정하면 안 된다 — 연동이 끊긴 상태에서 일괄
+    # 반영 한 번에 멀쩡한 상품이 전부 내려가 매출이 통째로 멈춘다.
+    with _patch(f"{__name__}.fetch_product_detail", side_effect=ValueError("API 키 없음")):
+        r = check_product(record)
+        assert r.action == ACTION_ERROR, f"조회 실패를 {r.action}으로 판정 — 판매중지로 내리면 안 됨"
+
+    # 도매처 재고는 판정과 무관하게 항상 담겨야 화면이 품절 임박을 미리 보여줄 수 있다.
+    # (등록 수량보다 재고가 많아 조정할 게 없는 = 이상없음 상태)
+    plenty = dict(record, stock_quantity=5)
+    with _patch(f"{__name__}.fetch_product_detail", return_value=fake(7, 10_000)):
+        r = check_product(plenty)
+        assert r.action == ACTION_OK and r.supply_stock == 7, f"이상없음일 때 재고가 안 담김: {r}"
+
+    with _patch(f"{__name__}.fetch_product_detail", return_value=fake(0, 10_000)):
+        r = check_product(record)
+        assert r.action == ACTION_SUSPEND and r.supply_stock == 0, "품절 판정/재고 오류"
+
+    with _patch(f"{__name__}.fetch_product_detail", return_value=fake(3, 10_000)):
+        r = check_product(record)
+        assert r.action == ACTION_STOCK and r.supply_stock == 3, "재고조정 판정/재고 오류"
+
+    print("sync self-check OK")
+
+
+if __name__ == "__main__":
+    _demo()

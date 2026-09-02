@@ -193,6 +193,19 @@ def _todo_groups(registered: list, pending_orders, returns_count, inquiry_count)
         order_items.append({"label": "발주", "unknown": True})
     elif pending_orders:
         order_items.append({"label": "발주", "link": url_for("orders", tab="ready"), "n": pending_orders})
+        # 발주할 주문이 있어도 이머니가 모자라면 아무것도 못 한다 — 들어가서 알기 전에
+        # 여기서 알려준다. 잔액 조회가 실패해도 발주 할 일 자체는 그대로 보여야 하므로 조용히 넘어간다.
+        try:
+            from bebrave.sourcing.domemae_order import login, fetch_emoney_balance
+            from bebrave.smartstore.purchase_queue import STATUS_READY
+            needed = sum((_lookup_supply_price(i.get("matched_goods_no", "")) or 0) * i.get("quantity", 1)
+                          for i in load_queue() if i["status"] == STATUS_READY)
+            cash = fetch_emoney_balance(login()["sId"])["cash"]
+            if needed and cash < needed:
+                order_items.append({"label": f"이머니 충전 ({needed - cash:,}원 부족)",
+                                    "link": url_for("orders", tab="ready"), "n": 1})
+        except Exception:
+            pass
     # 발송을 한 덩어리로 세면 페널티가 걸린 지연 건이 평범한 대기 건에 묻힌다 —
     # 결제 후 24시간 넘은 건을 따로 뽑는다(합은 전체 발송 대기와 같다).
     dispatch_wait = len([i for i in load_queue() if i["status"] == STATUS_ORDERED])
@@ -638,12 +651,14 @@ def _bulk_eligibility(is_suspended: bool, sync: dict, perf_status: str) -> list:
     """이 상품에 적용 가능한 일괄 액션 목록. 화면(버튼별 건수 표시)과 실행
     (products_bulk의 대상 필터)이 반드시 같은 기준을 쓰도록 판정을 여기 한 곳에 모은다 —
     두 곳에서 따로 판정하면 "2건 적용됨"이라 써놓고 실제로는 0건이 처리되는 일이 생긴다."""
-    from bebrave.smartstore.sync import ACTION_OK, ACTION_MARGIN_WARN
+    from bebrave.smartstore.sync import ACTION_OK, ACTION_MARGIN_WARN, ACTION_ERROR
 
     ok = ["suspend"]  # 판매중지는 조건 없음
     if is_suspended and (not sync or sync.get("action") == ACTION_OK):
         ok.append("resume")
-    if sync and sync.get("action") != ACTION_OK:
+    # 확인실패는 "도매처에 문제가 있다"가 아니라 "확인을 못 했다"이므로 자동 반영에서 뺀다 —
+    # 연동이 끊긴 상태에서 일괄 반영을 누르면 멀쩡한 상품이 무더기로 내려간다.
+    if sync and sync.get("action") not in (ACTION_OK, ACTION_ERROR):
         ok.append("apply_sync")
     if sync and sync.get("action") == ACTION_MARGIN_WARN and sync.get("suggested_price"):
         ok.append("apply_price")
@@ -778,6 +793,8 @@ def products_refresh_stock():
         cache = [{
             "naver_product_id": r.naver_product_id, "name": r.name, "action": r.action,
             "detail": r.detail, "new_stock": r.new_stock, "suggested_price": r.suggested_price,
+            # 위탁판매에서 실제 판매 가능 수량은 도매처 재고다 — 판정과 무관하게 항상 저장.
+            "supply_stock": r.supply_stock, "supply_price": r.supply_price,
             "checked_at": checked_at,
         } for r in results]
         PRODUCT_SYNC_CACHE.parent.mkdir(parents=True, exist_ok=True)
@@ -943,6 +960,24 @@ def products_detail(product_id):
 
 ORDER_TABS = ("ready", "dispatch", "failed", "manual", "history")
 
+# 택배사별 배송조회 주소 — 송장번호만 있고 링크가 없어서 배송 문의가 올 때마다
+# 번호를 복사해 택배사 사이트에 직접 붙여넣어야 했다. 발송처리 select와 같은 목록.
+TRACKING_URLS = {
+    "CJ대한통운": "https://trace.cjlogistics.com/next/tracking.html?wblNo={no}",
+    "롯데택배": "https://www.lotteglogis.com/home/reservation/tracking/linkView?InvNo={no}",
+    "우체국택배": "https://service.epost.go.kr/trace.RetrieveDomRigiTraceList.comm?sid1={no}",
+    "한진택배": "https://www.hanjin.com/kor/CMS/DeliveryMgr/WaybillResult.do?mCode=MN038&schLang=KR&wblnumText2={no}",
+    "로젠택배": "https://www.ilogen.com/web/personal/trace/{no}",
+}
+
+
+def _tracking_url(company: str, tracking_number: str) -> str:
+    """모르는 택배사면 빈 문자열 — 엉뚱한 주소로 보내느니 링크를 안 거는 게 낫다."""
+    tmpl = TRACKING_URLS.get((company or "").strip())
+    if not tmpl or not tracking_number:
+        return ""
+    return tmpl.format(no=str(tracking_number).replace("-", "").strip())
+
 
 def _annotate_orders(items: list) -> None:
     """큐 아이템에 화면용 파생값을 심는다(원본 파일은 안 건드림).
@@ -963,6 +998,7 @@ def _annotate_orders(items: list) -> None:
             elapsed = None
         i["hours_since_order"] = elapsed
         i["is_delayed"] = elapsed is not None and elapsed >= DISPATCH_DELAY_HOURS
+        i["tracking_url"] = _tracking_url(i.get("delivery_company", ""), i.get("tracking_number", ""))
 
         # 발주를 누르는 순간 "이 건 얼마 남는지"가 화면에 없었다 — 도매가만 보였다.
         unit_price = i.get("unit_price") or 0
@@ -1042,7 +1078,7 @@ def orders():
 
     manual_prefill = {k: request.args.get(k, "") for k in
                        ("goods_no", "option_code", "qty", "receiver_name", "phone", "zipcode", "address1", "address2",
-                        "shop_name", "product_order_id")}
+                        "shop_name", "delivery_memo", "product_order_id")}
 
     return render_template(
         "orders.html", tab=tab, ready=ready, hold=hold, dispatch_wait=dispatch_wait,
@@ -1111,6 +1147,8 @@ def _demo_order_items() -> list:
          "option_name": "", "quantity": 2, "unit_price": 3300, "matched_goods_no": "11013443",
          "matched_option_code": None, "matched_name": "실리콘주걱 대코 브라이트 미니볶음주걱 실리콘 이유식주걱",
          "match_method": "id", "ordered_at": _ago(5),
+         "orderer_name": "김철수", "orderer_tel": "010-1111-2222",
+         "delivery_memo": "부재시 경비실에 맡겨주세요",
          "receiver_name": "김철수", "receiver_tel": "010-1111-2222", "receiver_zipcode": "06000",
          "receiver_address1": "서울시 강남구", "receiver_address2": "101호", "status": "ready", "hold_reason": "",
          "supply_unit_price": 2300, "supply_cost": 4600},
@@ -1120,6 +1158,8 @@ def _demo_order_items() -> list:
          "option_name": "", "quantity": 1, "unit_price": 4600, "matched_goods_no": "13187678",
          "matched_option_code": None, "matched_name": "우산 양산 양우산 자동우산  3단자동우산 우양산 골프우",
          "match_method": "name", "ordered_at": _ago(30),
+         # 선물 주문 — 주문자와 수령인이 다른 경우(CS 연락은 주문자에게 해야 한다)
+         "orderer_name": "최민호", "orderer_tel": "010-4444-5555",
          "receiver_name": "최지은", "receiver_tel": "010-7777-8888", "receiver_zipcode": "42000",
          "receiver_address1": "대구시 수성구", "receiver_address2": "", "status": "ready", "hold_reason": "",
          "supply_unit_price": 3190, "supply_cost": 3190},
@@ -1181,7 +1221,7 @@ def orders_demo():
     demo_emoney = {"total": 15000, "cash": 15000, "card": 0, "point": 320, "needed": 9890, "short": False}
     manual_prefill = {k: "" for k in
                        ("goods_no", "option_code", "qty", "receiver_name", "phone", "zipcode", "address1", "address2",
-                        "shop_name", "product_order_id")}
+                        "shop_name", "delivery_memo", "product_order_id")}
     return render_template(
         "orders.html", tab=tab, ready=ready, hold=hold, dispatch_wait=dispatch_wait,
         failed=failed, done=done, error=None,
@@ -1489,6 +1529,12 @@ def _settlement_calendar_ctx():
     case_records = load_settlements()
     case_total = sum(r["settle_amount"] for r in case_records)
 
+    # 위탁판매는 도매가를 내가 먼저 결제하고 정산은 나중에 들어온다 — 들어올 돈만
+    # 보여주면 지금 자금이 도는지 알 수 없다. 아직 정산 안 된 발주 지출을 같이 낸다.
+    from bebrave.smartstore.purchase_queue import load_queue, STATUS_ORDERED, STATUS_DISPATCHED
+    pending_spend = sum(i.get("spent_amount") or 0 for i in load_queue()
+                        if i["status"] in (STATUS_ORDERED, STATUS_DISPATCHED))
+
     prev_month, prev_year = (12, selected_year - 1) if selected_month == 1 else (selected_month - 1, selected_year)
     next_month, next_year = (1, selected_year + 1) if selected_month == 12 else (selected_month + 1, selected_year)
     next_disabled = (next_year, next_month) > (today.year, today.month)
@@ -1496,6 +1542,7 @@ def _settlement_calendar_ctx():
     return dict(
         daily=daily, error=error, total_settle=total_settle, total_benefit=total_benefit,
         total_vat=total_vat, case_total=case_total, case_count=len(case_records),
+        pending_spend=pending_spend,
         selected_year=selected_year, selected_month=selected_month,
         prev_year=prev_year, prev_month=prev_month, next_year=next_year, next_month=next_month,
         next_disabled=next_disabled,
@@ -1609,7 +1656,7 @@ def settlement_demo():
             daily=demo_daily, error=None,
             total_settle=sum(d.settle_amount for d in demo_daily),
             total_benefit=sum(d.benefit_settle_amount for d in demo_daily),
-            total_vat=8500, case_total=131400, case_count=6,
+            total_vat=8500, case_total=131400, case_count=6, pending_spend=10980,
             selected_year=today.year, selected_month=today.month,
             prev_year=today.year, prev_month=today.month, next_year=today.year, next_month=today.month,
             next_disabled=True,
@@ -1979,7 +2026,10 @@ def purchase_bulk_place():
             )
             option = (OrderOption(option_code=i["matched_option_code"], quantity=i["quantity"])
                       if i.get("matched_option_code") else OrderOption(quantity=i["quantity"]))
-            item = OrderItem(goods_no=i["matched_goods_no"], options=[option])
+            # 고객이 남긴 배송요청사항을 도매처로 넘긴다 — 도매처가 직배송하므로
+            # 여기서 안 실으면 그 요청은 아무 데도 도달하지 않는다.
+            item = OrderItem(goods_no=i["matched_goods_no"], options=[option],
+                              delivery_message=(i.get("delivery_memo") or "")[:256])
             result = place_order([item], delivery, sId=session_data["sId"], dry_run=False)
             order_no = (result or {}).get("order", {}).get("orderNo", "?")
             supply_price = _lookup_supply_price(i["matched_goods_no"])
@@ -2051,7 +2101,8 @@ def purchase_place():
             address2=address2, phone=phone, shop_name=shop_name,
         )
         option = OrderOption(option_code=option_code, quantity=qty) if option_code else OrderOption(quantity=qty)
-        item = OrderItem(goods_no=goods_no, options=[option])
+        item = OrderItem(goods_no=goods_no, options=[option],
+                          delivery_message=request.form.get("delivery_memo", "")[:256])
 
         if not live:
             flash("[dry-run] 아래 내용으로 발주 요청이 구성됩니다 (실제 결제 안 함) — 실제 발주는 체크박스를 켜고 눌러야 함", "success")

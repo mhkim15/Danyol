@@ -43,6 +43,17 @@
   <div class="panel" style="background:var(--err-bg);color:var(--err);">조회 실패: {{ error }}</div>
   {% endif %}
 
+  {# 위탁판매는 반품이 두 갈래로 나뉜다 — 고객↔나(스마트스토어)와 나↔도매처.
+     이 화면은 앞쪽만 보여주는 조회 전용이라, 뒤쪽을 잊으면 물건만 돌려받고 돈은 못 받는다. #}
+  <div class="panel" style="background:var(--paper);">
+    <b>이 화면은 조회 전용입니다.</b> 반품이 들어오면 두 곳에서 각각 처리해야 합니다.
+    <ul style="margin:8px 0 0;padding-left:18px;font-size:13px;line-height:1.7;">
+      <li><b>고객 쪽</b> — 반품 승인·환불은 스마트스토어센터에서 (여기서는 못 합니다)</li>
+      <li><b>도매처 쪽</b> — 도매매에 반품 접수해야 내가 낸 도매가를 돌려받습니다. 이걸 빼먹으면 물건은 회수되고 돈은 그대로 나간 채로 끝납니다</li>
+      <li>상품명을 누르면 해당 상품의 판매·마진 상태로 이동합니다 — 같은 상품에서 반품이 반복되면 상품 자체를 손봐야 합니다</li>
+    </ul>
+  </div>
+
   <div class="panel">
     <div class="table-wrap">
     <table>
@@ -77,6 +88,11 @@
   {% if inquiry_error %}
   <div class="panel" style="background:var(--err-bg);color:var(--err);">조회 실패: {{ inquiry_error }}</div>
   {% endif %}
+
+  <div class="panel" style="background:var(--paper);">
+    <b>답변 작성은 스마트스토어센터에서 합니다.</b> 여기서는 미답변 건을 놓치지 않도록 모아 보고,
+    이미 보낸 답변을 확인할 수 있습니다. 미답변이 쌓이면 굿서비스 점수에 반영됩니다.
+  </div>
 
   <div class="panel">
     <div class="table-wrap">

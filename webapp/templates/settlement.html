@@ -33,11 +33,17 @@
     </div>
   </div>
 
-  <div class="stat-grid" style="grid-template-columns: repeat(3, 1fr); margin-bottom:14px;">
+  {# 위탁판매는 도매가를 먼저 결제하고 정산은 나중에 들어온다 — 들어올 돈만 보여주면
+     지금 자금이 도는지 알 수 없어서, 아직 정산 안 된 발주 지출을 나란히 놓는다. #}
+  <div class="stat-grid" style="grid-template-columns: repeat(4, 1fr); margin-bottom:14px;">
     <div class="stat-card">
       <p class="stat-num money">{{ "{:,}".format(total_settle) }}원</p>
-      <p class="stat-label">이번달 정산 합계</p>
+      <p class="stat-label">이번달 정산 합계 <span class="muted">(들어올 돈)</span></p>
     </div>
+    <a href="{{ url_for('settlement_view', tab='cashflow') }}" class="stat-card link">
+      <p class="stat-num attn">{{ "{:,}".format(pending_spend) if pending_spend is not none else '—' }}원</p>
+      <p class="stat-label">발주로 나간 돈 <span class="muted">(정산 전)</span></p>
+    </a>
     <div class="stat-card">
       <p class="stat-num">{{ "{:,}".format(total_benefit) }}원</p>
       <p class="stat-label">혜택정산</p>

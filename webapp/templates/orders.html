@@ -66,7 +66,10 @@
         </th>
         <th style="width:13%;">주문일시
           <button type="button" class="tip-btn" data-tip-toggle>?<span class="tip-bubble">
-            <p>결제 후 <b>24시간</b>이 지나도록 발송하지 않으면 발송지연으로 스토어 페널티를 받습니다. 오래된 주문이 위로 옵니다.</p>
+            <p>결제 후 경과 시간입니다. 오래된 주문이 위로 옵니다.</p>
+            <p><b>24시간</b>을 넘으면 경고 배지가 뜹니다 — 이건 여유를 두려고 자체적으로 정한 기준이고,
+            네이버의 실제 발송기한은 <b>영업일</b> 기준이라 주말·공휴일이 끼면 더 깁니다.</p>
+            <p>정확한 기한은 스마트스토어센터에서 확인하세요.</p>
           </span></button>
         </th>
         <th style="width:22%;">배송지</th>
@@ -77,15 +80,30 @@
         <td><input type="checkbox" name="product_order_ids" form="readyForm" value="{{ i.product_order_id }}" class="ready-check"
                    data-amount="{{ i.supply_cost if i.supply_cost is not none else 0 }}" checked onclick="updateReadyBar()"></td>
         <td>
-          <a href="#" onclick="openPreviewModal('{{ url_for('orders_detail', product_order_id=i.product_order_id) }}'); return false;">{{ i.product_name }}</a>{% if i.option_name %} <span class="muted">{{ i.option_name }}</span>{% endif %}
-          <div class="mono muted" style="font-size:11.5px;">도매매 {{ i.matched_goods_no }}{% if i.matched_option_code %} · 옵션 {{ i.matched_option_code }}{% endif %}</div>
+          <a href="#" onclick="openPreviewModal('{{ url_for('orders_detail', product_order_id=i.product_order_id) }}'); return false;">{{ i.product_name }}</a>
+          <div style="margin-top:4px;">
+            {# 옵션을 잘못 발주하면 100% 반품이다 — 회색 작은 글씨가 아니라 배지로 올린다 #}
+            {% if i.option_name %}
+            <span class="badge" title="고객이 고른 옵션 — 도매매 옵션코드 {{ i.matched_option_code or '없음' }}로 발주됩니다">
+              {{ i.option_name }}{% if i.matched_option_code %} → {{ i.matched_option_code }}{% endif %}
+            </span>
+            {% endif %}
+            {# 이름으로 추측 매칭된 건은 엉뚱한 물건을 보낼 수 있다 — 발주 버튼 옆에서 보여야 한다 #}
+            {% if i.match_method == 'name' %}
+            <span class="badge-warn" title="상품ID가 아니라 이름이 비슷해서 찾은 건입니다 — 발주 전 도매매 상품을 확인하세요">이름으로 매칭</span>
+            {% elif i.match_method == 'none' %}
+            <span class="badge-err" title="도매매 상품을 찾지 못했습니다">매칭 실패</span>
+            {% endif %}
+          </div>
+          <div class="mono muted" style="font-size:11.5px;">도매매 {{ i.matched_goods_no }}</div>
         </td>
         <td class="mono">{{ i.quantity }}개</td>
         <td class="mono" style="font-size:12px;line-height:1.7;">
           {{ "{:,}".format(i.unit_price or 0) }}원<br>
           <span class="muted">도매 {{ "{:,}".format(i.supply_cost) if i.supply_cost is not none else '—' }}</span><br>
           {% if i.margin_amount is not none %}
-          <span class="muted">마진 {{ "{:,}".format(i.margin_amount) }}원</span>
+          {# 수량을 곱한 "이 주문에서 남는 돈" — 상품 관리의 개당 마진과 다른 값이다 #}
+          <span class="muted">이 주문 마진 {{ "{:,}".format(i.margin_amount) }}원</span>
           {% else %}
           <span class="badge-warn" title="등록 상품과 매칭되지 않아 도매가를 모릅니다">도매가 미상</span>
           {% endif %}
@@ -93,16 +111,22 @@
         <td style="font-size:12px;line-height:1.7;">
           {% if i.hours_since_order is not none %}
           <span class="{{ 'badge-err' if i.is_delayed else 'muted' }}">{{ "%.0f"|format(i.hours_since_order) }}시간 경과</span>
-          {% if i.is_delayed %}<br><span class="badge-err">발송지연</span>{% endif %}
+          {% if i.is_delayed %}<br><span class="badge-err" title="자체 기준 24시간 초과 — 네이버 실제 기한은 영업일 기준입니다">발송 서둘러야</span>{% endif %}
           {% else %}<span class="muted">—</span>{% endif %}
         </td>
-        <td class="muted" style="font-size:12px;">{{ i.receiver_name }} · {{ i.receiver_address1 }} {{ i.receiver_address2 }}</td>
+        <td class="muted" style="font-size:12px;">
+          {{ i.receiver_name }} · {{ i.receiver_address1 }} {{ i.receiver_address2 }}
+          {# 도매처가 직배송하므로 이 요청이 발주에 실려 나간다 — 눈에 보여야 확인이 된다 #}
+          {% if i.delivery_memo %}
+          <div style="margin-top:4px;"><span class="badge-warn" title="이 내용이 도매처 발주에 함께 전달됩니다">요청 {{ i.delivery_memo[:20] }}{{ '…' if i.delivery_memo|length > 20 }}</span></div>
+          {% endif %}
+        </td>
         <td>
           <a class="btn secondary btn-sm" href="{{ url_for(endpoint,
               tab='manual', goods_no=i.matched_goods_no, option_code=i.matched_option_code or '', qty=i.quantity,
               receiver_name=i.receiver_name, phone=i.receiver_tel, zipcode=i.receiver_zipcode,
               address1=i.receiver_address1, address2=i.receiver_address2, shop_name=i.matched_name,
-              product_order_id=i.product_order_id) }}">따로 발주</a>
+              delivery_memo=i.delivery_memo or '', product_order_id=i.product_order_id) }}">따로 발주</a>
         </td>
       </tr>
       {% endfor %}
@@ -142,7 +166,7 @@
         <td style="font-size:12px;line-height:1.7;">
           {% if i.hours_since_order is not none %}
           <span class="{{ 'badge-err' if i.is_delayed else 'muted' }}">{{ "%.0f"|format(i.hours_since_order) }}시간 경과</span>
-          {% if i.is_delayed %}<br><span class="badge-err">발송지연</span>{% endif %}
+          {% if i.is_delayed %}<br><span class="badge-err" title="자체 기준 24시간 초과 — 네이버 실제 기한은 영업일 기준입니다">발송 서둘러야</span>{% endif %}
           {% else %}<span class="muted">—</span>{% endif %}
         </td>
         <td>
@@ -244,6 +268,8 @@
         <input type="text" name="address2" value="{{ i.receiver_address2 }}">
         <label>쇼핑몰명/상호명</label>
         <input type="text" name="shop_name" value="{{ i.matched_name or '' }}" required>
+        <label>배송요청사항 <span class="muted">— 도매처에 그대로 전달됩니다</span></label>
+        <input type="text" name="delivery_memo" value="{{ i.delivery_memo or '' }}" maxlength="256">
         <div class="row" style="margin-top:16px;align-items:center;">
           <label style="margin:0;"><input type="checkbox" name="live"> 확인함 — 실제로 발주</label>
           <button type="submit">발주 요청 전송</button>
@@ -278,6 +304,8 @@
         <input type="text" name="address2" value="{{ address2 or '' }}">
         <label>쇼핑몰명/상호명</label>
         <input type="text" name="shop_name" value="{{ shop_name or '' }}" required>
+        <label>배송요청사항 <span class="muted">— 도매처에 그대로 전달됩니다</span></label>
+        <input type="text" name="delivery_memo" value="{{ delivery_memo or '' }}" maxlength="256">
         <div class="row" style="margin-top:16px;align-items:center;">
           <label style="margin:0;"><input type="checkbox" name="live"> 확인함 — 실제로 발주</label>
           <button type="submit">발주 요청 전송</button>
@@ -312,7 +340,11 @@
         <td class="mono">{{ i.quantity }}개</td>
         <td class="mono">{{ "{:,}".format(i.spent_amount) + "원" if i.get('spent_amount') else '—' }}</td>
         <td>{{ i.get('delivery_company') or '—' }}</td>
-        <td class="mono" style="font-size:12px;">{{ i.get('tracking_number', '—') }}</td>
+        <td class="mono" style="font-size:12px;">
+          {% if i.tracking_url %}
+          <a href="{{ i.tracking_url }}" target="_blank" rel="noopener" title="택배사 배송조회 열기">{{ i.tracking_number }}</a>
+          {% else %}{{ i.get('tracking_number', '—') }}{% endif %}
+        </td>
         <td class="muted mono" style="font-size:12px;">{{ i.get('updated_at', '') }}</td>
       </tr>
       {% endfor %}

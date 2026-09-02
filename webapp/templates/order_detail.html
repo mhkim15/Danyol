@@ -7,7 +7,7 @@
     {% if i.hours_since_order is not none %}
     <span class="{{ 'badge-err' if i.is_delayed else 'badge' }}">결제 후 {{ "%.0f"|format(i.hours_since_order) }}시간</span>
     {% endif %}
-    {% if i.is_delayed %}<span class="badge-err">발송지연</span>{% endif %}
+    {% if i.is_delayed %}<span class="badge-err" title="자체 기준 24시간 초과 — 네이버 실제 기한은 영업일 기준입니다">발송 서둘러야</span>{% endif %}
   </div>
   <table style="margin-top:10px;">
     <tr><td style="width:34%;">주문일시</td><td class="mono">{{ i.ordered_at or '—' }}</td></tr>
@@ -62,10 +62,29 @@
 <div class="panel">
   <h2>배송</h2>
   <table>
-    <tr><td style="width:34%;">수령인</td><td>{{ i.receiver_name }} · {{ i.receiver_tel or '—' }}</td></tr>
+    {# CS가 생기면 연락할 사람은 수령인이 아니라 주문자다 — 선물 주문이면 서로 다르다 #}
+    <tr><td style="width:34%;">주문자</td>
+      <td>{% if i.orderer_name %}{{ i.orderer_name }} · {{ i.orderer_tel or '—' }}{% else %}<span class="muted">기록 없음</span>{% endif %}</td></tr>
+    <tr><td>수령인</td><td>{{ i.receiver_name }} · {{ i.receiver_tel or '—' }}</td></tr>
     <tr><td>주소</td><td>({{ i.receiver_zipcode or '—' }}) {{ i.receiver_address1 }} {{ i.receiver_address2 }}</td></tr>
+    <tr>
+      <td>배송요청사항</td>
+      <td>
+        {% if i.delivery_memo %}
+        {{ i.delivery_memo }}
+        <div class="hint">도매처 발주에 그대로 전달됩니다</div>
+        {% else %}<span class="muted">없음</span>{% endif %}
+      </td>
+    </tr>
     {% if i.tracking_number %}
-    <tr><td>송장</td><td class="mono">{{ i.delivery_company or '—' }} {{ i.tracking_number }}</td></tr>
+    <tr>
+      <td>송장</td>
+      <td class="mono">
+        {{ i.delivery_company or '—' }}
+        {% if i.tracking_url %}<a href="{{ i.tracking_url }}" target="_blank" rel="noopener">{{ i.tracking_number }}</a>
+        {% else %}{{ i.tracking_number }}{% endif %}
+      </td>
+    </tr>
     {% endif %}
   </table>
 </div>

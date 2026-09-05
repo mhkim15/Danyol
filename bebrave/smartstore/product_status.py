@@ -47,6 +47,10 @@ class ProductStatus:
     status_type: str
     stock_quantity: int = 0
     modified_date: str = ""
+    # register.py가 등록 시 판매자상품코드에 도매매 상품번호를 그대로 심어둔다
+    # (detailAttribute.sellerCodeInfo.sellerManagementCode) — 로컬 원장 파일에만
+    # 의존하던 중복 등록 방지를 네이버 실제 목록 기준으로 바꾸는 데 쓴다(2026-09).
+    seller_management_code: str = ""
 
 
 def fetch_product_statuses(access_token: str, size: int = 100) -> List[ProductStatus]:
@@ -74,6 +78,9 @@ def fetch_product_statuses(access_token: str, size: int = 100) -> List[ProductSt
     for it in items:
         # 채널상품/원상품 두 레벨로 응답이 올 수 있어 후보 키를 여러 개 시도한다.
         product = it.get("channelProducts", [{}])[0] if it.get("channelProducts") else it
+        # sellerManagementCode 경로도 문서 미확인이라 register.py가 실제로 쓰는 경로
+        # (detailAttribute.sellerCodeInfo.sellerManagementCode) + 최상위 폴백을 함께 시도.
+        seller_code_info = (it.get("detailAttribute", {}) or {}).get("sellerCodeInfo", {}) or {}
         results.append(ProductStatus(
             product_id=str(_get(it, "originProductNo", "channelProductNo", "productNo")
                            or _get(product, "channelProductNo", "originProductNo")),
@@ -82,6 +89,8 @@ def fetch_product_statuses(access_token: str, size: int = 100) -> List[ProductSt
                         or _get(it, "statusType", default=""),
             stock_quantity=int(_get(it, "stockQuantity", default=0) or _get(product, "stockQuantity", default=0) or 0),
             modified_date=_get(it, "modifiedDate", "regDate", default=""),
+            seller_management_code=_get(seller_code_info, "sellerManagementCode")
+                                    or _get(it, "sellerManagementCode", default=""),
         ))
     return results
 

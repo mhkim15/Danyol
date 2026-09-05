@@ -172,11 +172,25 @@ def run(
         return []
 
     registered = []
-    already_registered = _load_registered_goods_nos(output_path)
+    already_registered = _load_registered_goods_nos(output_path, get_access_token())
 
     for domemae_p in domemae_products:
         if domemae_p.goods_no and domemae_p.goods_no in already_registered:
             print(f"\n[건너뜀] 도매매 {domemae_p.goods_no}는 이미 등록된 상품 — 중복 등록 방지")
+            continue
+
+        # KC 인증(전기용품·어린이제품) 대상 필터 — discover.py는 "검색 키워드"에만 이
+        # 목록을 적용해서, 키워드는 깨끗한데 실제 매칭된 도매매 상품이 전동/아동용이면
+        # 그대로 등록되고 있었다. --supply-id 직접 지정 경로는 키워드 필터 자체를 아예
+        # 안 거치므로 여기(실제 등록되는 도매매 상품명 기준)서 한 번 더, 모든 경로
+        # 공통으로 막는다(2026-09) — 인증서류 확보가 안 되는 위탁 소싱 특성상 원천 제외.
+        from ..config import BLOCKED_ELECTRIC_KEYWORDS, BLOCKED_KIDS_KEYWORDS
+        kc_hit = next(
+            (w for w in BLOCKED_ELECTRIC_KEYWORDS + BLOCKED_KIDS_KEYWORDS if w in domemae_p.name),
+            "",
+        )
+        if kc_hit:
+            print(f"  [건너뜀] KC 인증 대상 의심 — 상품명에 '{kc_hit}' 포함 (도매매: {domemae_p.name[:40]})")
             continue
 
         kw = keyword or domemae_p.name.split()[0]
@@ -415,17 +429,34 @@ def _decide_sale_price(supply_price: int, retail_price: int) -> int:
     return target_price
 
 
-def _load_registered_goods_nos(output_path: Optional[Path]) -> set:
-    """이미 등록한 도매매 상품번호 집합 — 중복 등록 방지용."""
+def _load_registered_goods_nos(output_path: Optional[Path], access_token: str = "") -> set:
+    """이미 등록한 도매매 상품번호 집합 — 중복 등록 방지용.
+
+    로컬 원장(registered_products.json)만 보면 파일이 없거나 깨졌을 때 조용히 빈
+    값을 반환해 전 상품을 신규로 간주하는 사고가 있었다(2026-09, 경로도 파이프라인은
+    CWD 상대경로/웹앱은 절대경로라 실행 위치에 따라 갈렸음). 네이버 실제 등록 목록
+    (register.py가 심어둔 sellerManagementCode=도매매 상품번호)을 우선 조회하고,
+    로컬 파일은 합집합으로만 보강한다 — 한쪽이 실패해도 다른 쪽으로 방지가 유지된다.
+    """
+    live = set()
+    if access_token:
+        try:
+            from .product_status import fetch_product_statuses
+            live = {s.seller_management_code for s in fetch_product_statuses(access_token) if s.seller_management_code}
+        except Exception as e:
+            print(f"  [경고] 네이버 등록 상품목록 조회 실패 — 로컬 원장만으로 중복 등록 방지: {e}")
+
     path = output_path or Path("data/registered_products.json")
-    if not path.exists():
-        return set()
-    try:
-        with open(path, encoding="utf-8") as f:
-            existing = json.load(f)
-    except Exception:
-        return set()
-    return {p.get("domemae_goods_no", "") for p in existing if p.get("domemae_goods_no")}
+    local = set()
+    if path.exists():
+        try:
+            with open(path, encoding="utf-8") as f:
+                existing = json.load(f)
+            local = {p.get("domemae_goods_no", "") for p in existing if p.get("domemae_goods_no")}
+        except Exception as e:
+            print(f"  [경고] 로컬 등록 원장 읽기 실패({path}): {e}")
+
+    return live | local
 
 
 def _save_result(product: StoreProduct, output_path: Optional[Path]) -> None:

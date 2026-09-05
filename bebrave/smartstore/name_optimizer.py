@@ -25,11 +25,26 @@ BANNED_PROMO_WORDS = {
     "인기", "베스트", "1+1", "2+1", "3+1", "세일", "할인", "정품", "최저가",
     "단독", "이벤트", "사은품", "적립금", "쿠폰", "프로모션", "광고", "협찬",
     "재입고", "품절임박", "수량한정",
+    # 도매 B2B 문구 — 도매매 원본은 대량 사입/인쇄 주문 고객을 대상으로 쓴 문구라
+    # 우리(위탁 소매)와 무관하다. "인쇄가능"이 상품명에 그대로 남으면 실제로 인쇄를
+    # 안 해주므로 허위 표시가 된다(2026-09 발견).
+    "인쇄가능", "사입가능", "도매가능", "대량구매", "소량가능",
 }
+
+# 도매매 공급사 내부 관리코드 — "RD-10098"(코드+숫자), "-TJ"(하이픈+짧은 알파벳)처럼
+# 상품명에 토큰으로 섞여 들어온다. 슬래시 토큰화 수정(2026-09) 전에는 나열형 문자열에
+# 묻혀 있어 안 걸렸다.
+_SUPPLIER_CODE_RE = re.compile(r"^-?[A-Za-z]{1,4}-\d{2,}$|^-[A-Za-z]{1,4}$")
+
+
+def _is_supplier_code(word: str) -> bool:
+    return bool(_SUPPLIER_CODE_RE.match(word))
 
 
 def strip_promo_words(words: List[str]) -> List[str]:
-    return [w for w in words if w not in BANNED_PROMO_WORDS]
+    # 완전일치였던 예전 판정은 "무료배송!"·"★특가★"처럼 특수문자가 붙으면 그대로
+    # 통과했다(2026-09 발견) — 부분일치로 바꿔 우회를 막는다.
+    return [w for w in words if not any(b in w for b in BANNED_PROMO_WORDS)]
 
 
 def _is_blocked_brand(word: str) -> bool:
@@ -101,7 +116,11 @@ def optimize_name(keyword: str, raw_title: str, category: str = "", max_len: int
         → "우산 자동우산 3단자동우산 골프우산 ..." (양산/양우산/우양산만 제거, 나머지는 유지)
     """
     raw_title = re.sub(r"\[.*?\]|\(.*?\)", "", raw_title).strip()
-    words = strip_promo_words(raw_title.split())
+    # 공백뿐 아니라 슬래시도 단어 구분자로 처리한다 — 안 그러면
+    # "손톱깍이/손톱깍기/손톱깍이세트/…/인쇄가능"처럼 슬래시로 나열된 통짜 토큰
+    # 하나가 공백 기준 split()을 그대로 통과해 중복 제거·홍보어·브랜드 필터를
+    # 전부 우회했다(2026-09 발견).
+    words = strip_promo_words([w for w in re.split(r"[\s/]+", raw_title) if w])
 
     chosen: List[str] = []
     seen_keys = set()
@@ -111,7 +130,7 @@ def optimize_name(keyword: str, raw_title: str, category: str = "", max_len: int
         seen_keys.add(_synonym_key(keyword))
 
     for w in words:
-        if _is_blocked_brand(w):
+        if _is_blocked_brand(w) or _is_supplier_code(w):
             continue
         key = _synonym_key(w)
         if key in seen_keys:

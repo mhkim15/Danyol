@@ -17,7 +17,7 @@ import re
 from typing import TYPE_CHECKING, List
 
 from .name_optimizer import BANNED_PROMO_WORDS, MAX_NAME_LEN as _MAX_NAME_LEN
-from .name_optimizer import _find_mood_word, optimize_name, truncate_at_word_boundary as _truncate_at_word_boundary
+from .name_optimizer import _find_mood_word, _is_blocked_brand, optimize_name, truncate_at_word_boundary as _truncate_at_word_boundary
 from ..sourcing.keyword_tool import fetch_related_keywords
 
 if TYPE_CHECKING:
@@ -153,18 +153,40 @@ def _generate_fallback(
 MAX_TAGS = 10
 
 
+def _is_blocked_tag(t: str) -> bool:
+    """차단 목록은 지금까지 소싱 후보 선별(discover.py)에만 적용되고 태그 생성
+    경로는 홍보어 완전일치 하나뿐이었다 — 질환명·타사 브랜드가 태그로 그대로
+    나갔다(2026-09 실증: "손톱영양제" 후보가 "손톱무좀"·"손톱조갑박리증" 태그를
+    달고 있었음). 태그 생성에도 같은 차단 목록을 재사용한다."""
+    from ..config import BLOCKED_MEDICAL_KEYWORDS, BLOCKED_INFO_INTENT_SUFFIXES
+
+    tl = t.lower()
+    if any(w in t for w in BANNED_PROMO_WORDS):  # 완전일치 → 부분일치(★특가★ 등 우회 방지)
+        return True
+    if any(w in t for w in BLOCKED_MEDICAL_KEYWORDS):
+        return True
+    if _is_blocked_brand(t):
+        return True
+    if any(t.endswith(s) for s in BLOCKED_INFO_INTENT_SUFFIXES):
+        return True
+    return False
+
+
 def _generate_tags(keyword: str, product: "DomemaeProduct") -> List[str]:
     """
     검색어 태그 후보 생성 (code 없이 text만 등록 — 네이버 공식 가이드상 code 생략 가능).
     우선순위: ① 소싱 키워드 자체 ② 실제 월검색수가 있는 관련 키워드(수요기반, 최대 8개)
-    ③ 그래도 자리가 남으면 카테고리/원본 제목에서 채움. 상품과 무관한 단어는 억지로 안 채움.
+    ③ 그래도 자리가 남으면 원본 제목에서 채움. 상품과 무관한 단어는 억지로 안 채움.
+
+    도매매 카테고리명을 그대로 태그로 넣던 코드는 제거했다 — "수납/정리"처럼
+    슬래시 섞인 카테고리 원문이 그대로 나가고 있었다(2026-09).
     """
     seen = set()
     tags = []
 
     def _add(t: str, cap: int) -> bool:
         t = t.strip()
-        if t and t not in seen and t not in BANNED_PROMO_WORDS:
+        if t and t not in seen and not _is_blocked_tag(t):
             seen.add(t)
             tags.append(t)
         return len(tags) >= cap
@@ -176,11 +198,6 @@ def _generate_tags(keyword: str, product: "DomemaeProduct") -> List[str]:
         if _add(t, MAX_TAGS):
             break
 
-    if len(tags) < MAX_TAGS and product.category:
-        for t in product.category.split(">")[-2:]:
-            if _add(t, MAX_TAGS):
-                break
-
     if len(tags) < MAX_TAGS:
         for w in re.findall(r"[가-힣A-Za-z0-9]{2,}", product.name):
             if _add(w, MAX_TAGS):
@@ -189,14 +206,52 @@ def _generate_tags(keyword: str, product: "DomemaeProduct") -> List[str]:
     return tags[:MAX_TAGS]
 
 
+# 도매매 원본 HTML/설명에 섞여 들어오는 제재 리스크 문구 — 네이버 약관상 외부몰
+# 링크·직거래 유도 연락처는 즉시 판매정지 사유다(2026-09 적대적 입력 재현으로 확인:
+# 외부 스마트스토어 링크·쿠팡 안내·카카오톡 직거래 유도·공급사 전화번호·"국내 1위"·
+# "아토피 개선"이 전부 그대로 통과하고 있었다).
+_EXTERNAL_MALL_NAMES = ["쿠팡", "11번가", "G마켓", "지마켓", "옥션", "위메프", "티몬", "인터파크"]
+_HYPE_PHRASES = ["국내 1위", "업계 1위", "국내1위", "업계1위", "1위", "최고의", "최고"]
+# BLOCKED_MEDICAL_KEYWORDS(config.py)는 소싱 키워드 단계의 질환명 차단 목록이라
+# "아토피"처럼 상세설명에 흔히 섞이는 의약품 오인 효능 표현까지는 안 담고 있다 —
+# 상세페이지 정제 전용으로 별도 보강.
+_MEDICAL_OVERCLAIM_PHRASES = ["아토피", "치료효과", "치료 효과", "완치"]
+_CONTACT_PATTERNS = [
+    re.compile(r"01[016789]-?\d{3,4}-?\d{4}"),               # 휴대폰
+    re.compile(r"0\d{1,2}-\d{3,4}-\d{4}"),                    # 일반전화
+    re.compile(r"카\s*카\s*오\s*톡?\s*(아이디|id)?\s*[:：]?\s*[A-Za-z0-9_.]{2,}", re.I),
+    re.compile(r"카톡\s*(아이디|id)?\s*[:：]?\s*[A-Za-z0-9_.]{2,}", re.I),
+]
+
+
+def sanitize_detail_html(html: str) -> str:
+    """도매매 원본 HTML/텍스트에서 외부몰 링크·직거래 유도 연락처·과장/의약품 오인
+    표현을 제거한다. <a> 태그는 마크업만 걷어내 링크 기능을 없애고(글 자체는 남김),
+    그 외 항목은 문구를 통째로 지운다 — 문장 경계를 안전하게 못 잡는 원본 HTML
+    구조상, 남기는 쪽보다 지우는 쪽이 안전하다."""
+    from ..config import BLOCKED_MEDICAL_KEYWORDS
+
+    text = html or ""
+    text = re.sub(r"</?a\b[^>]*>", "", text, flags=re.I)  # 외부 링크 — 마크업만 제거
+    for pattern in _CONTACT_PATTERNS:
+        text = pattern.sub("", text)
+    for phrase in _EXTERNAL_MALL_NAMES + _HYPE_PHRASES + _MEDICAL_OVERCLAIM_PHRASES + list(BLOCKED_MEDICAL_KEYWORDS):
+        text = text.replace(phrase, "")
+    return text
+
+
 def _extract_points(description: str, limit: int = 3, min_len: int = 6, max_len: int = 60) -> List[str]:
     """도매매 원본 설명에서 짧고 실질적인 문장/줄만 골라 상품 포인트로 쓴다.
 
     지어내지 않는다 — 원본에 없는 장점을 만들어 붙이면 허위·과장 표시가 된다(이
     코드베이스가 원산지·고시 항목에서 이미 지키는 원칙과 동일, 2026-09 적용).
     너무 짧은 줄(메뉴/구분선 잔재)과 너무 긴 줄(문단 전체)은 포인트로 부적절해 제외.
+
+    sanitize_detail_html()을 먼저 태운다 — 안 그러면 홍보/연락처 문구가 길이 조건만
+    맞으면 그대로 "상품 포인트"로 승격돼 상단에 노출된다(2026-09 발견: POINT 1~3이
+    전부 홍보 문구·연락처로 채워지는 사고).
     """
-    text = re.sub(r"<[^>]+>", "\n", description or "")
+    text = re.sub(r"<[^>]+>", "\n", sanitize_detail_html(description or ""))
     lines = re.split(r"[\n\r]+|(?<=[.!?다요])\s{2,}", text)
     points = []
     for line in lines:
@@ -238,7 +293,7 @@ def _build_detail_html(product: "DomemaeProduct", keyword: str) -> str:
         points_html = f'<ul style="line-height:2;font-size:15px;">\n{items}\n  </ul>'
 
     # 도매매 원본 상세설명 (desc.contents) — 이전 버전에선 이 필드가 통째로 누락돼 있었음
-    description_block = product.description or ""
+    description_block = sanitize_detail_html(product.description or "")
     policy_html = _build_policy_html()
 
     html = f"""<div style="text-align:center;font-family:sans-serif;">
@@ -306,7 +361,7 @@ def remake_detail_html(keyword: str, product: "DomemaeProduct") -> str:
             f'<div style="display:flex;flex-wrap:wrap;gap:10px;margin:16px 0;">{cards}</div></div>'
         )
 
-    description_block = product.description or ""
+    description_block = sanitize_detail_html(product.description or "")
     policy_html = _build_policy_html()
 
     return f"""<div style="text-align:center;font-family:sans-serif;">
@@ -397,6 +452,27 @@ def _demo() -> None:
     )
     remake_empty = remake_detail_html("테스트", no_desc)
     assert "테스트" in remake_empty, "포인트·무드어휘가 둘 다 없을 때 기본 도입 문구가 안 나옴"
+
+    # 적대적 입력 — 외부몰 링크·카카오톡 직거래 유도·공급사 전화번호·"국내 1위"·
+    # "아토피 개선"이 실제로 통과했던 사례(2026-09 재현). 전부 제거돼야 한다.
+    adversarial = DomemaeProduct(
+        goods_no="9", name="테스트상품", supply_price=1000, retail_price=0, min_order_qty=1,
+        stock=1, supplier="s", category="화장품", shipping_fee=0,
+        description=(
+            '<p>국내 1위 브랜드! <a href="https://www.coupang.com/vp/products/1">쿠팡에서 더 싸게 사기</a></p>'
+            '<p>카카오톡 ID: dome_seller99 로 직접 문의주세요. 전화 010-1234-5678</p>'
+            '<p>아토피 개선 효과가 있는 순한 성분입니다.</p>'
+        ),
+    )
+    adv_html = _build_detail_html(adversarial, keyword="테스트상품")
+    assert "coupang.com" not in adv_html and "쿠팡" not in adv_html, "외부몰 링크/명칭이 안 걸러짐"
+    assert "dome_seller99" not in adv_html, "카카오톡 직거래 유도 아이디가 안 걸러짐"
+    assert "010-1234-5678" not in adv_html, "공급사 전화번호가 안 걸러짐"
+    assert "1위" not in adv_html, "과장 표현이 안 걸러짐"
+    assert "아토피" not in adv_html, "의약품 오인 표현이 안 걸러짐"
+    adv_points = _extract_points(adversarial.description)
+    assert not any("쿠팡" in p or "1위" in p or "아토피" in p or "010-" in p for p in adv_points), \
+        f"홍보/연락처 문구가 상품 포인트로 승격됨: {adv_points}"
 
     print("content._demo self-check OK")
 

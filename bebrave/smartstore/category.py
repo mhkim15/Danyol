@@ -79,27 +79,42 @@ def get_category_id(
 
     best_id = ""
     best_score = 0
+    best_corroborated = False
     for c in leaves:
         name = c.get("name", "")
         whole = c.get("wholeCategoryName", "")
         whole_segments = set(_tokenize(whole.replace(">", " ")))
 
-        score = len(domeme_segments & whole_segments) * 50
+        segment_overlap = len(domeme_segments & whole_segments)
+        score = segment_overlap * 50
+        # 도매매 자체 분류와 세그먼트가 겹치면(예: 둘 다 "네일케어"를 공유) 그 자체로
+        # 신뢰할 근거가 있다는 뜻 — 아래 부분일치 점수만으로 통과선을 넘긴 매칭과
+        # 구분해서 별도로 표시해둔다.
+        corroborated = segment_overlap > 0
 
         for t in query_terms:
             if t == name:
                 score += 100
-            elif t in name or name in t:
+                corroborated = True  # 카테고리명과 검색 토큰이 완전히 같으면 그 자체로 강한 근거
+            elif len(name) >= 2 and (t in name or name in t):
+                # 카테고리명이 1글자면(예: "무"/"톱"/"자") 아무 키워드에나 부분일치로 걸린다
+                # (2026-09 실증: "큐티클리무버"→식품>채소>무, "며느리발톱"→공구>목공공구>톱,
+                # "자석젤네일"→문구용품>자). 2글자 이상일 때만 부분일치 점수를 준다.
                 score += 30
             elif t in whole:
                 score += 5
         if score > best_score:
             best_score = score
             best_id = c.get("id", "")
+            best_corroborated = corroborated
 
-    # 최소 신뢰 기준: name 자체와 부분일치라도 있어야 함 (score>=30). 그보다 낮으면
-    # wholeCategoryName에서만 우연히 겹친 낮은 신뢰도 매칭이라 빈 값 반환.
-    if best_score >= 30:
+    # 최소 신뢰 기준(score>=30)을 넘겨도, 그 근거가 이름 완전일치나 도매매 세그먼트
+    # 겹침처럼 강한 것이 아니라 부분일치·wholeCategoryName 우연일치뿐이면 인정하지
+    # 않는다 — "오일"이 자전거용품 카테고리에, "영양제"가 반려동물 카테고리에 부분일치로
+    # 걸리는 식의 오분류가 16건 중 11건꼴로 실측됐다(2026-09). 확정 못 하면 빈 값을
+    # 반환해 호출부의 "카테고리 매칭 실패 시 등록 금지" 게이트에 맡긴다 — 오분류로
+    # 올리는 것보다 안 올리는 게 낫다.
+    if best_score >= 30 and best_corroborated:
         return best_id
     return ""
 

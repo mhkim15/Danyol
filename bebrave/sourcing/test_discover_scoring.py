@@ -1,7 +1,32 @@
 """최소 자가검증 — 프레임워크 없이 python3 -m bebrave.sourcing.test_discover_scoring 로 실행."""
-from .discover import _entry_score, _profit_score, DiscoveryResult, to_product_candidates
+from .discover import _entry_score, _profit_score, _cap_uncertain_recommendation, DiscoveryResult, to_product_candidates
+from .models import registration_block_reason
 from ..margin.calculator import estimate_sale_price, calculate as calc_margin
 from ..config import TARGET_MARGIN, MIN_ABS_PROFIT
+
+
+def test_cap_uncertain_recommendation():
+    # 형태 일치 확인됐고 도매가도 있으면 등급 그대로.
+    assert _cap_uncertain_recommendation("진입 권장", supply_match_uncertain=False, supply_price=6000) == "진입 권장"
+    # 매칭 불확실하면 등급 안 가리고 "보류"로 하드 캡.
+    assert _cap_uncertain_recommendation("진입 권장", supply_match_uncertain=True, supply_price=6000) == "보류"
+    # 도매가 자체가 없어도(도매매 조회 실패 등) 마찬가지.
+    assert _cap_uncertain_recommendation("진입 가능", supply_match_uncertain=False, supply_price=0) == "보류"
+    # 이미 "제외"인 건 "보류"로 격상시키지 않는다.
+    assert _cap_uncertain_recommendation("제외", supply_match_uncertain=True, supply_price=0) == "제외"
+    print("ok")
+
+
+def test_registration_block_reason():
+    # 실물확인 + 자동판정 둘 다 통과해야 등록 가능.
+    assert registration_block_reason(supply_matched=True, human_confirmed=True) == ""
+    # 사람이 실물을 안 봤으면 자동판정이 맞아도 막는다.
+    assert registration_block_reason(supply_matched=True, human_confirmed=False) != ""
+    # 사람이 확인했어도 자동판정이 불일치를 의심하면 막는다.
+    assert registration_block_reason(supply_matched=False, human_confirmed=True) != ""
+    # 둘 다 미확인이면 당연히 막는다.
+    assert registration_block_reason(supply_matched=None, human_confirmed=False) != ""
+    print("ok")
 
 
 def test_to_product_candidates_preserves_track():
@@ -70,3 +95,5 @@ def test():
 if __name__ == "__main__":
     test()
     test_to_product_candidates_preserves_track()
+    test_cap_uncertain_recommendation()
+    test_registration_block_reason()

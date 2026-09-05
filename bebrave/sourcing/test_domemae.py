@@ -1,5 +1,5 @@
 """최소 자가검증 — 프레임워크 없이 python3 -m bebrave.sourcing.test_domemae 로 실행."""
-from .domemae import _form_signals, _tokenize, find_matching_product, DomemaeProduct
+from .domemae import _form_signals, _tokenize, find_matching_product, is_accessory_name, DomemaeProduct
 
 
 def _p(name, price=1000):
@@ -33,6 +33,21 @@ def test():
     # 진짜 애매한 것(다른 종류 상품)은 여전히 불확실로 남아야 한다.
     p, matched = find_matching_product(["며느리발톱"], [_p("확대경 손톱깎이 파고드는발톱 손톱정리기")])
     assert matched is False
+
+    # 부자재 오매칭 실증 사례 — "손톱영양제" 검색에 공병이, "파우더퍼프" 검색에
+    # 보관 케이스가 최저가라서 뽑혔다(2026-09). 부자재 필터가 후보 선별
+    # 단계에서 걸러야 한다.
+    assert is_accessory_name("휴대용 3ml 큐티클 오일펜 공병 화장품 오일용기") is True
+    assert is_accessory_name("메이크업 쿠션 파우더 퍼프 원형 보관 케이스") is True
+    p, matched = find_matching_product(
+        ["손톱영양제"],
+        [_p("큐티클 오일펜 공병 2ml", price=100), _p("메니큐어 손톱영양제 네일강화제", price=1780)],
+    )
+    assert matched is True and "공병" not in p.name
+
+    # 키워드 자체가 부자재 명칭이면(예: "화장품공병") 예외적으로 통과시킨다 —
+    # 그럴 땐 부자재가 곧 완제품이다.
+    assert is_accessory_name("휴대용 화장품 공병 세트", keyword="화장품공병") is False
 
     print("ok")
 

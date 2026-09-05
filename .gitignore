@@ -29,3 +29,4 @@ data/product_price_cache.json
 data/claims.json
 data/settlements.json
 data/purchase_queue.json
+data/backup/

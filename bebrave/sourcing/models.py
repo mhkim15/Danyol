@@ -3,6 +3,21 @@ from datetime import date
 from typing import Optional
 
 
+def registration_block_reason(supply_matched: Optional[bool], human_confirmed: bool) -> str:
+    """등록 버튼을 막을지 판정 — 빈 문자열이면 등록 가능.
+
+    오매칭 대응은 자동 차단(supply_matched)과 사람 확인(human_confirmed)을
+    둘 다 요구한다(2026-09 확정 방침) — 어느 한쪽만 통과해선 안 된다. 사람이
+    확인했어도 자동판정이 여전히 불일치를 의심하면 막고, 자동판정이 맞다고
+    나와도 사람이 실물을 안 봤으면 막는다.
+    """
+    if not human_confirmed:
+        return "실물확인 미완료 — 미리보기에서 '실물확인 완료'를 눌러야 등록할 수 있습니다"
+    if supply_matched is False:
+        return "상품타입 불일치 의심 — 자동판정이 오매칭을 의심하고 있어 등록할 수 없습니다"
+    return ""
+
+
 @dataclass
 class ProductCandidate:
     keyword: str
@@ -64,6 +79,10 @@ class ProductCandidate:
             "track": self.track,
             "recommendation": self.recommendation,
         }
+
+    @property
+    def block_reason(self) -> str:
+        return registration_block_reason(self.supply_matched, self.human_confirmed)
 
     @classmethod
     def from_dict(cls, data: dict) -> "ProductCandidate":

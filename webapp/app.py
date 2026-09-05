@@ -795,9 +795,25 @@ def candidates_preview():
 @app.route("/candidates/register", methods=["POST"])
 def register_candidate():
     keyword = request.form.get("keyword", "")
+    track = request.form.get("track", "")
     goods_no = request.form.get("goods_no", "")
     name_override = request.form.get("name_override", "").strip()
     live = request.form.get("live") == "on"
+
+    # 오매칭 차단 — 실물 미확인이거나 자동판정이 불일치를 의심하면 등록 버튼을 눌러도
+    # 막는다(2026-09 확정 방침: 자동 차단 + 사람 확인 둘 다). 후보 식별은 (keyword, track)
+    # 조합 — supply_goods_no는 미조회 후보에서 빈 문자열이라 식별자로 못 쓴다.
+    from bebrave.sourcing.models import registration_block_reason
+    items = _load_json(SOURCING_LOG)
+    cand = next((c for c in items if c.get("keyword") == keyword and c.get("track", "") == track), None)
+    block_reason = (
+        registration_block_reason(cand.get("supply_matched"), cand.get("human_confirmed", False))
+        if cand is not None
+        else "후보 정보를 찾을 수 없어 실물확인 여부를 확인할 수 없습니다"
+    )
+    if block_reason:
+        flash(block_reason, "error")
+        return redirect(url_for("candidates_preview", keyword=keyword, track=track, goods_no=goods_no))
 
     # 태그 5칸 + 판매가 — 미리보기에서 본 값을 그대로 등록에 반영한다. 예전엔 미리보기가
     # 보여준 태그·판매가가 폼에 실리지 않고 등록 시점에 다시 계산돼, 확인한 값과 실제
@@ -952,10 +968,16 @@ def register_candidates_bulk():
     by_pair = {(c.get("keyword", ""), c.get("track", "")): c for c in items}
 
     from bebrave.smartstore.pipeline import run as pipeline_run
+    from bebrave.sourcing.models import registration_block_reason
 
     succeeded, skipped = [], []
     for kw, tr in pairs:
         cand = by_pair.get((kw, tr), {})
+        # 오매칭 차단 — register_candidate()와 같은 게이트(2026-09).
+        block_reason = registration_block_reason(cand.get("supply_matched"), cand.get("human_confirmed", False))
+        if block_reason:
+            skipped.append((kw, block_reason))
+            continue
         goods_no = cand.get("supply_goods_no", "")
         buf = io.StringIO()
         try:

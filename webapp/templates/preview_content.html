@@ -320,6 +320,7 @@ function showNameTab(which) {
   <form method="post" action="{{ url_for('register_candidate') }}" id="register-form"
         onsubmit="return confirm('실제로 스마트스토어에 등록합니다(판매중지 상태). 계속할까요?');">
     <input type="hidden" name="keyword" value="{{ keyword }}">
+    <input type="hidden" name="track" value="{{ track }}">
     <input type="hidden" name="goods_no" value="{{ goods_no }}">
     <input type="hidden" name="live" value="on">
     {% if category_error %}

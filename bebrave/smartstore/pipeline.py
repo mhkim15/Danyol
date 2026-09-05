@@ -138,7 +138,15 @@ def run(
         # 트랙B(리메이크)는 점수만으로 걸러지지 않는다 — "리메이크 권장"이 상세페이지를
         # 새로 만들어야 이길 여지가 있다는 뜻인데, 자동등록은 공급사 원본을 그대로 쓰므로
         # 트랙B를 자동등록하면 리메이크 없이 원본 그대로 나간다(2026-09 발견). 트랙A만 대상.
-        recommended = [c for c in candidates if c.score >= 55 and c.track == "A"]
+        eligible = [c for c in candidates if c.score >= 55 and c.track == "A"]
+        # 오매칭 차단 — 실물 미확인이거나 자동판정이 불일치를 의심하면 자동등록에서도
+        # 제외한다. webapp의 등록 경로(register_candidate/register_candidates_bulk)와
+        # 같은 게이트를 여기도 태운다(2026-09).
+        from ..sourcing.models import registration_block_reason
+        recommended = [c for c in eligible if not registration_block_reason(c.supply_matched, c.human_confirmed)]
+        blocked_count = len(eligible) - len(recommended)
+        if blocked_count:
+            print(f"  → {blocked_count}개는 실물확인 미완료/오매칭 의심으로 제외")
         if not recommended:
             print("  진입 권장(트랙A, 55점 이상) 상품 없음")
             return []

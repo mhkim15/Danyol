@@ -213,6 +213,15 @@ def _score(
     )
 
 
+def _cap_uncertain_recommendation(recommendation: str, supply_match_uncertain: bool, supply_price: int) -> str:
+    """형태 일치를 확인 못 한 후보(도매매 매칭 불확실 또는 도매가 자체가 없음)는
+    등급을 "보류"로 하드 캡한다 — 점수는 건드리지 않아 순위 정보는 보존하고
+    되돌리기 쉽다. 이미 "제외"인 건 격상시키지 않는다."""
+    if recommendation != "제외" and (supply_match_uncertain or not supply_price):
+        return "보류"
+    return recommendation
+
+
 def _recommendation(score: int, tier: str, track: str = "A") -> str:
     if track == "B":
         if score >= 60:
@@ -563,6 +572,9 @@ def discover(
             r.recommendation = _recommendation(r.score, r.supply_tier, track=track)
             if r.supply_price and r.margin_rate and not r.margin_passes:
                 r.recommendation = "제외"
+            r.recommendation = _cap_uncertain_recommendation(
+                r.recommendation, r.supply_match_uncertain, r.supply_price
+            )
 
         results.sort(key=lambda r: r.score, reverse=True)
         if min_score > 0:

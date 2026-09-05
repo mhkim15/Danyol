@@ -19,6 +19,8 @@ try:
 except ImportError:
     _HAS_REQUESTS = False
 
+from ..config import BLOCKED_ACCESSORY_KEYWORDS
+
 _BASE = "https://domeggook.com/ssl/api/"
 
 
@@ -148,6 +150,20 @@ def _form_signals(tokens: set) -> set:
     return {form for form in _FORM_WORDS if any(form in t for t in tokens)}
 
 
+def is_accessory_name(name: str, keyword: str = "") -> bool:
+    """이름이 부자재(공병·소분·리필 등)로 의심되는지 — 완제품 수요 키워드에
+    빈 용기·부속품이 최저가라서 잘못 매칭되는 사고를 막는다(2026-09 실증:
+    "손톱영양제" 검색에 큐티클오일 공병이 진입 권장 최상위로 뽑혔음).
+
+    판정은 토큰화가 아니라 원문 부분일치다 — "리필"은 _GENERIC_STOPWORDS에
+    있어 토큰 경로로는 안 걸린다. 키워드 자체에 같은 단어가 있으면(키워드
+    자체가 "화장품공병"인 경우처럼) 통과시킨다 — 그럴 땐 부자재가 곧 완제품.
+    """
+    name_flat = (name or "").replace(" ", "")
+    keyword_flat = (keyword or "").replace(" ", "")
+    return any(w in name_flat and w not in keyword_flat for w in BLOCKED_ACCESSORY_KEYWORDS)
+
+
 def _matched_candidates(
     naver_titles: List[str],
     products: List["DomemaeProduct"],
@@ -178,8 +194,26 @@ def _matched_candidates(
             return True
         return False
 
-    matched = [p for p in products if _is_match(p)]
-    return sorted(matched, key=lambda p: p.supply_price)
+    def _fitness(p: "DomemaeProduct") -> int:
+        """최저가 대신 쓰는 적합도 점수 — 키워드 통째 포함(+4) + 토큰 교집합(×2) +
+        형태 단어 겹침(+1×개수). 최저가만 보고 골랐던 게 부자재 오매칭의 근본
+        원인이었다(2026-09) — 가격은 동점일 때만 tiebreak로 쓴다."""
+        p_tokens = _tokenize(p.name)
+        score = 0
+        if not _is_craft_keyword and len(keyword_text) >= 2 and keyword_text in p.name.replace(" ", ""):
+            score += 4
+        score += 2 * len(naver_tokens & p_tokens)
+        score += len(naver_forms & _form_signals(p_tokens))
+        return score
+
+    # 부자재(공병·소분·리필 등)는 완제품보다 항상 싸서 최저가 기준으로는
+    # 안 걸러진다 — 후보 선별 단계에서 아예 제외한다(키워드 자체가 부자재
+    # 명칭이면 통과, is_accessory_name 참고).
+    matched = [
+        p for p in products
+        if _is_match(p) and not is_accessory_name(p.name, keyword_text)
+    ]
+    return sorted(matched, key=lambda p: (-_fitness(p), len(p.name), p.supply_price))
 
 
 def find_matching_product(

@@ -28,6 +28,7 @@ from .auth import get_access_token
 from .category import get_category_id
 from .content import generate_product_content
 from .models import StoreProduct
+from .notice import CS_PHONE_NUMBER, DUMMY_CS_PHONE_NUMBER
 from .register import build_request_body, register_product
 
 _TARGET_MARGIN = float(os.environ.get("TARGET_MARGIN", "0.20"))
@@ -224,6 +225,14 @@ def run(
                 f"  [건너뜀] 원산지 '{domemae_p.origin_country or '(미표기)'}' — "
                 "네이버 원산지 코드표에서 찾지 못함, 잘못된 원산지 표시를 막기 위해 등록 금지"
             )
+            continue
+
+        # A/S 연락처 — register.py의 build_request_body()가 이 값이 더미면 등록을 막지만,
+        # 그 체크는 이미지 업로드(Step 3.5) 뒤에 걸려 있어 시도할 때마다 네이버 서버에
+        # 못 쓰는 이미지만 쌓이고 있었다. 원산지 게이트와 같은 자리(이미지 업로드 전)로
+        # 옮겨서 같은 실패를 업로드 전에 잡는다(2026-09).
+        if CS_PHONE_NUMBER == DUMMY_CS_PHONE_NUMBER:
+            print("  [건너뜀] A/S 연락처 미설정 — .env의 CS_PHONE_NUMBER를 실제 번호로 채워야 등록 가능")
             continue
 
         # 리스팅 품질 체크 — 사진 1장뿐이거나 설명이 짧으면 최저가만 보고 고른

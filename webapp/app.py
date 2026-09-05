@@ -1443,10 +1443,11 @@ def _annotate_orders(items: list) -> None:
 def orders():
     """탭 5개: 처리할 주문(ready) | 발송 대기(ordered) | 발주 실패(failed) |
     수동 발주(hold+직접입력) | 완료 이력(dispatched).
-    큐 조회는 방문마다 최근 72시간 주문을 실시간 대조한다
-    (구 발주 대기열 그대로 — 실제 발주가 걸린 화면이라 캐시로 늦추지 않음)."""
+    큐 조회는 방문마다 최근 주문을 실시간 대조한다(구 발주 대기열 그대로 — 실제
+    발주가 걸린 화면이라 캐시로 늦추지 않음). refresh_queue()가 취소 주문 강등까지
+    같이 처리한다 — main.py purchase queue(주기 실행)와 같은 함수를 쓴다."""
     from bebrave.smartstore.purchase_queue import (
-        build_queue, load_queue, STATUS_READY, STATUS_HOLD, STATUS_ORDERED,
+        load_queue, STATUS_READY, STATUS_HOLD, STATUS_ORDERED,
         STATUS_FAILED, STATUS_DISPATCHED,
     )
 
@@ -1457,10 +1458,8 @@ def orders():
     error = None
     try:
         from bebrave.smartstore.auth import get_access_token
-        from bebrave.smartstore.orders import fetch_new_orders
-        token = get_access_token()
-        new_orders = fetch_new_orders(token, hours=24 * 3)
-        items = build_queue(new_orders)
+        from bebrave.smartstore.purchase_queue import refresh_queue
+        items = refresh_queue(get_access_token())
     except Exception as e:
         error = str(e)
         items = load_queue()
@@ -2421,6 +2420,32 @@ def purchase_bulk_place():
               f"실제로 넣으려면 '확인함' 체크 후 다시 실행하세요.", "success")
         return redirect(url_for("orders", tab="ready"))
 
+    # 취소 주문 방어 — 큐에 담긴 뒤 주문이 취소됐을 수 있다. 발주 직전에 네이버
+    # 실제 주문 상태를 다시 조회해, 그새 취소/반품/교환 클레임이 걸린 건은 여기서
+    # 걸러낸다(2026-09 발견: 도매처로 돈이 나가고 물건이 배송되는 사고). 재확인
+    # 자체가 실패하면 이머니 잔액 확인과 같은 방침으로 전체 발주를 중단한다 —
+    # 확인 안 된 채로 강행하는 게 더 위험하다.
+    try:
+        from bebrave.smartstore.auth import get_access_token
+        from bebrave.smartstore.orders import fetch_order_detail
+        live_by_id = {
+            o.product_order_id: o
+            for o in fetch_order_detail([i["product_order_id"] for i in targets], get_access_token())
+        }
+    except Exception as e:
+        flash(f"주문 상태 재확인 실패 — 안전을 위해 일괄 발주 중단: {e}", "error")
+        return redirect(url_for("orders", tab="ready"))
+
+    cancelled = [i for i in targets if live_by_id.get(i["product_order_id"]) and live_by_id[i["product_order_id"]].claim_type]
+    if cancelled:
+        from bebrave.smartstore.purchase_queue import mark_failed as _mark_cancelled
+        for i in cancelled:
+            _mark_cancelled(i["product_order_id"], "발주 직전 재확인 — 주문이 취소/반품/교환 요청됨, 발주 취소")
+        targets = [i for i in targets if i not in cancelled]
+    if not targets:
+        flash(f"선택된 {len(cancelled)}건 전부 발주 직전 재확인에서 취소 상태로 확인돼 중단했습니다.", "error")
+        return redirect(url_for("orders", tab="ready"))
+
     try:
         session_data = login()
     except Exception as e:
@@ -2467,6 +2492,8 @@ def purchase_bulk_place():
             failed.append(f"{i['product_name'][:16]}({e})")
 
     msg = f"일괄 발주 완료 — 성공 {ok}건"
+    if cancelled:
+        msg += f", 취소 재확인으로 제외 {len(cancelled)}건"
     if failed:
         msg += f", 실패 {len(failed)}건: " + "; ".join(failed[:3]) + (" 외" if len(failed) > 3 else "")
         _notify(f"[비브레이브] 일괄발주 실패 {len(failed)}건\n" + "\n".join(f"- {f}" for f in failed[:5]))
@@ -2534,6 +2561,19 @@ def purchase_place():
             flash("[dry-run] 아래 내용으로 발주 요청이 구성됩니다 (실제 결제 안 함) — 실제 발주는 체크박스를 켜고 눌러야 함", "success")
             place_order([item], delivery, sId="", dry_run=True)
             return redirect(url_for("orders", tab=return_tab))
+
+        # 취소 주문 방어 — 큐/이력에서 넘어온 건(product_order_id 있음)만 재확인 가능하다.
+        # 수동 발주 탭에서 직접 입력한 건(네이버 주문과 무관)은 재확인 대상이 없다.
+        if product_order_id:
+            from bebrave.smartstore.auth import get_access_token
+            from bebrave.smartstore.orders import fetch_order_detail
+            live_orders = fetch_order_detail([product_order_id], get_access_token())
+            live_order = live_orders[0] if live_orders else None
+            if live_order and live_order.claim_type:
+                from bebrave.smartstore.purchase_queue import mark_failed as _mark_cancelled
+                _mark_cancelled(product_order_id, "발주 직전 재확인 — 주문이 취소/반품/교환 요청됨, 발주 취소")
+                flash("발주 취소 — 재확인 결과 이 주문은 취소/반품/교환 요청된 상태입니다.", "error")
+                return redirect(url_for("orders", tab=return_tab))
 
         session_data = login()
         result = place_order([item], delivery, sId=session_data["sId"], dry_run=False)

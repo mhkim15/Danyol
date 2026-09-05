@@ -39,12 +39,15 @@ def demo() -> None:
     r = _with_detail(lambda: sync.check_product(rec), stock=0)
     assert r.action == sync.ACTION_SUSPEND, r
 
-    # 도매매 조회 실패(상품 내려감) → 판매중지
+    # 도매매 조회 실패 → "확인실패"(판매중지 아님) — 조회 안 된 것과 상품이 실제로
+    # 내려간 것은 다르다. API 키 미설정 등으로 조회 실패를 판매중지로 판정하면 연동이
+    # 끊긴 순간 일괄 반영 한 번에 멀쩡한 상품이 전부 내려간다(sync.py 주석 참고,
+    # 이 파일은 옛 의도된 동작을 그대로 두고 있던 낡은 테스트였다 — 2026-09 정정).
     real = sync.fetch_product_detail
     sync.fetch_product_detail = lambda n: (_ for _ in ()).throw(ValueError("없음"))
     try:
         r = sync.check_product(rec)
-        assert r.action == sync.ACTION_SUSPEND, r
+        assert r.action == sync.ACTION_ERROR, r
     finally:
         sync.fetch_product_detail = real
 
@@ -57,15 +60,24 @@ def demo() -> None:
     r = _with_detail(lambda: sync.check_product(rec), stock=5000)
     assert r.action == sync.ACTION_OK, r
 
-    # 도매가가 크게 올라 최소 마진을 깨면 경고 (자동으로 판매가를 올리지는 않음)
-    r = _with_detail(lambda: sync.check_product(rec), stock=100, supply_price=6000)
+    # 도매가가 크게 올라 최소 마진을 깨면 경고 (자동으로 판매가를 올리지는 않음).
+    # 재고는 등록값(999) 이상으로 둬서 재고조정과 안 겹치게 격리한다 — 재고조정이
+    # 더 급한 조치라 함께 걸리면 그쪽이 우선 반환된다(check_product 참고).
+    r = _with_detail(lambda: sync.check_product(rec), stock=5000, supply_price=6000)
     assert r.action == sync.ACTION_MARGIN_WARN, r
     assert "6,000" in r.detail
 
     # 도매가가 올랐어도 마진이 버티면 이상 없음으로 두되 변동은 알려준다
-    r = _with_detail(lambda: sync.check_product(rec), stock=100, supply_price=1200)
+    r = _with_detail(lambda: sync.check_product(rec), stock=5000, supply_price=1200)
     assert r.action == sync.ACTION_OK, r
     assert "→" in r.detail
+
+    # 도매가가 움직이고 마진도 살아있는데 재고까지 부족하면 — 재고조정이 우선돼야
+    # 한다. 예전 버그는 여기서 마진 판정으로 바로 반환해 재고 비교를 건너뛰었다
+    # (2026-09 발견·수정).
+    r = _with_detail(lambda: sync.check_product(rec), stock=12, supply_price=1200)
+    assert r.action == sync.ACTION_STOCK and r.new_stock == 12, \
+        f"도매가 변동 중에도 재고조정이 우선돼야 함: {r}"
 
     # 도매매 상품번호가 없으면 대조 불가
     r = sync.check_product({**rec, "domemae_goods_no": ""})

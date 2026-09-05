@@ -33,12 +33,22 @@ class HealthIssue:
 
 
 def _dispatch_delay_issues() -> List[HealthIssue]:
-    from ..smartstore.purchase_queue import load_queue, STATUS_ORDERED
+    # 발주 완료(ordered, 송장 미확보)만 세고 있었다 — 매칭 실패로 보류(hold)됐거나
+    # 발주 대기(ready)에서 방치된 건이 더 위험한데도 "지연 0건"으로 표시됐다
+    # (2026-09 발견). ordered_at은 결제 시각이라 세 상태 전부 같은 기준으로 잰다.
+    from ..smartstore.purchase_queue import load_queue, STATUS_ORDERED, STATUS_READY, STATUS_HOLD
+
+    _LABELS = {
+        STATUS_ORDERED: "결제 후 {h:.0f}시간째 미발송(발주는 완료, 송장 미확보)",
+        STATUS_READY: "결제 후 {h:.0f}시간째 발주도 안 됨(발주 대기 방치)",
+        STATUS_HOLD: "결제 후 {h:.0f}시간째 발주도 안 됨(보류 상태 — 확인 필요)",
+    }
+    _TABS = {STATUS_ORDERED: "dispatch", STATUS_READY: "ready", STATUS_HOLD: "manual"}
 
     issues = []
     now = datetime.now()
     for i in load_queue():
-        if i["status"] != STATUS_ORDERED:
+        if i["status"] not in _LABELS:
             continue
         try:
             ordered_at = datetime.fromisoformat(i.get("ordered_at", ""))
@@ -48,8 +58,9 @@ def _dispatch_delay_issues() -> List[HealthIssue]:
         if hours >= DISPATCH_DELAY_HOURS:
             issues.append(HealthIssue(
                 SEVERITY_URGENT, "발송지연",
-                f"{i['product_name'][:24]} — 결제 후 {hours:.0f}시간째 미발송",
-                f"주문 {i['product_order_id']}", link="/orders?tab=dispatch",
+                f"{i['product_name'][:24]} — {_LABELS[i['status']].format(h=hours)}",
+                f"주문 {i['product_order_id']}",
+                link=f"/orders?tab={_TABS[i['status']]}",
             ))
     return issues
 
@@ -175,11 +186,22 @@ def _demo() -> None:
             {"product_order_id": "PO-1", "product_name": "지연상품", "status": pq.STATUS_ORDERED, "ordered_at": old_iso},
             {"product_order_id": "PO-2", "product_name": "정상상품", "status": pq.STATUS_ORDERED,
              "ordered_at": datetime.now().isoformat()},
+            # 발주 대기·보류로 방치된 건이 예전엔 "지연 0건"으로 표시됐다(2026-09
+            # 발견) — 매칭 실패로 묶여 있는 게 가장 위험한 케이스인데도 안 잡혔다.
+            {"product_order_id": "PO-3", "product_name": "발주대기방치상품", "status": pq.STATUS_READY, "ordered_at": old_iso},
+            {"product_order_id": "PO-4", "product_name": "보류방치상품", "status": pq.STATUS_HOLD, "ordered_at": old_iso},
         ]), encoding="utf-8")
         with patch.object(pq, "QUEUE_PATH", path):
             issues = _dispatch_delay_issues()
-            assert len(issues) == 1 and "지연상품" in issues[0].message, "30시간 지연건을 못 잡음"
-            assert issues[0].link == "/orders?tab=dispatch", "발송지연 딥링크 누락"
+            assert len(issues) == 3, f"발주완료/대기/보류 지연건을 다 못 잡음: {issues}"
+            messages = {i.message for i in issues}
+            assert any("지연상품" in m for m in messages)
+            assert any("발주대기방치상품" in m for m in messages), "발주 대기 방치가 발송지연에 안 잡힘"
+            assert any("보류방치상품" in m for m in messages), "보류 방치가 발송지연에 안 잡힘"
+            by_id = {i.detail: i for i in issues}
+            assert by_id["주문 PO-1"].link == "/orders?tab=dispatch"
+            assert by_id["주문 PO-3"].link == "/orders?tab=ready"
+            assert by_id["주문 PO-4"].link == "/orders?tab=manual"
 
     with tempfile.TemporaryDirectory() as tmp:
         cache_path = Path(tmp) / "product_sync_cache.json"

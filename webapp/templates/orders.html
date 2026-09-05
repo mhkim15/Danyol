@@ -371,7 +371,9 @@ function updateReadyBar() {
   btn.textContent = '일괄 발주 (' + boxes.length + ')';
   btn.disabled = {{ 'true' if demo else 'false' }} || boxes.length === 0 || short;
   btn.onclick = function () {
-    return confirm(boxes.length + '건을 일괄 발주합니다 — 필요 ' + needed.toLocaleString() + '원. 진행할까요?');
+    var ok = confirm(boxes.length + '건을 일괄 발주합니다 — 필요 ' + needed.toLocaleString() + '원. 진행할까요?');
+    if (ok) btn.disabled = true;  // 중복 제출 방지 — 페이지 전환 전 재클릭으로 실제 돈이 두 번 나가는 것을 막는다(2026-09)
+    return ok;
   };
 }
 

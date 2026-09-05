@@ -175,6 +175,79 @@ def build_queue(orders: list, refresh_hold: bool = True) -> list:
     return items
 
 
+def demote_cancelled(cancelled_order_ids: set) -> list:
+    """취소/반품/교환 클레임이 걸린 주문의 발주 대기(ready) 항목을 보류로 강등한다.
+
+    지금까지 큐 빌드는 새로 결제완료(PAYED)된 주문만 봐서, 이미 큐에 들어온 뒤
+    취소된 주문은 아무도 다시 안 봐서 그대로 ready로 남아 있었다 — 발주 직전
+    재확인(purchase_place/purchase_bulk_place)이 마지막 방어선이지만, 큐를 만드는
+    시점에 미리 걸러두면 사람이 발주 버튼을 누르기도 전에 문제를 볼 수 있다.
+    이미 발주/발송된 건(ordered/dispatched)은 건드리지 않는다 — 그건 환불/반품
+    회수 같은 별도 CS 처리 대상이라 큐 상태를 함부로 못 바꾼다."""
+    if not cancelled_order_ids:
+        return load_queue()
+    items = load_queue()
+    changed = False
+    for i in items:
+        if i["product_order_id"] in cancelled_order_ids and i["status"] in (STATUS_READY, STATUS_HOLD):
+            if i["status"] != STATUS_HOLD or i.get("hold_reason") != "주문이 취소됨 — 발주 대상에서 제외 (직접 확인 필요)":
+                i["status"] = STATUS_HOLD
+                i["hold_reason"] = "주문이 취소됨 — 발주 대상에서 제외 (직접 확인 필요)"
+                i["updated_at"] = date.today().isoformat()
+                changed = True
+    if changed:
+        _save_queue(items)
+    return items
+
+
+def refresh_queue(access_token: str, hours: Optional[int] = None) -> list:
+    """새 결제완료 주문을 큐에 반영 + 그 사이 취소된 주문을 보류로 강등 — webapp의
+    /orders 라우트와 CLI(main.py purchase queue, 주기 실행용)가 같은 로직을
+    쓰도록 한 곳에 모았다. 지금까지 이 조합은 웹 라우트 안에만 있어서 사람이
+    화면을 열어야만 큐가 갱신됐다(2026-09, 주기 실행 스케줄러 부재 문제)."""
+    from ..config import ORDER_QUEUE_WINDOW_HOURS
+    from .orders import fetch_new_orders
+
+    window = hours or ORDER_QUEUE_WINDOW_HOURS
+    new_orders = fetch_new_orders(access_token, hours=window)
+    build_queue(new_orders)
+    claims = fetch_new_orders(access_token, hours=window, status_type="CLAIM_REQUESTED")
+    cancelled_ids = {c.product_order_id for c in claims if c.claim_type == "CANCEL"}
+    return demote_cancelled(cancelled_ids)
+
+
+def sync_all_tracking(access_token: str) -> list:
+    """발주 완료(ordered)건 전체의 도매매 송장을 확인해, 확보되면 스마트스토어
+    발송처리까지 실행한다 — webapp의 /purchase/sync_tracking(건별 수동 확인
+    버튼)과 같은 일을 전체 건에 자동으로 돈다(주기 실행용, main.py
+    purchase sync-tracking). 도매매 로그인은 배치당 한 번만 한다."""
+    from ..sourcing.domemae_order import login, fetch_order_tracking
+    from .orders import dispatch_order
+
+    ordered = [i for i in load_queue() if i["status"] == STATUS_ORDERED and i.get("domemae_order_no")]
+    results = []
+    if not ordered:
+        return results
+
+    session_data = login()
+    for i in ordered:
+        try:
+            tracking = fetch_order_tracking(i["domemae_order_no"], sId=session_data["sId"])
+            if not tracking.get("tracking_number"):
+                results.append({"product_order_id": i["product_order_id"], "status": "대기", "detail": "도매매 송장 미등록"})
+                continue
+            dispatch_order(i["product_order_id"], tracking["tracking_number"],
+                            tracking.get("company_name", ""), access_token)
+            mark_dispatched(i["product_order_id"], tracking["tracking_number"], tracking.get("company_name", ""))
+            results.append({
+                "product_order_id": i["product_order_id"], "status": "완료",
+                "detail": f"{tracking.get('company_name','')} {tracking['tracking_number']}",
+            })
+        except Exception as e:
+            results.append({"product_order_id": i["product_order_id"], "status": "실패", "detail": str(e)})
+    return results
+
+
 def mark_ordered(product_order_id: str, order_no: str = "", spent_amount: Optional[int] = None) -> None:
     """spent_amount: 실제 지출 추정액(등록 시점 도매가 × 수량). 매칭 안 된 수동발주는
     None(미상) — "나간 돈" 타임라인에서 0으로 잘못 합산되지 않도록 sales.py의
@@ -285,6 +358,19 @@ def _demo() -> None:
         assert item["delivery_memo"] == "부재시 경비실에 맡겨주세요", "배송요청사항이 큐에서 사라짐"
         assert item["orderer_name"] == "주문자" and item["orderer_tel"] == "010-0000-1111", \
             "주문자 정보가 큐에서 사라짐"
+
+    # 취소 주문 방어 — 발주 대기(ready) 항목이 취소되면 보류로 강등돼야 한다.
+    # 이미 발주된(ordered) 건은 그대로 둔다 — 환불/반품 회수는 별도 CS 처리 대상.
+    with tempfile.TemporaryDirectory() as tmp3, _patch(f"{__name__}.QUEUE_PATH", _Path(tmp3) / "q.json"):
+        _save_queue([
+            {"product_order_id": "po_c1", "status": STATUS_READY, "hold_reason": ""},
+            {"product_order_id": "po_c2", "status": STATUS_ORDERED, "hold_reason": ""},
+        ])
+        demote_cancelled({"po_c1", "po_c2"})
+        by_id = {i["product_order_id"]: i for i in load_queue()}
+        assert by_id["po_c1"]["status"] == STATUS_HOLD and "취소" in by_id["po_c1"]["hold_reason"], \
+            "취소된 발주대기 건이 보류로 안 내려감"
+        assert by_id["po_c2"]["status"] == STATUS_ORDERED, "이미 발주된 건을 건드림 — CS 처리 대상은 그대로 둬야 함"
 
     # 발송처리 마감 — 상태가 dispatched로 넘어가고 택배사가 화면이 읽는 이름으로 저장되는지.
     # (예전엔 저장은 delivery_company인데 화면은 company를 읽어 택배사가 항상 빈칸이었다)

@@ -527,6 +527,29 @@ def cmd_notify(args: argparse.Namespace) -> None:
 
 def cmd_purchase(args: argparse.Namespace) -> None:
     _load_env()
+
+    # queue/sync-tracking은 웹 라우트에만 있던 로직을 재사용하는 얇은 CLI 진입점 —
+    # 주기 실행(crontab)에 걸어 사장이 화면을 안 열어도 큐가 갱신되게 하는 용도(2026-09).
+    if args.purchase_cmd == "queue":
+        from bebrave.smartstore.auth import get_access_token
+        from bebrave.smartstore.purchase_queue import refresh_queue, STATUS_READY, STATUS_HOLD
+        items = refresh_queue(get_access_token())
+        ready = sum(1 for i in items if i["status"] == STATUS_READY)
+        hold = sum(1 for i in items if i["status"] == STATUS_HOLD)
+        print(f"큐 갱신 완료 — 발주 대기 {ready}건, 보류 {hold}건 (전체 {len(items)}건)")
+        return
+
+    if args.purchase_cmd == "sync-tracking":
+        from bebrave.smartstore.auth import get_access_token
+        from bebrave.smartstore.purchase_queue import sync_all_tracking
+        results = sync_all_tracking(get_access_token())
+        if not results:
+            print("발송처리 대기 중인 발주 완료 건이 없습니다.")
+            return
+        for r in results:
+            print(f"  [{r['status']}] 주문 {r['product_order_id']} — {r['detail']}")
+        return
+
     from bebrave.sourcing.domemae_order import login, place_order, OrderItem, DeliveryInfo
 
     if args.purchase_cmd == "place":
@@ -559,6 +582,8 @@ def cmd_purchase(args: argparse.Namespace) -> None:
 
     else:
         print("사용법: purchase place --goods-no --qty --receiver-name --phone --zipcode --address1 [--live]")
+        print("       purchase queue  (신규 주문 큐 반영 + 취소 주문 강등)")
+        print("       purchase sync-tracking  (발주완료건 송장 확인→발송처리)")
 
 
 def cmd_margin(args: argparse.Namespace) -> None:
@@ -756,6 +781,9 @@ def main() -> None:
     place_p.add_argument("--address2", default="")
     place_p.add_argument("--shop-name", required=True, help="쇼핑몰명/상호명 (도매꾹 상표 노출 방지용, 필수)")
     place_p.add_argument("--live", action="store_true", help="실제로 발주 실행 (기본은 dry-run)")
+
+    purchase_sub.add_parser("queue", help="신규 결제완료 주문을 발주 큐에 반영 + 취소된 주문 강등 (주기 실행용)")
+    purchase_sub.add_parser("sync-tracking", help="발주완료 건의 도매매 송장 확인 → 스마트스토어 발송처리 (주기 실행용)")
 
     # ── margin ────────────────────────────────────────────
     margin_parser = subparsers.add_parser("margin", help="마진 계산 (2026 수수료 기준)")

@@ -98,9 +98,23 @@ def check_product(record: dict) -> SyncResult:
     if p.stock <= 0:
         return SyncResult(pid, name, ACTION_SUSPEND, "도매매 품절 — 판매중지", **stock_info)
 
-    # 도매가 변동 → 현재 판매가 기준으로 마진 재계산
+    # 재고 비교는 도매가 변동 여부와 무관하게 항상 실행한다 — 예전엔 도매가가 1원이라도
+    # 움직였고 마진이 살아있으면 아래 블록에서 바로 반환해 이 비교를 건너뛰었다. 게다가
+    # 등록 시점 도매가(record["supply_price"])가 이후 갱신되지 않아서, 한 번 도매가가
+    # 바뀐 상품은 그 뒤로 영구히 재고 검사를 건너뛰는 사고였다(2026-09 발견 — 품절 상품이
+    # 계속 판매돼 품절취소 페널티로 이어짐). sync_all()이 매 회차 record["supply_price"]를
+    # 최신값으로 갱신해 이 재발을 막는다.
+    registered_stock = int(record.get("stock_quantity", 0) or 0)
+    stock_result = None
+    if p.stock < registered_stock:
+        stock_result = SyncResult(pid, name, ACTION_STOCK,
+                                   f"재고 {registered_stock:,}→{p.stock:,}개로 조정",
+                                   new_stock=p.stock, **stock_info)
+
+    # 도매가 변동 → 현재 판매가 기준으로 마진 재계산 (재고 조치와 별개로 판단)
     sale_price = int(record.get("sale_price", 0) or 0)
     old_cost = int(record.get("supply_price", 0) or 0)
+    price_result = None
     if sale_price and p.supply_price and p.supply_price != old_cost:
         m = calculate(sale_price=sale_price, cost_price=p.supply_price,
                       free_shipping=(sale_price >= FREE_SHIPPING_THRESHOLD))
@@ -108,24 +122,24 @@ def check_product(record: dict) -> SyncResult:
         if not m.passes_min:
             # 판매가를 자동으로 올리지는 않는다(노출 순위·구매전환에 영향) — 참고용 권장가만 계산해 보여준다.
             suggested = estimate_sale_price(p.supply_price)
-            return SyncResult(
+            price_result = SyncResult(
                 pid, name, ACTION_MARGIN_WARN,
                 f"도매가 {old_cost:,}→{p.supply_price:,}원({moved:+,}) "
                 f"마진 {m.margin_rate:.1%} < 최소 {MIN_MARGIN:.0%} — 현재가 {sale_price:,}원, 목표마진 회복가 {suggested:,}원 참고",
                 suggested_price=suggested, **stock_info,
             )
-        return SyncResult(
-            pid, name, ACTION_OK,
-            f"도매가 {old_cost:,}→{p.supply_price:,}원({moved:+,}) 마진 {m.margin_rate:.1%} 유지",
-            **stock_info,
-        )
+        else:
+            price_result = SyncResult(
+                pid, name, ACTION_OK,
+                f"도매가 {old_cost:,}→{p.supply_price:,}원({moved:+,}) 마진 {m.margin_rate:.1%} 유지",
+                **stock_info,
+            )
 
-    registered_stock = int(record.get("stock_quantity", 0) or 0)
-    if p.stock < registered_stock:
-        return SyncResult(pid, name, ACTION_STOCK,
-                          f"재고 {registered_stock:,}→{p.stock:,}개로 조정",
-                          new_stock=p.stock, **stock_info)
-
+    # 재고조정이 마진경고/이상없음보다 급한 조치이므로 우선 반환한다.
+    if stock_result:
+        return stock_result
+    if price_result:
+        return price_result
     return SyncResult(pid, name, ACTION_OK, f"도매가 {p.supply_price:,}원 — 이상없음", **stock_info)
 
 
@@ -146,9 +160,15 @@ def apply_result(result: SyncResult, access_token: str) -> None:
 
 def sync_all(access_token: str = "", dry_run: bool = True,
              path: Optional[Path] = None) -> List[SyncResult]:
-    """등록 상품 전체를 도매매와 대조. dry_run이면 판정만 하고 반영하지 않는다."""
+    """등록 상품 전체를 도매매와 대조. dry_run이면 스마트스토어 반영은 안 하지만,
+    로컬 원장의 도매가는 항상 최신화한다 — 안 하면 도매가가 한 번 바뀐 상품은
+    영구히 재고 검사를 건너뛰는 사고가 재발한다(check_product 참고, 2026-09).
+    스마트스토어 자체에는 영향 없는 순수 로컬 장부 정리라 dry_run과 무관하게 한다."""
+    p = path or _REGISTERED_PATH
+    records = _load_registered(p)
     results = []
-    for record in _load_registered(path):
+    changed = False
+    for record in records:
         r = check_product(record)
         if not dry_run and r.action in (ACTION_SUSPEND, ACTION_STOCK):
             try:
@@ -156,7 +176,12 @@ def sync_all(access_token: str = "", dry_run: bool = True,
             except Exception as e:
                 r = SyncResult(r.naver_product_id, r.name, ACTION_ERROR,
                                f"{r.detail} → 반영 실패: {type(e).__name__} {str(e)[:80]}")
+        if r.supply_price and r.supply_price != record.get("supply_price"):
+            record["supply_price"] = r.supply_price
+            changed = True
         results.append(r)
+    if changed:
+        p.write_text(json.dumps(records, ensure_ascii=False, indent=2), encoding="utf-8")
     return results
 
 
@@ -213,6 +238,24 @@ def _demo() -> None:
     with _patch(f"{__name__}.fetch_product_detail", return_value=fake(3, 10_000)):
         r = check_product(record)
         assert r.action == ACTION_STOCK and r.supply_stock == 3, "재고조정 판정/재고 오류"
+
+    # 도매가가 움직였는데 마진이 살아있어도 재고 비교를 건너뛰면 안 된다 — 예전 버그는
+    # 여기서 바로 ACTION_OK를 반환해 재고 3개(=품절 임박)를 놓쳤다(2026-09).
+    with _patch(f"{__name__}.fetch_product_detail", return_value=fake(3, 10_500)):
+        r = check_product(record)
+        assert r.action == ACTION_STOCK and r.new_stock == 3, \
+            f"도매가 변동 중에도 재고조정이 우선돼야 함: {r}"
+
+    # sync_all()은 로컬 원장의 도매가를 최신화해야 한다 — 안 하면 도매가가 한 번
+    # 바뀐 상품은 다음 회차부터도 계속 old_cost와 달라 이 분기를 영구히 타게 된다.
+    import tempfile
+    with tempfile.TemporaryDirectory() as d:
+        path = Path(d) / "registered.json"
+        path.write_text(json.dumps([dict(record)]), encoding="utf-8")
+        with _patch(f"{__name__}.fetch_product_detail", return_value=fake(999, 10_500)):
+            sync_all(dry_run=True, path=path)
+        saved = json.loads(path.read_text(encoding="utf-8"))
+        assert saved[0]["supply_price"] == 10_500, f"로컬 원장 도매가가 최신화 안 됨: {saved}"
 
     print("sync self-check OK")
 

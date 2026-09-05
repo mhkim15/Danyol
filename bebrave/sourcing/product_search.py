@@ -216,6 +216,62 @@ def price_competitiveness(sale_price: int, competitor_prices: List[int]) -> dict
     }
 
 
+# ── 11번가 가격 게이트 (발굴 단계 안전장치) ────────────────────────────────────
+# 가격 결정에는 쓰지 않는다 — 11번가는 우리가 파는 채널이 아니라 대리 지표이고,
+# 표본 자체가 오염될 수 있다(퍼프 검색 20건 중 17건이 "퍼프소매" 의류였던 실측
+# 사례, 2026-09). 오직 "산정가가 시세보다 비정상적으로 높은가"만 거른다.
+PRICE_GATE_RATIO = 1.3       # 산정가 ÷ 중앙값이 이보다 크면 탈락
+PRICE_GATE_MIN_SAMPLE = 5    # 표본이 이보다 적으면 판단 근거 부족 — 살린다
+
+
+def _price_gate(entry_price: float, competitor_prices: Optional[List[int]]) -> dict:
+    """11번가 시세 대비 산정가가 과도하게 높은지 확인하는 순수 함수 — 네트워크 없이
+    테스트 가능. competitor_prices가 None이면 "조회 실패"(fail-open), 표본이
+    PRICE_GATE_MIN_SAMPLE 미만이면 "표본부족"(fail-open)으로 둘 다 통과시킨다 —
+    11번가 키 만료/쿼터 하나로 스캔 전체가 0건이 되는 걸 막기 위함(fail-close의
+    실패는 상관성이 높다: 한 번 막히면 대부분 다 막힌다).
+
+    Returns: {"passes": bool, "reason": str, "sample_size": int}
+    """
+    if competitor_prices is None:
+        return {"passes": True, "reason": "11번가 조회 실패 — 안전하게 통과(가격 게이트 미적용)", "sample_size": 0}
+
+    prices = sorted(p for p in competitor_prices if p > 0)
+    if len(prices) < PRICE_GATE_MIN_SAMPLE:
+        return {"passes": True, "reason": f"11번가 표본 {len(prices)}건 — 판단 근거 부족으로 통과", "sample_size": len(prices)}
+
+    import statistics
+    median = statistics.median(prices)
+    if not median or not entry_price:
+        return {"passes": True, "reason": "산정가 또는 11번가 시세 없음 — 통과", "sample_size": len(prices)}
+
+    ratio = entry_price / median
+    if ratio > PRICE_GATE_RATIO:
+        return {
+            "passes": False,
+            "reason": f"산정가 {entry_price:,.0f}원이 11번가 중앙값 {median:,.0f}원의 {ratio:.1f}배 — 시세 대비 과도하게 높음",
+            "sample_size": len(prices),
+        }
+    return {"passes": True, "reason": "", "sample_size": len(prices)}
+
+
+def fetch_price_gate(entry_price: float, keyword: str, limit: int = 10) -> dict:
+    """11번가 실호출 + 표본 정화(부자재 제외) + _price_gate 판정을 한 번에 묶은
+    호출부용 함수. 호출 자체가 실패/타임아웃이면 fail-open으로 통과시키되 사유를
+    남긴다 — 조용히 지나가지 않게 한다."""
+    from .domemae import is_accessory_name
+
+    try:
+        competitors = fetch_11st_products(keyword, limit=limit)
+        prices = [c.price for c in competitors if not is_accessory_name(c.title, keyword)]
+    except Exception as e:
+        result = _price_gate(entry_price, None)
+        result["reason"] = f"11번가 조회 실패({e}) — 안전하게 통과"
+        return result
+
+    return _price_gate(entry_price, prices)
+
+
 def _demo() -> None:
     """실행 가능한 자체 점검 — price_competitiveness 라벨 판정과 중앙값 기준 전환을 검증
     (네트워크 호출 없음)."""
@@ -234,6 +290,21 @@ def _demo() -> None:
     assert result["min"] == 990 and result["max"] == 170000
 
     print("product_search.price_competitiveness self-check OK")
+
+    # _price_gate 4케이스 — 초과 탈락 / 통과 / 표본부족 살림 / 조회실패 살림.
+    over = _price_gate(20_000, [10_000, 10_000, 10_000, 10_000, 10_000])  # 비율 2.0 > 1.3
+    assert over["passes"] is False and over["sample_size"] == 5, over
+
+    ok = _price_gate(11_000, [10_000, 10_000, 10_000, 10_000, 10_000])  # 비율 1.1
+    assert ok["passes"] is True, ok
+
+    thin_sample = _price_gate(50_000, [10_000, 10_000])  # 5건 미만
+    assert thin_sample["passes"] is True and thin_sample["sample_size"] == 2, thin_sample
+
+    fetch_failed = _price_gate(50_000, None)
+    assert fetch_failed["passes"] is True and fetch_failed["sample_size"] == 0, fetch_failed
+
+    print("product_search._price_gate self-check OK")
 
 
 # ── 통합 검색 결과 ─────────────────────────────────────────────────────────────

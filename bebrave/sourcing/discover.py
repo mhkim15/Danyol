@@ -268,6 +268,9 @@ class DiscoveryResult:
     comp_idx: str = ""                             # 검색광고 경쟁지수 (낮음/중간/높음)
     supply_seller_count: int = 0                   # 도매매에서 형태 일치 상품을 파는 공급사 수(중복 제거) —
                                                     # 많을수록 소싱은 쉽지만 남들도 같은 상품을 쉽게 구해 차별화가 어렵다
+    price_gate_passed: Optional[bool] = None       # 11번가 시세 게이트 결과 — None=미실행(예산 초과/미대상)
+    price_gate_reason: str = ""
+    price_gate_sample: int = 0                     # 11번가 표본 수 — 화면에 "표본 N건" 노출용
 
     def one_line(self) -> str:
         trend_ko = {"up": "상승", "stable": "안정", "down": "하락"}.get(self.trend_direction, "-")
@@ -305,6 +308,12 @@ class DiscoveryResult:
             if self.margin_rate:
                 margin_flag = "✓ 목표달성" if self.margin_passes else "△ 목표미달(마진 또는 절대이익 부족)"
                 lines.append(f"  마진율   : {self.margin_rate:.1%}  (진입가 {self.entry_price:,.0f}원 기준)  {margin_flag}")
+            if self.price_gate_passed is not None:
+                gate_flag = "✓ 통과" if self.price_gate_passed else "✗ 탈락"
+                lines.append(
+                    f"  11번가   : 표본 {self.price_gate_sample}건 (다른 상품군이 섞일 수 있음, 가격 결정에는 미사용)  {gate_flag}"
+                    + (f" — {self.price_gate_reason}" if self.price_gate_reason else "")
+                )
         else:
             lines.append("  도매가   : 조회 실패 (도매매 수동 확인 필요)")
         if self.error:
@@ -515,6 +524,11 @@ def discover(
             if do_domemae else []
         )
 
+        # 11번가 가격 게이트 — 가격 결정에는 안 쓰고 "산정가가 시세보다 비정상적으로
+        # 높은가"만 거르는 안전장치(4-3의 표본 오염 한계 때문에 게이트로만 사용).
+        # 호출 예산을 트랙당 10건으로 제한 — 마진 통과 + 형태 확인된 후보에만 쓴다.
+        price_gate_budget = 10
+
         for r in domemae_targets:
             supply_matched: Optional[bool] = None
             try:
@@ -568,9 +582,25 @@ def discover(
                     supply_seller_count=r.supply_seller_count,
                 )
 
+            if supply_matched and r.margin_passes and price_gate_budget > 0:
+                price_gate_budget -= 1
+                try:
+                    from .product_search import fetch_price_gate
+                    gate = fetch_price_gate(r.entry_price, r.keyword)
+                    r.price_gate_passed = gate["passes"]
+                    r.price_gate_reason = gate["reason"]
+                    r.price_gate_sample = gate["sample_size"]
+                except Exception as e:
+                    # fetch_price_gate 자체가 fail-open이라 여기까지 예외가 오는 일은
+                    # 드물지만, 혹시 몰라 조용히 삼키지 않고 통과시키며 사유를 남긴다.
+                    r.price_gate_passed = True
+                    r.price_gate_reason = f"11번가 게이트 호출 실패({e}) — 안전하게 통과"
+
         for r in results:
             r.recommendation = _recommendation(r.score, r.supply_tier, track=track)
             if r.supply_price and r.margin_rate and not r.margin_passes:
+                r.recommendation = "제외"
+            if r.price_gate_passed is False:
                 r.recommendation = "제외"
             r.recommendation = _cap_uncertain_recommendation(
                 r.recommendation, r.supply_match_uncertain, r.supply_price
@@ -599,6 +629,11 @@ def to_product_candidates(results: List[DiscoveryResult]) -> List[ProductCandida
                 f"자동탐색 | 트렌드:{r.trend_direction} | 경쟁지수:{r.comp_idx or '-'}"
                 + (f" | 도매가:{r.supply_price:,}원" if r.supply_price else "")
                 + (f" | 마진:{r.margin_rate:.1%}" if r.margin_rate else "")
+                # 11번가 게이트를 실제로 돌린 후보만 표본 수를 남긴다 — 가격 결정에는
+                # 안 쓰는 참고 신호라는 걸 표시하고, 표본이 오염될 수 있다는 한계를
+                # 화면에서도 알 수 있게(4-3 참고).
+                + (f" | 11번가 표본:{r.price_gate_sample}건(다른 상품군 섞일 수 있음)"
+                   if r.price_gate_passed is not None else "")
             ),
             est_sale_price=int(r.avg_naver_price) if r.avg_naver_price else 0,
             est_cost_price=r.supply_price,

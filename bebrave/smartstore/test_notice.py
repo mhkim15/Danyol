@@ -82,7 +82,9 @@ def demo() -> None:
         eb = notice.build_provided_notice(e, "fake-token")
         assert eb["productInfoProvidedNoticeType"] == "ETC"
         assert set(eb["etc"]) == {"itemName", "modelName", "certificateDetails"}
-        assert eb["etc"]["modelName"] == "12345"      # 모델명 없으면 도매매 상품번호
+        # 모델명이 없으면 도매매 상품번호로 폴백하지 않는다 — 공급사 내부번호가
+        # 고시에 노출되는 사고였다(2026-09 수정). 다른 항목과 같은 일반 폴백을 쓴다.
+        assert eb["etc"]["modelName"] == "상세페이지 참조"
 
         # 알 수 없는 유형이 들어와도 ETC로 안전하게 떨어져야 함
         u = notice.build_provided_notice(_product(), "fake-token", notice_type="NOT_A_TYPE")

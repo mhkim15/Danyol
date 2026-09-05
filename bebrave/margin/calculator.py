@@ -53,6 +53,25 @@ class MarginResult:
         )
 
 
+def _round_up_100(price: int) -> int:
+    return ((price // 100) + 1) * 100
+
+
+def _solve_price(numerator_base: int, denom: float) -> int:
+    """numerator_base ÷ denom 꼴 역산에 배송비를 반영한다. 값을 최종적으로 100원
+    단위로 올림했을 때 무료배송 기준선(30,000원)을 넘으면 그 배송비(우리가
+    부담)를 분자에 더해 다시 푼다 — 안 넣으면 판매가가 기준선을 막 넘는 순간
+    배송비만큼 마진이 꺾인다. 판정은 반올림 전 원값이 아니라 100원 올림한
+    최종값 기준이어야 한다 — 그렇지 않으면 올림 결과가 기준선과 같아지는
+    경계값(예: 29,913원 → 30,000원)에서 배송비 반영이 누락된다(2026-09 발견)."""
+    shipping = 0
+    price = int((numerator_base + shipping) / denom) + 1
+    if _round_up_100(price) >= FREE_SHIPPING_THRESHOLD and shipping == 0:
+        shipping = SHIPPING_FEE
+        price = int((numerator_base + shipping) / denom) + 1
+    return price
+
+
 def estimate_sale_price(cost_price: int) -> int:
     """
     도매가에서 목표 마진율(TARGET_MARGIN)과 최소 절대이익(MIN_ABS_PROFIT)을
@@ -64,24 +83,21 @@ def estimate_sale_price(cost_price: int) -> int:
     맞춘 가격으로는 95%가 절대이익 하한 미달). 판매가를 절대이익 하한을 채우는
     수준까지 더 올리면(마진율은 오히려 더 좋아짐) 상당수가 통과권에 들어온다.
 
+    목표마진 분기는 한동안 배송비를 안 넣고 있었다(절대이익 분기만 반영) — 판매가가
+    3만원(무료배송 기준)을 넘는 순간 우리가 부담하는 배송비가 가격에 안 실려 도매가
+    20,900원 이상이 전부 마진 미달로 탈락하는 버그였다(2026-09 발견). 이제 두
+    분기 모두 _solve_price()로 같은 방식의 배송비 반영을 쓴다.
+
     네이버 경쟁상품가 조회가 불가능해진 뒤(2026-07-31 API 종료) 판매가 추정의
     유일한 근거로 씀 — 발굴 단계(discover.py)와 실제 등록 단계(pipeline.py)가
     동일한 공식을 쓰도록 통일.
     """
     fee_rate = ORDER_FEE + SALES_FEE_MAX + CS_RESERVE
 
-    target_denom = 1 - fee_rate - TARGET_MARGIN
-    target_price = int(cost_price / target_denom) + 1
+    target_price = _solve_price(cost_price, 1 - fee_rate - TARGET_MARGIN)
+    floor_price = _solve_price(MIN_ABS_PROFIT + cost_price, 1 - fee_rate)
 
-    floor_denom = 1 - fee_rate
-    shipping = 0
-    floor_price = int((MIN_ABS_PROFIT + cost_price + shipping) / floor_denom) + 1
-    if floor_price >= FREE_SHIPPING_THRESHOLD and shipping == 0:
-        shipping = SHIPPING_FEE
-        floor_price = int((MIN_ABS_PROFIT + cost_price + shipping) / floor_denom) + 1
-
-    price = max(target_price, floor_price)
-    return ((price // 100) + 1) * 100
+    return _round_up_100(max(target_price, floor_price))
 
 
 def calculate(
@@ -140,6 +156,14 @@ def _demo() -> None:
 
     bad = calculate(10_000, 9_500)
     assert not bad.passes_min and not bad.passes_target
+
+    # 무료배송 기준선(3만원)을 막 넘는 도매가 구간 — 목표마진 분기가 배송비를 빠뜨려
+    # 이 구간 전체가 탈락하던 버그(2026-09 발견·수정). 역산가 자체를 목표마진 기준으로
+    # 다시 계산해도 실제로 마진이 나와야 한다.
+    for cost in (20_900, 25_000, 40_000):
+        sale = estimate_sale_price(cost)
+        result = calculate(sale, cost, free_shipping=(sale >= FREE_SHIPPING_THRESHOLD))
+        assert result.passes_target, f"배송비 반영 후에도 목표마진 미달: cost={cost}, sale={sale}, {result}"
 
     print("calculator self-check OK")
 

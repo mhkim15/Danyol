@@ -12,15 +12,20 @@
 from dataclasses import dataclass
 from typing import Optional
 
+from ..config import SHIPPING_FEE, FREE_SHIPPING_THRESHOLD, RETURN_DELIVERY_FEE, EXCHANGE_DELIVERY_FEE
+
 # register.py의 하드코딩과 정확히 같은 값이어야 "기본값"으로 판정할 수 있다 — 여기서
 # 값이 바뀌면 register.py도 같이 바뀐 것인지 확인할 것.
 _DUMMY_CS_PHONE = "010-0000-0000"
 _DEFAULT_AS_GUIDE = "구매 후 문의사항은 고객센터로 연락 바랍니다."
 _DEFAULT_DELIVERY_COMPANY = "CJGLS"
-_DEFAULT_BASE_FEE = 3000
-_DEFAULT_FREE_THRESHOLD = 30000
-_DEFAULT_RETURN_FEE = 3000
-_DEFAULT_EXCHANGE_FEE = 6000
+# 배송비 기준값은 리터럴로 다시 정의하지 않고 config.py에서 그대로 가져온다 — 예전엔
+# 여기서 3000/30000/3000/6000을 따로 정의해서, config 값이 바뀌면 감사 패널만 옛
+# 기준으로 "기본값" 판정을 계속 내리는 불일치가 있었다(2026-09).
+_DEFAULT_BASE_FEE = SHIPPING_FEE
+_DEFAULT_FREE_THRESHOLD = FREE_SHIPPING_THRESHOLD
+_DEFAULT_RETURN_FEE = RETURN_DELIVERY_FEE
+_DEFAULT_EXCHANGE_FEE = EXCHANGE_DELIVERY_FEE
 _NOTICE_FALLBACK = "상세페이지 참조"
 
 VERDICT_OK = "정상"
@@ -144,13 +149,17 @@ def audit_fields(origin_product: dict, domemae_goods_no: str = "") -> list:
         VERDICT_DEFAULT if is_default_claim else (VERDICT_OK if return_fee is not None else VERDICT_EMPTY),
         "전 상품 동일 값입니다." if is_default_claim else "",
     ))
-    items.append(_judge_present(
-        g, "출고지 주소록ID", claim.get("shippingAddressId"),
-        "출고지 주소록 ID가 없으면 등록이 거부되거나 기본 주소록으로 들어갈 수 있습니다.",
+    # 등록 요청에 주소록ID를 안 실어도 네이버가 스마트스토어센터에 등록된 주소록
+    # (상품출고지·반품교환지)을 자동 배정한다 — 실제 등록 상품 조회로 반영 확인됨
+    # (2026-09). 그동안 이 두 항목이 항상 "비어 있음"으로 떠서 진짜 문제(더미 A/S
+    # 번호 등)를 가리는 오탐이었다.
+    items.append(_item(
+        g, "출고지 주소록ID", claim.get("shippingAddressId") or "(자동 배정)",
+        VERDICT_OK, "" if claim.get("shippingAddressId") else "요청에 값을 안 실어도 스마트스토어센터 주소록에서 자동 배정됩니다.",
     ))
-    items.append(_judge_present(
-        g, "반품지 주소록ID", claim.get("returnAddressId"),
-        "반품지 주소록 ID가 없으면 반품 요청 시 어디로 회수할지 불명확합니다.",
+    items.append(_item(
+        g, "반품지 주소록ID", claim.get("returnAddressId") or "(자동 배정)",
+        VERDICT_OK, "" if claim.get("returnAddressId") else "요청에 값을 안 실어도 스마트스토어센터 주소록에서 자동 배정됩니다.",
     ))
 
     # ── 원산지·제조 ───────────────────────────────────────────────────
@@ -201,18 +210,29 @@ def audit_fields(origin_product: dict, domemae_goods_no: str = "") -> list:
         "구체적인 유형을 못 찾아 기타로 떨어졌습니다 — 소재·치수 같은 필수 항목이 빠질 수 있습니다." if notice_type == "ETC" else "",
     ))
     notice_fields = next((v for k, v in notice.items() if k != "productInfoProvidedNoticeType" and isinstance(v, dict)), {})
-    fallback_count = sum(1 for v in notice_fields.values() if v == _NOTICE_FALLBACK)
+
+    def _is_goods_no_leak(field_name: str, value) -> bool:
+        # 고시 안쪽 modelName도 detailAttribute.modelName과 같은 유출 경로다 —
+        # register.py가 한때 도매매 상품번호로 폴백해 공급사 내부번호가 고시에
+        # 노출됐다(2026-09). 두 자리 모두 같은 기준으로 잡는다.
+        return field_name == "modelName" and bool(domemae_goods_no) and value == domemae_goods_no
+
+    problem_count = sum(
+        1 for k, v in notice_fields.items() if v == _NOTICE_FALLBACK or _is_goods_no_leak(k, v)
+    )
     for field_name, value in notice_fields.items():
         is_fallback = value == _NOTICE_FALLBACK
+        is_goods_no_leak_here = _is_goods_no_leak(field_name, value)
         items.append(_item(
             g, f"고시 · {field_name}", value,
-            VERDICT_DUMMY if is_fallback else (VERDICT_OK if value else VERDICT_EMPTY),
-            "실제 값을 못 찾아 자리표시자로 채워졌습니다." if is_fallback else "",
+            VERDICT_DUMMY if (is_fallback or is_goods_no_leak_here) else (VERDICT_OK if value else VERDICT_EMPTY),
+            "도매매 상품번호가 그대로 노출됩니다." if is_goods_no_leak_here else
+            ("실제 값을 못 찾아 자리표시자로 채워졌습니다." if is_fallback else ""),
         ))
     if notice_fields:
         items.append(_item(
-            g, "고시 항목 요약", f"{len(notice_fields) - fallback_count}/{len(notice_fields)}개 항목에 실제 값",
-            VERDICT_OK if fallback_count == 0 else VERDICT_DUMMY,
+            g, "고시 항목 요약", f"{len(notice_fields) - problem_count}/{len(notice_fields)}개 항목에 실제 값",
+            VERDICT_OK if problem_count == 0 else VERDICT_DUMMY,
         ))
 
     # ── 검색·노출 ─────────────────────────────────────────────────────
@@ -246,7 +266,7 @@ def _demo() -> None:
             "originAreaInfo": {"originAreaCode": "0200037"},
             "modelName": "11013443",
             "productInfoProvidedNotice": {"productInfoProvidedNoticeType": "ETC",
-                                           "etc": {"material": "상세페이지 참조"}},
+                                           "etc": {"material": "상세페이지 참조", "modelName": "11013443"}},
             "seoInfo": {"sellerTags": [{"text": "실리콘주걱"}]},
             "minorPurchasable": True,
         },
@@ -260,6 +280,8 @@ def _demo() -> None:
     assert by_label["제조사(manufacturerName)"].verdict == VERDICT_EMPTY, "빈 제조사를 못 잡음"
     assert by_label["판매자상품코드"].verdict == VERDICT_EMPTY, "빈 판매자상품코드를 못 잡음"
     assert by_label["고시 · material"].verdict == VERDICT_DUMMY, "고시 폴백값을 못 잡음"
+    assert by_label["고시 · modelName"].verdict == VERDICT_DUMMY, "고시 안쪽 도매매 상품번호 유출을 못 잡음"
+    assert by_label["고시 항목 요약"].value == "0/2개 항목에 실제 값", "고시 유출/폴백을 요약 집계에서 놓침"
     assert by_label["옵션 구성"].verdict == VERDICT_EMPTY, "옵션 없는 상품을 잘못 판정"
 
     body_ok = dict(body_missing)

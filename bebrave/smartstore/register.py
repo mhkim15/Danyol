@@ -173,8 +173,13 @@ def build_request_body(
     if model:
         detail_attribute["modelName"] = model
 
+    # CLI(main.py --on-sale)는 "ON"을, 그 외 호출부는 "SALE"을 판매중 신호로 쓴다 —
+    # 둘 다 같은 뜻인데 originProduct.statusType 유효값은 SALE/SUSPENSION뿐이라
+    # "ON"을 그대로 보내면 원상품 상태값이 깨진다(2026-09 발견, CLI --on-sale
+    # 경로만 영향 — 웹은 항상 SUSPENSION으로 등록 후 수동 전환이라 무관했음).
+    is_on_sale = status in ("SALE", "ON")
     origin_product = {
-        "statusType": status,
+        "statusType": "SALE" if is_on_sale else "SUSPENSION",
         "saleType": "NEW",
         "leafCategoryId": product.leaf_category_id,
         "name": product.name,
@@ -195,7 +200,7 @@ def build_request_body(
 
     smartstore_channel_product = {
         "naverShoppingRegistration": True,
-        "channelProductDisplayStatusType": "ON" if status == "SALE" else "SUSPENSION",
+        "channelProductDisplayStatusType": "ON" if is_on_sale else "SUSPENSION",
     }
     result = {
         "originProduct": origin_product,

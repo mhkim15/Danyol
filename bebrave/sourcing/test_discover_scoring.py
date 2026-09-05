@@ -17,6 +17,15 @@ def test_cap_uncertain_recommendation():
     print("ok")
 
 
+def test_estimate_sale_price_shipping_gap():
+    """4-3의 계산식 버그 재현 케이스 — 목표마진 분기가 배송비를 빠뜨려서 도매가
+    20,900원 이상이 전부 마진 미달로 탈락했다. 수정 후 값(문서 표와 동일)을 고정."""
+    assert estimate_sale_price(20_900) == 34_300
+    assert estimate_sale_price(25_000) == 40_100
+    assert estimate_sale_price(40_000) == 61_600
+    print("ok")
+
+
 def test_registration_block_reason():
     # 실물확인 + 자동판정 둘 다 통과해야 등록 가능.
     assert registration_block_reason(supply_matched=True, human_confirmed=True) == ""
@@ -71,10 +80,10 @@ def test():
     assert _entry_score("tight", "A") > _entry_score("normal", "A") > _entry_score("loose", "A")
 
     # 도매가에 목표마진을 얹어 역산한 판매가는 실제로 목표 마진율 근처를 통과해야 한다.
-    # ponytail: 역산식은 배송비를 %비용으로 뭉뚱그려 근사한다(pipeline.py 기존 방식
-    # 그대로 승계) — 무료배송 구간(3만원 이상)에서 실제 마진이 1~2%p 낮게 나올 수
-    # 있음. 배송비를 별도 항으로 반영하는 정밀 역산이 필요해지면 그때 고칠 것.
-    for cost in (130, 500, 2_500, 11_320, 134_000):
+    # 20,900/25,000/40,000원은 무료배송 기준선(3만원)을 막 넘기는 구간 — 목표마진
+    # 분기가 배송비를 안 반영해서 이 구간 전체가 마진 미달로 탈락하던 버그가 있었다
+    # (2026-09 발견·수정, estimate_sale_price 참고).
+    for cost in (130, 500, 2_500, 11_320, 20_900, 25_000, 40_000, 134_000):
         sale = estimate_sale_price(cost)
         result = calc_margin(sale_price=sale, cost_price=cost, free_shipping=(sale >= 30_000))
         assert result.margin_rate >= TARGET_MARGIN - 0.03, (cost, sale, result.margin_rate)
@@ -96,4 +105,5 @@ if __name__ == "__main__":
     test()
     test_to_product_candidates_preserves_track()
     test_cap_uncertain_recommendation()
+    test_estimate_sale_price_shipping_gap()
     test_registration_block_reason()

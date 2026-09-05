@@ -17,6 +17,7 @@ CLI:
 """
 import json
 import os
+import re
 import time
 from pathlib import Path
 from typing import List, Optional
@@ -292,15 +293,30 @@ def run(
         if not dry_run:
             from .images import upload_images
             originals = [u for u in domemae_p.images if u][:10]
+            # upload_images()는 원본과 같은 길이로 반환하고 실패분을 None으로 채운다
+            # (2026-09 수정 전엔 실패분을 건너뛴 짧은 리스트를 반환해 dict(zip(...))가
+            # 엉뚱한 원본-업로드 URL을 짝짓고 있었다 — 5장 중 2장 실패 시 대표이미지까지
+            # 바뀌는 사고로 실증됨).
             uploaded = upload_images(originals, token)
-            if not uploaded:
+            url_map = {orig: up for orig, up in zip(originals, uploaded) if up}
+            if not url_map:
                 print("  [건너뜀] 이미지 업로드 실패 — 등록 가능한 이미지 없음")
                 continue
-            url_map = dict(zip(originals, uploaded))
-            domemae_p.images = [url_map.get(u, u) for u in domemae_p.images]
+            # 업로드 상한(10장)을 넘거나 다운로드에 실패한 이미지는 공급사(도매매) 원본
+            # 주소로 남겨두지 않고 통째로 뺀다 — 남겨두면 소싱처가 노출되고 공급사가
+            # 사진을 지우면 상세페이지가 깨진다(2026-09 실증: 17장 중 10장만 업로드돼
+            # 7장이 공급사 도메인 주소로 라이브에 남아있었음).
+            leaked = [u for u in domemae_p.images if u and u not in url_map]
+            domemae_p.images = [url_map[u] for u in domemae_p.images if u in url_map]
             for old, new in url_map.items():
                 domemae_p.description = domemae_p.description.replace(old, new)
-            print(f"\n[3.5] 이미지 {len(uploaded)}장을 네이버 서버로 업로드")
+            for leaked_url in leaked:
+                domemae_p.description = re.sub(
+                    r'<img[^>]+src=["\']' + re.escape(leaked_url) + r'["\'][^>]*/?>',
+                    "", domemae_p.description,
+                )
+            print(f"\n[3.5] 이미지 {len(url_map)}장을 네이버 서버로 업로드"
+                  + (f" ({len(leaked)}장은 업로드 못 해 상세페이지에서 제외)" if leaked else ""))
 
         # ── Step 4: AI 콘텐츠 생성 ────────────────────────────────────────
         print(f"\n[4] 상품 콘텐츠 생성 중...")

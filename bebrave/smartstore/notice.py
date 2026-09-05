@@ -105,7 +105,10 @@ def _field_value(field_name: str, product) -> Optional[str]:
     if field_name == "itemName":
         return product.name
     if field_name == "modelName":
-        return _clean(getattr(product, "model", "")) or product.domemae_goods_no or None
+        # 도매매 상품번호로 폴백하지 않는다 — 공급사 내부 관리번호가 고시에 그대로
+        # 노출돼 위탁 소싱 구조가 드러났다(2026-09 발견). 못 찾으면 다른 항목처럼
+        # 호출부의 일반 폴백("상세페이지 참조")을 그대로 쓴다.
+        return _clean(getattr(product, "model", "")) or None
     if field_name == "manufacturer":
         return _clean(getattr(product, "manufacturer", "")) or None
     if field_name == "producer":

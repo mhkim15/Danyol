@@ -165,7 +165,21 @@
   dialog#modal {
     border: none; border-radius: 20px; padding: 0; width: min(1020px, 92vw);
     max-height: 86vh; box-shadow: 0 24px 70px rgba(26,21,35,0.28);
+    transition: width .15s ease;
   }
+  dialog#modal.modal-wide { width: min(1480px, 96vw); }
+  .detail-layout { display: flex; gap: 20px; align-items: flex-start; }
+  .detail-main { flex: 1 1 auto; min-width: 0; }
+  .field-audit-panel { flex: 0 0 420px; max-width: 420px; }
+  .field-audit-group { margin-bottom: 14px; }
+  .field-audit-group h4 { font-size: 12.5px; color: var(--ink-soft); margin: 0 0 6px; }
+  .field-audit-row {
+    display: flex; justify-content: space-between; gap: 8px; align-items: baseline;
+    padding: 5px 0; border-bottom: 1px solid var(--line); font-size: 12.5px;
+  }
+  .field-audit-row .fa-label { color: var(--ink-soft); flex: 0 0 130px; }
+  .field-audit-row .fa-value { flex: 1 1 auto; text-align: right; word-break: break-all; }
+  .field-audit-row .fa-note { display: block; font-size: 11px; color: var(--warn); text-align: right; margin-top: 2px; }
   dialog#modal::backdrop { background: rgba(26,21,35,0.45); backdrop-filter: blur(2px); }
   .modal-head {
     position: sticky; top: 0; display: flex; justify-content: flex-end;
@@ -363,7 +377,32 @@
     dialog.showModal();
     fetch(url)
       .then(function (r) { return r.text(); })
-      .then(function (html) { body.innerHTML = html; })
+      .then(function (html) {
+        body.innerHTML = html;
+        // innerHTML로 넣은 <script> 태그는 브라우저가 실행하지 않는다 — 모달 안에서
+        // 쓰는 버튼(등록 항목 점검 토글, 추천 키워드 채우기 등)이 눌러도 반응 없던
+        // 원인이 이거였다(2026-09 발견). 스크립트를 새로 만들어 다시 넣어야 실행된다.
+        // 순서대로 하나씩 교체·실행한다 — <script src>(예: CDN 라이브러리)는 로드가
+        // 끝날 때까지 기다렸다가 다음 스크립트로 넘어간다. async=false만으로는 안 된다
+        // — 그건 src 있는 스크립트끼리의 순서만 보장하고, 뒤따르는 "순수 인라인" 스크립트는
+        // 그 즉시 실행돼버려 CDN 로드가 끝나기 전에 "정의되지 않음" 오류가 났다(2026-09).
+        var scripts = Array.prototype.slice.call(body.querySelectorAll('script'));
+        (function runNext(i) {
+          if (i >= scripts.length) return;
+          var old = scripts[i];
+          var fresh = document.createElement('script');
+          if (old.src) {
+            fresh.onload = function () { runNext(i + 1); };
+            fresh.onerror = function () { console.error('스크립트 로드 실패:', old.src); runNext(i + 1); };
+            fresh.src = old.src;
+            old.replaceWith(fresh);
+          } else {
+            fresh.textContent = old.textContent;
+            old.replaceWith(fresh);
+            runNext(i + 1);
+          }
+        })(0);
+      })
       .catch(function () { body.innerHTML = '<div class="flash flash-error">불러오지 못했습니다. 새로고침 후 다시 시도해주세요.</div>'; });
   }
 </script>

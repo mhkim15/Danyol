@@ -150,7 +150,7 @@
       <td>
         {% if p.price_position and p.price_position.label != '확인불가' %}
         <span class="{{ 'badge-ok' if p.price_position.label == '강함' else ('badge-warn' if p.price_position.label == '약함' else 'badge') }}"
-              title="시장 평균가 {{ '{:,}'.format(p.price_position.market_avg) }}원 (11번가 {{ p.price_position.sample_size }}건 기준)">{{ p.price_position.label }}</span>
+              title="시장 중앙값 {{ '{:,}'.format(p.price_position.market_median or p.price_position.market_avg) }}원 (최저 {{ '{:,}'.format(p.price_position.min) if p.price_position.min else '-' }}원 · 최고 {{ '{:,}'.format(p.price_position.max) if p.price_position.max else '-' }}원, 11번가 {{ p.price_position.sample_size }}건 기준) — 평균가는 참고용으로 {{ '{:,}'.format(p.price_position.market_avg) }}원">{{ p.price_position.label }}</span>
         {% else %}<span class="muted">미확인</span>{% endif %}
       </td>
     </tr>

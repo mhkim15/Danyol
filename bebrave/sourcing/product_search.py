@@ -176,30 +176,63 @@ def fetch_11st_products(
 def price_competitiveness(sale_price: int, competitor_prices: List[int]) -> dict:
     """내 판매가를 동일 키워드 시장가 분포(11번가 등)와 비교해 강함/보통/약함으로 판정.
     상품 관리 화면의 "가격 경쟁력" 컬럼용 — 네트워크 호출은 fetch_11st_products()가 맡고
-    여기선 가격 목록만 받아 순수 계산만 하므로 네트워크 없이 테스트 가능하다."""
+    여기선 가격 목록만 받아 순수 계산만 하므로 네트워크 없이 테스트 가능하다.
+
+    판정 기준은 평균이 아니라 중앙값이다 — 평균은 소수의 초고가 상품(예: 세트/사은품
+    번들)에 크게 끌려간다. 실측(2026-09): "우산" 40건 평균 27,724원 vs 중앙값 12,660원.
+    평균 기준이면 어떤 판매가를 넣어도 시장 평균보다 한참 낮아 거의 항상 "강함"이 나와
+    지표가 사실상 무의미했다. min/p25/median/p75/max를 함께 반환해 분포도 보여준다.
+    """
+    import statistics
     from ..config import PRICE_COMPETITIVE_BAND
 
-    prices = [p for p in competitor_prices if p > 0]
+    prices = sorted(p for p in competitor_prices if p > 0)
     if not prices or not sale_price:
-        return {"label": "확인불가", "market_avg": None, "sample_size": len(prices)}
+        return {
+            "label": "확인불가", "market_avg": None, "market_median": None,
+            "p25": None, "p75": None, "min": None, "max": None, "sample_size": len(prices),
+        }
 
+    market_median = statistics.median(prices)
     market_avg = sum(prices) / len(prices)
-    ratio = sale_price / market_avg
+    quantiles = statistics.quantiles(prices, n=4) if len(prices) >= 4 else None
+
+    ratio = sale_price / market_median
     if ratio <= 1 - PRICE_COMPETITIVE_BAND:
         label = "강함"
     elif ratio <= 1 + PRICE_COMPETITIVE_BAND:
         label = "보통"
     else:
         label = "약함"
-    return {"label": label, "market_avg": round(market_avg), "sample_size": len(prices)}
+    return {
+        "label": label,
+        "market_avg": round(market_avg),
+        "market_median": round(market_median),
+        "p25": round(quantiles[0]) if quantiles else None,
+        "p75": round(quantiles[2]) if quantiles else None,
+        "min": prices[0],
+        "max": prices[-1],
+        "sample_size": len(prices),
+    }
 
 
 def _demo() -> None:
-    """실행 가능한 자체 점검 — price_competitiveness 라벨 판정만 검증 (네트워크 호출 없음)."""
+    """실행 가능한 자체 점검 — price_competitiveness 라벨 판정과 중앙값 기준 전환을 검증
+    (네트워크 호출 없음)."""
     assert price_competitiveness(9000, [10000, 10000, 10000])["label"] == "강함"
     assert price_competitiveness(10000, [10000, 10000, 10000])["label"] == "보통"
     assert price_competitiveness(12000, [10000, 10000, 10000])["label"] == "약함"
     assert price_competitiveness(9000, [])["label"] == "확인불가"
+
+    # 평균 기준이었다면 항상 "강함"이 나오던 실측 사례(우산: 평균 27,724 / 중앙값 12,660) —
+    # 소수의 초고가 세트상품이 평균을 끌어올려도 중앙값 기준이면 "보통"으로 정상 판정돼야 한다.
+    skewed = [990, 4600, 4600, 4600, 5000, 170000]  # 중앙값 4600, 평균 31,632
+    result = price_competitiveness(4600, skewed)
+    assert result["market_median"] == 4600, result
+    assert result["market_avg"] > 25000, result  # 평균은 여전히 왜곡돼 있음을 확인
+    assert result["label"] == "보통", "중앙값 기준으로 전환됐다면 4600원은 '보통'이어야 함"
+    assert result["min"] == 990 and result["max"] == 170000
+
     print("product_search.price_competitiveness self-check OK")
 
 

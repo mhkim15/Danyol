@@ -13,6 +13,7 @@ Claude 앱 대화 대신 실제 브라우저 화면으로 발굴 후보 확인/�
 import io
 import json
 import os
+import re
 import secrets
 import sys
 import time
@@ -29,6 +30,7 @@ DATA_DIR = ROOT / "data"
 SOURCING_LOG = DATA_DIR / "sourcing_log.json"
 REGISTERED_PRODUCTS = DATA_DIR / "registered_products.json"
 TRACKED_PRODUCTS = DATA_DIR / "tracked_products.json"
+GENERATED_IMAGES_DIR = DATA_DIR / "generated_images"
 
 
 def _load_env() -> None:
@@ -93,6 +95,19 @@ def _load_json(path: Path) -> list:
             return json.load(f)
     except Exception:
         return []
+
+
+def _extract_pipeline_reasons(buf_text: str, include_info: bool = False) -> list:
+    """pipeline.run()/discover()가 stdout에 찍는 중단 사유([건너뜀]/[오류]/[경고], 필요시
+    [안내]까지)를 그대로 뽑아온다. register_candidate/register_candidates_bulk/discover_scan
+    셋이 같은 정규식을 따로 들고 있었다(2026-09) — 한 곳으로 합침."""
+    markers = r"건너뜀|오류|경고" + (r"|안내" if include_info else "")
+    return [
+        m.group(0).strip()
+        for line in buf_text.splitlines()
+        for m in [re.search(rf"\[(?:{markers})\].*", line)]
+        if m
+    ]
 
 
 def _notify(text: str) -> None:
@@ -431,6 +446,13 @@ def candidates():
         filtered = [c for c in filtered
                     if c.get("supply_name") and not c.get("supply_matched") and not c.get("human_confirmed")]
 
+    # 등록해도 목록에서 안 사라져서 같은 후보를 다시 눌러 등록 시도 → 중복 등록
+    # 가드에 걸려 설명 없이 실패했다(2026-09 발견) — 이미 등록된 도매매 상품번호와
+    # 대조해 배지로 표시한다.
+    registered_goods_nos = {
+        p.get("domemae_goods_no") for p in _load_json(REGISTERED_PRODUCTS) if p.get("domemae_goods_no")
+    }
+
     for c in filtered:
         # 점수 숫자만으로는 진입해도 되는지 판단이 안 된다 — 합격선 판정을 화면에도 쓴다.
         # 판정 기준은 소싱 로직과 같은 함수를 그대로 재사용(두 곳에서 따로 정하지 않는다).
@@ -439,6 +461,7 @@ def candidates():
         sale = c.get("est_sale_price") or 0
         cost = c.get("est_cost_price") or 0
         c["margin_amount"] = calc_margin(sale_price=sale, cost_price=cost).net_profit if sale and cost else None
+        c["already_registered"] = bool(c.get("supply_goods_no")) and c["supply_goods_no"] in registered_goods_nos
 
     return render_template("candidates.html", candidates=filtered, target_categories=TARGET_CATEGORIES,
                             tab=tab, counts=counts, unconfirmed_only=unconfirmed_only)
@@ -470,44 +493,112 @@ def confirm_match_bulk():
     return redirect(url_for("candidates", tab=request.form.get("tab", "niche")))
 
 
+@app.route("/candidates/clear_stale", methods=["POST"])
+def clear_stale_candidates():
+    """월검색수·트랙 정보가 전혀 없는 옛 스캔분을 정리 — 재계산할 근거가 없어
+    복구가 불가능하므로 삭제하고 재스캔을 유도한다. 지금까지 후보를 지울 방법이
+    아예 없어서, 로직이 두 번 바뀌는 동안 근거 없는 행이 계속 쌓여 있었다(2026-09).
+    실수로 지운 경우를 대비해 삭제 전 스냅샷을 남긴다."""
+    from bebrave.sourcing.analyzer import load_from_json, save_to_json
+    items = load_from_json(SOURCING_LOG)
+    stale = [c for c in items if not c.track and not c.monthly_search]
+    keep = [c for c in items if not (not c.track and not c.monthly_search)]
+
+    if not stale:
+        flash("정리할 옛 스캔분이 없습니다.", "success")
+        return redirect(url_for("candidates"))
+
+    backup_path = DATA_DIR / f"sourcing_log_stale_backup_{date.today().isoformat()}.json"
+    save_to_json(stale, backup_path)
+    save_to_json(keep, SOURCING_LOG)
+    flash(f"옛 스캔분 {len(stale)}건 정리 — 백업: {backup_path.name}. 카테고리를 골라 재스캔하세요.", "success")
+    return redirect(url_for("candidates"))
+
+
 @app.route("/candidates/discover", methods=["POST"])
 def discover_scan():
-    category = request.form.get("category", "주방용품")
+    # 체크박스로 여러 카테고리를 한 번에 고를 수 있다(2026-09) — "전체 비교 스캔"은
+    # 카테고리별 기회밀도를 비교하는 별도 모드라 다른 카테고리와 같이 고르면 무시하고
+    # 비교 스캔만 실행한다.
+    categories = [c for c in request.form.getlist("categories") if c]
+    if not categories:
+        flash("스캔할 카테고리를 하나 이상 선택하세요.", "error")
+        return redirect(url_for("candidates"))
+    run_all = "all" in categories
+    individual_categories = [c for c in categories if c != "all"]
+
+    buf = io.StringIO()
+    total_added = 0
+    total_removed_dupes = 0
+    total_stale_cleared = 0
+    per_category_added = {}
+    ranking = ""
     try:
         from bebrave.sourcing.analyzer import load_from_json, save_to_json, dedupe_by_supply
         existing = load_from_json(SOURCING_LOG)
         # (키워드, 트랙)으로 중복을 걸러야 한다 — 키워드만 보면 같은 키워드가 두
         # 트랙에서 다 나왔을 때 먼저 도는 트랙만 남고 리메이크 후보가 조용히 사라진다.
         existing_kw = {(c.keyword, c.track) for c in existing}
-        added = 0
 
-        if category == "all":
-            from bebrave.sourcing.discover import scan_categories, to_product_candidates
-            scores = scan_categories(limit=15)
-            for score in scores:
-                for c in to_product_candidates(score.results):
-                    if (c.keyword, c.track) not in existing_kw:
-                        existing.append(c)
-                        existing_kw.add((c.keyword, c.track))
-                        added += 1
+        with redirect_stdout(buf):
+            if run_all:
+                from bebrave.sourcing.discover import scan_categories, to_product_candidates
+                scores = scan_categories(limit=15)
+                for score in scores:
+                    for c in to_product_candidates(score.results):
+                        if (c.keyword, c.track) not in existing_kw:
+                            existing.append(c)
+                            existing_kw.add((c.keyword, c.track))
+                            total_added += 1
+                ranking = ", ".join(f"{s.category}({s.opportunity_density:.0%})" for s in
+                                     sorted(scores, key=lambda s: s.opportunity_density, reverse=True))
+            else:
+                from bebrave.sourcing.discover import discover, to_product_candidates
+                for category in individual_categories:
+                    # 미분류 자동 정리 — 이 카테고리에 트랙·검색량이 전혀 없는 옛
+                    # 스캔분(로직이 바뀌기 전 데이터)이 있으면, 재스캔으로 새 데이터가
+                    # 들어오는 이 시점에 같이 치운다. 옛 스캔 정리 버튼을 매번 따로
+                    # 누르지 않아도 되게(2026-09).
+                    stale_in_cat = [c for c in existing
+                                    if c.category == category and not c.track and not c.monthly_search]
+                    if stale_in_cat:
+                        stale_ids = {id(c) for c in stale_in_cat}
+                        existing = [c for c in existing if id(c) not in stale_ids]
+                        existing_kw = {(c.keyword, c.track) for c in existing}
+                        total_stale_cleared += len(stale_in_cat)
+
+                    result = discover(category=category, limit=15)
+                    added_here = 0
+                    for c in to_product_candidates(result):
+                        if (c.keyword, c.track) not in existing_kw:
+                            existing.append(c)
+                            existing_kw.add((c.keyword, c.track))
+                            added_here += 1
+                    per_category_added[category] = added_here
+                    total_added += added_here
+
             existing, removed_dupes = dedupe_by_supply(existing)
+            total_removed_dupes = len(removed_dupes)
             save_to_json(existing, SOURCING_LOG)
-            ranking = ", ".join(f"{s.category}({s.opportunity_density:.0%})" for s in
-                                 sorted(scores, key=lambda s: s.opportunity_density, reverse=True))
-            dupe_note = f", 동일상품 중복 {len(removed_dupes)}개 제거" if removed_dupes else ""
-            flash(f"전체 카테고리 스캔 완료 — 신규 후보 {added}개{dupe_note}. 기회밀도: {ranking}", "success")
+
+        # discover()/scan_categories()는 실패해도 예외를 던지지 않고 [경고]를 찍은 뒤
+        # 빈 리스트를 반환한다 — 예전엔 이걸 못 잡아서 "신규 후보 0개 추가됨"이 성공
+        # 플래시로 떴다(2026-09 발견, S9). 콘솔에만 찍히던 [경고]/[오류]/[안내]를 화면으로
+        # (DOMEMAE_API_KEY 미설정으로 도매가 조회가 전량 생략된 경우도 [안내]로 찍힌다 — S10).
+        problems = _extract_pipeline_reasons(buf.getvalue(), include_info=True)
+        blocking = [p for p in problems if not p.startswith("[안내]")]
+        for p in problems:
+            flash(p, "error" if not p.startswith("[안내]") else "success")
+
+        dupe_note = f", 동일상품 중복 {total_removed_dupes}개 제거" if total_removed_dupes else ""
+        stale_note = f", 옛 미분류 {total_stale_cleared}건 자동 정리" if total_stale_cleared else ""
+        if total_added == 0 and blocking:
+            pass  # 사유는 위에서 이미 개별 flash로 표시됨 — 뭉뚱그린 성공 메시지를 덧붙이지 않는다
+        elif run_all:
+            flash(f"전체 카테고리 스캔 완료 — 신규 후보 {total_added}개{dupe_note}. 기회밀도: {ranking}", "success")
         else:
-            from bebrave.sourcing.discover import discover, to_product_candidates
-            result = discover(category=category, limit=15)
-            for c in to_product_candidates(result):
-                if (c.keyword, c.track) not in existing_kw:
-                    existing.append(c)
-                    existing_kw.add((c.keyword, c.track))
-                    added += 1
-            existing, removed_dupes = dedupe_by_supply(existing)
-            save_to_json(existing, SOURCING_LOG)
-            dupe_note = f", 동일상품 중복 {len(removed_dupes)}개 제거" if removed_dupes else ""
-            flash(f"'{category}' 스캔 완료 — 신규 후보 {added}개 추가됨{dupe_note}", "success")
+            detail = ", ".join(f"{cat} {n}개" for cat, n in per_category_added.items())
+            flash(f"{len(individual_categories)}개 카테고리 스캔 완료 — 신규 후보 {total_added}개({detail}){dupe_note}{stale_note}", "success")
     except Exception as e:
         flash(f"스캔 실패: {e}", "error")
     return redirect(url_for("candidates"))
@@ -523,6 +614,7 @@ def candidates_preview():
     keyword = request.args.get("keyword", "")
     is_modal = request.args.get("modal") == "1"
     track = request.args.get("track", "")
+    goods_no_hint = request.args.get("goods_no", "")
     ctx = {"keyword": keyword, "modal": is_modal, "track": track}
 
     def _fail(message):
@@ -539,47 +631,158 @@ def candidates_preview():
         from bebrave.smartstore.auth import get_access_token
         from bebrave.smartstore.pipeline import _decide_sale_price
 
-        result = search_products(keyword, limit=10)
-        if not result.products:
-            return _fail(f"'{keyword}' 도매매 검색 결과 없음")
-
-        # 최저가를 무조건 고르지 않고, discover()와 동일한 형태일치 검증을 거친다 —
-        # 그냥 최저가를 집으면 재료/부자재가 완제품으로 둔갑하는 문제가 있었다(2026-08).
-        p, matched = find_matching_product([keyword], result.products)
-        if p is None:
-            return _fail(f"'{keyword}' 도매매 매칭 후보 없음")
-        if p.goods_no:
+        detail_fetch_error = ""
+        matched = True
+        if goods_no_hint:
+            # 후보 목록에 저장된 도매매 상품번호가 있으면 그걸 바로 조회한다 — 키워드로
+            # 재검색하면 그 사이 도매매 재고/가격이 바뀌어 목록에 보이던 상품과 다른
+            # 상품이 뜰 수 있었다(2026-09 발견, B-5). goods_no가 없는 옛 후보만 예전처럼
+            # 키워드 검색으로 대체한다.
             try:
-                p = fetch_product_detail(p.goods_no)
-            except Exception:
-                pass
+                p = fetch_product_detail(goods_no_hint)
+            except Exception as e:
+                return _fail(f"저장된 도매매 상품({goods_no_hint}) 조회 실패: {e}")
+        else:
+            result = search_products(keyword, limit=10)
+            if not result.products:
+                return _fail(f"'{keyword}' 도매매 검색 결과 없음")
+
+            # 최저가를 무조건 고르지 않고, discover()와 동일한 형태일치 검증을 거친다 —
+            # 그냥 최저가를 집으면 재료/부자재가 완제품으로 둔갑하는 문제가 있었다(2026-08).
+            p, matched = find_matching_product([keyword], result.products)
+            if p is None:
+                return _fail(f"'{keyword}' 도매매 매칭 후보 없음")
+            # 상세조회 실패를 조용히 넘기면 getItemList 결과(이미지 1장·설명 0자·재고 0)가
+            # 그대로 남아 "부실 리스팅" 경고가 허위로 뜨고, 등록 시엔 이유 설명 없이 스킵된다
+            # (2026-09 발견) — 실패 사실을 화면에 남긴다.
+            if p.goods_no:
+                try:
+                    p = fetch_product_detail(p.goods_no)
+                except Exception as e:
+                    detail_fetch_error = str(e)
 
         sale_price = _decide_sale_price(p.supply_price, p.retail_price)
         margin = calc_margin(sale_price=sale_price, cost_price=p.supply_price, free_shipping=(sale_price >= 30_000))
         content = generate_product_content(keyword, p, sale_price)
 
-        cat_id, cat_name = "", ""
+        # 리메이크 "다시 만들기" — 지금까지 리메이크(트랙B)는 "손봐서 등록하라"고 안내만
+        # 하고 실제로 손볼 도구가 없었다(2026-09). ?regen=1이면 기본형과 다른 레이아웃으로
+        # 상세페이지를 새로 짠다 — 원본에 없는 사실은 지어내지 않는다(content.py 참고).
+        if request.args.get("regen") == "1":
+            from bebrave.smartstore.content import remake_detail_html
+            content["detail_content"] = remake_detail_html(keyword, p)
+
+        # 추천 키워드 — content._demand_tags가 태그 채택 때 연관키워드 30개를 조회해놓고
+        # 상위 3개만 쓰고 나머지와 검색량을 버리고 있었다(2026-09). 같은 함수를 다시 불러
+        # 상품명용/태그용을 각각 뽑는다 — 하나로 합쳐 보여줬더니 "뭘 위한 목록인지 모르겠다"는
+        # 피드백을 받았다(2026-09). 상품명엔 이미 들어간 단어를, 태그엔 이미 적용된 태그를
+        # 빼고 "이 상품에 새로 써볼 만한 것"만 남긴다.
+        from bebrave.smartstore.content import related_demand_keywords
+        keyword_pool = related_demand_keywords(keyword, p, limit=20)
+
+        opt_words_set = set(content["name"].split())
+        name_recommend_keywords = [kw for kw in keyword_pool if kw.keyword not in opt_words_set][:10]
+
+        applied_tags_set = set(content.get("tags", []))
+        tag_recommend_keywords = [kw for kw in keyword_pool if kw.keyword not in applied_tags_set][:10]
+
+        # 상품명 최적화 근거 — "동의어 제거+SEO 규칙 적용"이라고만 하고 실제로 뭘 지웠는지
+        # 안 보여줬다(2026-09 발견). 원본과 최적화본의 단어 차이를 그대로 노출한다.
+        raw_words = p.name.split()
+        opt_words = content["name"].split()
+        removed_words = [w for w in raw_words if w not in opt_words]
+
+        # 11번가 경쟁가 분포 — 평균만 보면 소수의 초고가 상품에 끌려 판정이 왜곡된다
+        # (실측: "우산" 평균 27,724원 vs 중앙값 12,660원, 2026-09). 최저/25%/중앙값/75%/최고를
+        # 그대로 보여주고, "강함/보통/약함" 판정도 중앙값 기준으로 계산한다.
+        from bebrave.sourcing.product_search import fetch_11st_products, price_competitiveness
+        price_position = None
+        try:
+            competitors = fetch_11st_products(keyword, limit=20)
+            price_position = price_competitiveness(sale_price, [c.price for c in competitors])
+        except Exception:
+            pass  # 11번가 조회 실패는 부가정보라 미리보기 자체를 막지 않는다
+
+        cat_id, cat_name, cat_error = "", "", ""
         try:
             token = get_access_token()
             cat_id = get_category_id(keyword, p.category, token)
-            cat_name = describe_category(cat_id, token) if cat_id else "매칭 실패 — 수동 확인 필요"
+            if not cat_id:
+                cat_name = "매칭 실패 — 수동 확인 필요"
+                cat_error = "카테고리 자동 매칭 실패 — 이 상태로 등록하면 파이프라인이 건너뜁니다"
+            else:
+                cat_name = describe_category(cat_id, token)
         except Exception as e:
             cat_name = f"조회 실패: {e}"
+            cat_error = f"카테고리 조회 실패 — 등록이 실패합니다: {e}"
+
+        # 등록 전 항목 점검 — "지금 등록하면 어떤 칸이 비어서/더미로 나가는지"를 누르기
+        # 전에 보여준다. 등록 후(상품 상세 화면)와 같은 audit_fields()를 그대로 써서
+        # 등록 전/후를 같은 판정 기준으로 본다(2026-09). 카테고리·원산지 코드·A/S 연락처
+        # 중 하나라도 안 갖춰지면 점검 패널 전체가 사유 한 줄만 보여주고 안 뜨던 문제가
+        # 있었다(2026-09 발견) — build_request_body(strict=False)로 못 채운 항목은 빈 값
+        # 그대로 두고 항상 전체 목록을 만든다. 진짜 등록(register_candidate)은 여전히
+        # strict=True 기본값을 쓰므로 안전장치는 그대로 유지된다.
+        audit_items, audit_error = [], ""
+        try:
+            from bebrave.smartstore.models import StoreProduct
+            from bebrave.smartstore.register import build_request_body
+            from bebrave.smartstore.origin import resolve_origin_code
+            from bebrave.smartstore.field_audit import audit_fields
+            from bebrave.config import MAX_LISTING_STOCK
+
+            audit_token = get_access_token()
+            origin_code = ""
+            try:
+                origin_code = resolve_origin_code(p.origin_country, audit_token)
+            except Exception:
+                pass  # 원산지 코드표 조회 실패 — 빈 값으로 두면 field_audit이 "비어 있음"으로 잡는다
+
+            store_product = StoreProduct(
+                name=content["name"], leaf_category_id=cat_id, sale_price=sale_price,
+                stock_quantity=min(p.stock, MAX_LISTING_STOCK), detail_content=content["detail_content"],
+                representative_image=p.main_image, optional_images=p.images[1:10],
+                supply_price=p.supply_price, margin_rate=margin.margin_rate,
+                domemae_goods_no=p.goods_no, domemae_category=p.category, supplier=p.supplier,
+                keyword=keyword, tags=content.get("tags", []), origin_country=p.origin_country,
+                origin_code=origin_code, manufacturer=p.manufacturer, model=p.model,
+                option_group_name=p.option_group_name, options=p.options,
+            )
+            dry_run_body = build_request_body(store_product, status="SUSPENSION", access_token=audit_token, strict=False)
+            audit_items = audit_fields(dry_run_body["originProduct"], domemae_goods_no=p.goods_no)
+        except Exception as e:
+            audit_error = f"등록 항목 점검 실패: {e}"
 
         ctx.update(
             raw_name=p.name,
             optimized_name=content["name"],
             goods_no=p.goods_no,
             tags=content.get("tags", []),
+            name_recommend_keywords=name_recommend_keywords,
+            tag_recommend_keywords=tag_recommend_keywords,
+            removed_words=removed_words,
+            price_position=price_position,
             detail_content=content["detail_content"],
             category_id=cat_id,
             category_name=cat_name,
+            category_error=cat_error,
             sale_price=sale_price,
             supply_price=p.supply_price,
             margin_rate=margin.margin_rate,
             image_count=len(p.images),
             description_len=len(p.description),
             supply_matched=matched,
+            detail_fetch_error=detail_fetch_error,
+            audit_items=audit_items,
+            audit_error=audit_error,
+            audit_problem_count=sum(1 for i in audit_items if i.problem),
+            regenerated=(request.args.get("regen") == "1"),
+            generated_image_url=(
+                url_for("generated_image", filename=request.args.get("generated_image"), _external=True)
+                if request.args.get("generated_image") else ""
+            ),
+            has_gemini_key=bool(os.environ.get("GEMINI_API_KEY", "")),
+            raw_image_url=p.main_image,
         )
     except Exception as e:
         return _fail(f"미리보기 생성 실패: {e}")
@@ -595,6 +798,39 @@ def register_candidate():
     goods_no = request.form.get("goods_no", "")
     name_override = request.form.get("name_override", "").strip()
     live = request.form.get("live") == "on"
+
+    # 태그 5칸 + 판매가 — 미리보기에서 본 값을 그대로 등록에 반영한다. 예전엔 미리보기가
+    # 보여준 태그·판매가가 폼에 실리지 않고 등록 시점에 다시 계산돼, 확인한 값과 실제
+    # 등록물이 달라질 수 있었다(2026-09). 빈 입력칸은 무시하고, 태그를 하나도 안 채웠으면
+    # None을 넘겨 파이프라인이 자동생성 태그를 그대로 쓰게 한다(override "없음"과
+    # override "빈 리스트로 등록"을 구분).
+    tags_input = [t.strip() for t in request.form.getlist("tag") if t.strip()]
+    tags_override = tags_input or None
+    sale_price_raw = request.form.get("sale_price_override", "").strip()
+    sale_price_override = int(sale_price_raw) if sale_price_raw.isdigit() else None
+    # 상세페이지 에디터 — 미리보기에서 직접 고친 HTML이 있으면 그대로 등록에 반영한다.
+    # 자동생성본과 글자 하나도 다르지 않으면(에디터를 안 건드렸으면) 굳이 override로
+    # 취급하지 않는다 — pipeline.run()이 항상 새로 생성한 콘텐츠를 쓰게 둬서, 등록
+    # 시점의 최신 도매매 이미지/설명이 반영되게 한다.
+    detail_override_raw = request.form.get("detail_override", "").strip()
+    detail_generated = request.form.get("detail_generated", "").strip()
+    detail_override = detail_override_raw if detail_override_raw != detail_generated else ""
+    # 즉시할인율 — 사람이 % 단위로 입력, 파이프라인엔 0~1 소수로 넘긴다.
+    discount_raw = request.form.get("discount_percent", "").strip()
+    try:
+        discount_rate = max(0.0, min(1.0, float(discount_raw) / 100)) if discount_raw else 0.0
+    except ValueError:
+        discount_rate = 0.0
+    # AI로 새로 만든 대표이미지 — 미리보기에서 생성했으면 그 URL을 그대로 등록에 반영한다.
+    representative_image_override = request.form.get("representative_image_override", "").strip()
+    # 등록 항목 점검 패널에서 고친 값 — "field_override:detailAttribute.brandName" 같은
+    # 이름의 입력칸을 그대로 점(.) 경로 dict로 모은다(2026-09).
+    field_overrides = {
+        key[len("field_override:"):]: value.strip()
+        for key, value in request.form.items()
+        if key.startswith("field_override:")
+    }
+
     buf = io.StringIO()
     try:
         from bebrave.smartstore.pipeline import run as pipeline_run
@@ -608,6 +844,12 @@ def register_candidate():
                     dry_run=not live,
                     status="SUSPENSION",
                     name_override=name_override,
+                    tags_override=tags_override,
+                    sale_price_override=sale_price_override,
+                    detail_override=detail_override,
+                    discount_rate=discount_rate,
+                    representative_image_override=representative_image_override,
+                    field_overrides=field_overrides,
                 )
             else:
                 results = pipeline_run(
@@ -615,11 +857,22 @@ def register_candidate():
                     dry_run=not live,
                     status="SUSPENSION",
                     name_override=name_override,
+                    tags_override=tags_override,
+                    sale_price_override=sale_price_override,
+                    detail_override=detail_override,
+                    discount_rate=discount_rate,
+                    representative_image_override=representative_image_override,
+                    field_overrides=field_overrides,
                 )
 
-        warnings = [line[7:].strip() for line in buf.getvalue().splitlines() if line.strip().startswith("  [경고]")]
-        for w in warnings:
-            flash(w, "error")
+        # 파이프라인은 중단 사유를 [건너뜀]/[오류]/[경고] 셋 중 하나로 찍는다 — 예전엔
+        # [경고]만 찾아서(pipeline.py가 실제로 쓰는 건 대부분 [건너뜀]/[오류]) 사실상 항상
+        # 빈 리스트였고, 사용자는 "마진 기준 미달이거나 카테고리 매칭 실패"라는 뭉뚱그린
+        # 문구만 봤다. 실제 중단 사유는 이미 등록됨/마진 미달/원산지 코드 없음/부실 리스팅/
+        # 카테고리 매칭 실패/이미지 업로드 실패/네이버 API 오류 등 6~7가지로 갈린다.
+        reasons = _extract_pipeline_reasons(buf.getvalue())
+        for r_msg in reasons:
+            flash(r_msg, "error")
 
         if results:
             r = results[0]
@@ -627,11 +880,109 @@ def register_candidate():
                 flash(f"'{r.name}' 등록 완료 (판매중지 상태) — 상품ID {r.naver_product_id}", "success")
             else:
                 flash(f"[미리보기] '{r.name}' — 판매가 {r.sale_price:,}원, 마진 {r.margin_rate:.1%} (실제 등록 안 함)", "success")
-        else:
-            flash("등록 가능한 상품을 찾지 못했습니다 (마진 기준 미달이거나 카테고리 매칭 실패)", "error")
+        elif not reasons:
+            flash("등록 가능한 상품을 찾지 못했습니다 — 파이프라인이 사유를 남기지 않았습니다. 원본 로그를 확인하세요.", "error")
     except Exception as e:
         flash(f"등록 실패: {e}", "error")
     return redirect(url_for("candidates"))
+
+
+@app.route("/generated_image/<filename>")
+def generated_image(filename):
+    """AI로 새로 만든 대표이미지를 서빙 — 등록(register_product) 시 이 URL을 다운로드해
+    네이버 서버로 재업로드하므로, 로컬에서 접근 가능한 URL이 있어야 한다."""
+    from flask import send_from_directory
+    return send_from_directory(GENERATED_IMAGES_DIR, filename)
+
+
+@app.route("/candidates/generate_image", methods=["POST"])
+def generate_candidate_image():
+    """리메이크 후보의 대표이미지를 AI로 새로 만든다(2026-09) — 도매매 원본은 "참고"만
+    하고 그대로 베끼지 않도록 프롬프트로 지시한다(image_ai.py 참고). GEMINI_API_KEY가
+    없으면 이 라우트 자체를 화면에서 숨기고 대신 수동 생성 페이지로 안내한다 —
+    아직 실제 API 호출로 검증되지 않았으니 처음 쓸 때는 결과 이미지를 반드시 확인할 것."""
+    keyword = request.form.get("keyword", "")
+    track = request.form.get("track", "")
+    goods_no = request.form.get("goods_no", "")
+
+    from bebrave.smartstore.image_ai import has_api_key, generate_product_image, build_remake_prompt
+    if not has_api_key():
+        flash("GEMINI_API_KEY가 설정되지 않아 AI 이미지 생성을 쓸 수 없습니다 — 수동 생성 링크를 이용하세요.", "error")
+        return redirect(url_for("candidates_preview", keyword=keyword, track=track, goods_no=goods_no))
+
+    try:
+        from bebrave.sourcing.domemae import fetch_product_detail
+        import uuid
+        p = fetch_product_detail(goods_no)
+        prompt = build_remake_prompt(keyword, p.category)
+        image_bytes = generate_product_image(p.main_image, prompt)
+
+        GENERATED_IMAGES_DIR.mkdir(parents=True, exist_ok=True)
+        filename = f"{uuid.uuid4().hex}.png"
+        with open(GENERATED_IMAGES_DIR / filename, "wb") as f:
+            f.write(image_bytes)
+
+        flash("AI 이미지 생성 완료 — 미리보기 상세페이지에 반영됐습니다. 마음에 안 들면 다시 눌러 새로 만드세요.", "success")
+        return redirect(url_for("candidates_preview", keyword=keyword, track=track, goods_no=goods_no,
+                                 generated_image=filename))
+    except Exception as e:
+        flash(f"AI 이미지 생성 실패: {e}", "error")
+        return redirect(url_for("candidates_preview", keyword=keyword, track=track, goods_no=goods_no))
+
+
+@app.route("/candidates/register_bulk", methods=["POST"])
+def register_candidates_bulk():
+    """발굴 후보 화면 체크박스로 여러 개를 골라 한 번에 등록 — 후보 하나씩 미리보기를
+    거쳐야만 등록할 수 있어서, 여러 개를 올리려면 그만큼 반복해야 했다(2026-09).
+    태그·판매가·상세설명 같은 개별 조정은 여기서 못 한다 — 그게 필요하면 미리보기에서
+    하나씩. 이건 "손댈 필요 없는 것들을 한 번에" 보내는 용도."""
+    pairs = []
+    for raw in request.form.getlist("ids"):
+        if "||" in raw:
+            kw, tr = raw.split("||", 1)
+            pairs.append((kw, tr))
+    live = request.form.get("live") == "on"
+    tab = request.form.get("tab", "niche")
+
+    if not pairs:
+        flash("선택된 후보가 없습니다.", "error")
+        return redirect(url_for("candidates", tab=tab))
+
+    items = _load_json(SOURCING_LOG)
+    by_pair = {(c.get("keyword", ""), c.get("track", "")): c for c in items}
+
+    from bebrave.smartstore.pipeline import run as pipeline_run
+
+    succeeded, skipped = [], []
+    for kw, tr in pairs:
+        cand = by_pair.get((kw, tr), {})
+        goods_no = cand.get("supply_goods_no", "")
+        buf = io.StringIO()
+        try:
+            with redirect_stdout(buf):
+                if goods_no:
+                    results = pipeline_run(supply_id=goods_no, dry_run=not live, status="SUSPENSION")
+                else:
+                    results = pipeline_run(keyword=kw, dry_run=not live, status="SUSPENSION")
+            if results:
+                succeeded.append(kw)
+            else:
+                reasons = _extract_pipeline_reasons(buf.getvalue())
+                skipped.append((kw, reasons[0] if reasons else "사유 미상"))
+        except Exception as e:
+            skipped.append((kw, str(e)))
+        # 네이버·도매매 API를 후보 수만큼 연속 호출한다 — 발주 쪽(purchase_bulk_place)과
+        # 같은 이유로 과부하 방지 딜레이를 둔다.
+        time.sleep(1.0)
+
+    verb = "등록" if live else "미리보기"
+    msg = f"일괄 {verb} 완료 — 성공 {len(succeeded)}건"
+    if skipped:
+        detail = ", ".join(f"{k}({r[:30]})" for k, r in skipped[:5])
+        more = f" 외 {len(skipped) - 5}건" if len(skipped) > 5 else ""
+        msg += f" / 건너뜀 {len(skipped)}건: {detail}{more}"
+    flash(msg, "success" if succeeded else "error")
+    return redirect(url_for("candidates", tab=tab))
 
 
 # ── 상품 관리 (등록상품 + 재고동기화 + 판매추적 + 판매성과 통합) ──────────────────
@@ -854,6 +1205,8 @@ def products_refresh_stock():
                 price_cache.append({
                     "naver_product_id": p.get("naver_product_id", ""),
                     "label": result["label"], "market_avg": result["market_avg"],
+                    "market_median": result["market_median"], "p25": result["p25"], "p75": result["p75"],
+                    "min": result["min"], "max": result["max"],
                     "sample_size": result["sample_size"], "checked_at": checked_at,
                 })
             time.sleep(0.3)  # 11번가 API 연속 호출 과부하 방지
@@ -928,10 +1281,12 @@ def products_detail(product_id):
            "stock": None, "status_type": None, "fetch_error": None,
            "perf": perf, "months_since_sold": months_since_sold,
            "auto_delete_months": AUTO_DELETE_MONTHS,
-           "auto_delete_risk": months_since_sold is not None and months_since_sold >= AUTO_DELETE_MONTHS}
+           "auto_delete_risk": months_since_sold is not None and months_since_sold >= AUTO_DELETE_MONTHS,
+           "audit_items": [], "audit_problem_count": 0}
     try:
         from bebrave.smartstore.auth import get_access_token
         from bebrave.smartstore.register import fetch_registered_product
+        from bebrave.smartstore.field_audit import audit_fields
         token = get_access_token()
         info = fetch_registered_product(product_id, token)
         op = info.get("originProduct", {}) or {}
@@ -941,6 +1296,10 @@ def products_detail(product_id):
             img_list.append(images["representativeImage"]["url"])
         img_list += [i.get("url") for i in (images.get("optionalImages") or []) if i.get("url")]
         tags = ((op.get("detailAttribute", {}) or {}).get("seoInfo", {}) or {}).get("sellerTags") or []
+        # "등록 항목 전체 보기" 패널 — 네이버 응답을 5가지만 꺼내 쓰고 나머지(원산지 코드·
+        # A/S 연락처가 더미인지·고시 항목이 "상세페이지 참조"로 도배됐는지 등)를 버리고
+        # 있었다(2026-09). 항목별 판정을 그대로 노출한다.
+        audit_items = audit_fields(op, domemae_goods_no=record.get("domemae_goods_no", ""))
         ctx.update(
             images=img_list,
             tags=[t.get("text", "") if isinstance(t, dict) else str(t) for t in tags],
@@ -948,12 +1307,57 @@ def products_detail(product_id):
             stock=op.get("stockQuantity"),
             status_type=op.get("statusType"),
             quality=score_listing(record, live_detail=info),
+            audit_items=audit_items,
+            audit_problem_count=sum(1 for i in audit_items if i.problem),
         )
     except Exception as e:
         ctx["fetch_error"] = str(e)
         ctx["quality"] = score_listing(record)
 
     return render_template("product_detail.html", **ctx)
+
+
+@app.route("/products/edit_detail", methods=["POST"])
+def products_edit_detail():
+    """등록 후에도 상세설명·상품명·태그를 직접 고쳐 저장 — 지금까지 상품 상세 화면이
+    네이버 실시간 데이터를 이미 받아와 보여주기만 하고, 고칠 수단이 없었다(2026-09).
+    조회→수정→전체 재전송은 update_registered_product()가 이미 하고 있던 패턴을 그대로 쓴다."""
+    pid = request.form.get("naver_product_id", "")
+    name = request.form.get("name", "").strip()
+    detail_content = request.form.get("detail_content", "").strip()
+    tags = [t.strip() for t in request.form.getlist("tag") if t.strip()]
+
+    registered = _load_json(REGISTERED_PRODUCTS)
+    record = next((p for p in registered if str(p.get("naver_product_id", "")) == pid), None)
+    if not record or not name or not detail_content:
+        flash("수정할 상품을 찾을 수 없거나 상품명·상세설명이 비어 있습니다.", "error")
+        return redirect(url_for("products_view"))
+
+    try:
+        from bebrave.smartstore.auth import get_access_token
+        from bebrave.smartstore.register import update_registered_product
+
+        def _mutate(body):
+            body["originProduct"]["name"] = name
+            body["originProduct"]["detailContent"] = detail_content
+            body["originProduct"].setdefault("detailAttribute", {})["seoInfo"] = {
+                "sellerTags": [{"text": t} for t in tags]
+            }
+
+        token = get_access_token()
+        update_registered_product(pid, token, _mutate)
+
+        # 로컬 원장은 name만 갖고 있다(models.py StoreProduct — detail_content/tags는
+        # 저장 안 함, 상품 상세 화면이 매번 네이버에서 실시간으로 다시 읽어온다) — name만 갱신.
+        record["name"] = name
+        with open(REGISTERED_PRODUCTS, "w", encoding="utf-8") as f:
+            json.dump(registered, f, ensure_ascii=False, indent=2)
+
+        flash(f"'{name}' 상세설명·태그 수정 완료", "success")
+    except Exception as e:
+        flash(f"수정 실패: {e}", "error")
+
+    return redirect(url_for("products_view"))
 
 
 # ── 주문·발주 (주문확인 + 발주대기열 + 수동발주 통합, 탭: ready/dispatch/manual/history) ──

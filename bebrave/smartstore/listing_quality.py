@@ -22,11 +22,26 @@ MIN_TAG_COUNT = 5
 MIN_NAME_LENGTH = 15
 
 
+# 카테고리별 "어떻게 고치나" — 점수·사유만 나열하면 뭘 해야 할지 알 수 없다는
+# 지적으로 추가(2026-09). 화면의 실제 편집 지점을 그대로 가리킨다.
+_GUIDE = {
+    "상품명": "위 상품명 칸에서 키워드를 맨 앞에 두고 금지 문구를 빼세요.",
+    "마진": "판매가를 올리거나 원가가 더 낮은 옵션·공급처로 바꾸는 걸 검토하세요.",
+    "이미지": "아래에서 대표·추가 이미지를 늘리세요.",
+    "상세설명": "아래 상세설명 편집기에서 내용을 보강하세요.",
+    "태그": "아래 검색어 태그 칸에서 태그를 추가하세요(최대 10개).",
+}
+
+
 @dataclass
 class QualityIssue:
     item: str
     detail: str
     penalty: int
+
+    @property
+    def guide(self) -> str:
+        return _GUIDE.get(self.item, "")
 
 
 @dataclass
@@ -37,6 +52,17 @@ class QualityScore:
 
     def top_issue(self) -> str:
         return self.issues[0].detail if self.issues else ""
+
+    @property
+    def tier(self) -> str:
+        """점수만 던지면 "75점이 좋은 건지 나쁜 건지" 알 수 없다는 지적으로 추가(2026-09).
+        경계값은 이 파일의 감점 단위(10~20점씩)를 기준으로 잡았다 — 이슈 0~1개는 양호,
+        2~3개는 보완 권장, 그 이상은 보완 필요로 갈리는 지점."""
+        if self.score >= 85:
+            return "양호"
+        if self.score >= 60:
+            return "보완 권장"
+        return "보완 필요"
 
 
 def score_listing(product: dict, live_detail: Optional[dict] = None) -> QualityScore:
@@ -99,6 +125,11 @@ def _demo() -> None:
                                "detailAttribute": {"seoInfo": {"sellerTags": [{"text": "a"}]}}}}
     r2 = score_listing(good, live_detail=live)
     assert r2.checked_live and r2.score < 100, "이미지 1장·상세 짧음·태그 1개인데 실시간 채점이 안 잡음"
+
+    assert score_listing(good).tier == "양호", "감점 없는 상품이 양호로 안 뜸"
+    assert r2.tier in ("보완 권장", "보완 필요"), "감점 있는 상품 등급 판정이 이상함"
+    for issue in r2.issues:
+        assert issue.guide, f"'{issue.item}' 항목에 보완 가이드가 없음"
 
     print("listing_quality self-check OK")
 

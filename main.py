@@ -283,13 +283,16 @@ def cmd_sourcing(args: argparse.Namespace) -> None:
                 from bebrave.sourcing.analyzer import dedupe_by_supply
 
                 candidates = load_from_json(SOURCING_LOG)
-                existing = {c.keyword for c in candidates}
+                # (키워드, 트랙) 기준으로 중복 판정 — 키워드만 보면 같은 키워드의
+                # 트랙B(리메이크)가 트랙A 다음에 조용히 버려진다(webapp 쪽만 먼저
+                # 고쳐졌던 버그, 2026-09 CLI에도 동일 적용).
+                existing = {(c.keyword, c.track) for c in candidates}
                 new_candidates = to_product_candidates(recommended)
                 added = 0
                 for c in new_candidates:
-                    if c.keyword not in existing:
+                    if (c.keyword, c.track) not in existing:
                         candidates.append(c)
-                        existing.add(c.keyword)
+                        existing.add((c.keyword, c.track))
                         added += 1
                 candidates, removed_dupes = dedupe_by_supply(candidates)
                 save_to_json(candidates, SOURCING_LOG)
@@ -599,10 +602,10 @@ def cmd_fix_cs_phone(args: argparse.Namespace) -> None:
     import json
     from pathlib import Path
     from bebrave.smartstore.auth import get_access_token
-    from bebrave.smartstore.notice import CS_PHONE_NUMBER
+    from bebrave.smartstore.notice import CS_PHONE_NUMBER, DUMMY_CS_PHONE_NUMBER
     from bebrave.smartstore.register import update_registered_product
 
-    if CS_PHONE_NUMBER == "010-0000-0000":
+    if CS_PHONE_NUMBER == DUMMY_CS_PHONE_NUMBER:
         print("[중단] .env에 CS_PHONE_NUMBER가 설정돼 있지 않습니다 — 더미번호로 덮어쓰는 걸 방지하기 위해 실행하지 않습니다.")
         return
 

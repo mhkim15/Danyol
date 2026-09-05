@@ -31,6 +31,14 @@ class StoreProduct:
     options: List[dict] = field(default_factory=list)  # [{"name","extra_price","stock"}]
     registered_date: str = field(default_factory=lambda: date.today().isoformat())
     naver_product_id: str = ""         # 등록 후 부여된 스마트스토어 상품 ID
+    discount_rate: float = 0.0         # 즉시할인율 (0~1). 0이면 할인 없음 — sale_price는 항상
+                                        # 할인 전 정가이고, 마진 게이트는 파이프라인에서 할인
+                                        # 적용 후 가격 기준으로 별도 확인한다(2026-09)
+    field_overrides: dict = field(default_factory=dict)
+    # "등록 항목 점검" 패널에서 문제로 잡힌 값(더미 A/S 번호·빈 제조사 등)을 그 자리에서
+    # 바로 고쳐 등록에 반영하기 위한 범용 통로(2026-09). 점검만 되고 못 고친다는 지적으로
+    # 추가 — key는 originProduct 안에서의 점(.) 경로(예: "detailAttribute.brandName"),
+    # value는 사용자가 입력한 새 값. register.build_request_body()가 최종 바디에 덮어쓴다.
 
     def to_dict(self) -> dict:
         return {

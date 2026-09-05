@@ -13,6 +13,8 @@
 import re
 from typing import List, Set
 
+from ..config import BLOCKED_BRAND_PREFIXES
+
 MAX_NAME_LEN = 45
 
 # 네이버쇼핑 SEO 가이드가 금지하는 판매조건·홍보문구 — Claude 경로는 프롬프트로 지시하지만
@@ -28,6 +30,15 @@ BANNED_PROMO_WORDS = {
 
 def strip_promo_words(words: List[str]) -> List[str]:
     return [w for w in words if w not in BANNED_PROMO_WORDS]
+
+
+def _is_blocked_brand(word: str) -> bool:
+    """소싱 단계(discover.py)는 키워드 자체에 타사 브랜드명이 섞이면 후보에서 아예
+    거르지만, 도매매 원본 제목에 브랜드어가 섞여 들어오는 건 걸러지지 않고 그대로
+    상품명에 남았다(2026-09 발견, 예: "…대코 브라이트…"). 같은 차단 목록을 재사용해
+    상품명 정제에도 적용 — 새 목록을 따로 만들지 않는다."""
+    w = word.lower()
+    return any(b.lower() in w for b in BLOCKED_BRAND_PREFIXES)
 
 # 동의어/유의어 그룹 — 같은 그룹 안에서는 최초 등장 단어(보통 keyword) 하나만 채택.
 # "자동우산"/"골프우산"처럼 실제 구분 정보가 붙은 복합어는 그룹의 "정확히 동일한 단어"가
@@ -100,8 +111,17 @@ def optimize_name(keyword: str, raw_title: str, category: str = "", max_len: int
         seen_keys.add(_synonym_key(keyword))
 
     for w in words:
+        if _is_blocked_brand(w):
+            continue
         key = _synonym_key(w)
         if key in seen_keys:
+            continue
+        # 동의어 그룹 밖이라도, 이미 고른 단어에 완전히 포함되는 단어는 정보가 없다
+        # (예: "실리콘주걱"을 이미 골랐는데 뒤에 "실리콘"만 또 나오는 경우). "자동우산"이
+        # "우산"을 부분 포함하는 것과는 반대 방향 — 짧은 단어가 이미 고른 긴 단어 안에
+        # 완전히 들어갈 때만 걸러야, "자동우산"·"골프우산"처럼 실제 구분 정보가 붙은
+        # 복합어는 그대로 유지된다(2026-09).
+        if any(w in c for c in chosen):
             continue
         seen_keys.add(key)
         chosen.append(w)

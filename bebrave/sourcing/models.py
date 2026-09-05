@@ -44,7 +44,11 @@ class ProductCandidate:
             "keyword": self.keyword,
             "monthly_search": self.monthly_search,
             "product_count": self.product_count,
-            "golden_ratio": self.golden_ratio,
+            # product_count==0이면 golden_ratio는 수학적으로 무한대인데, float("inf")를
+            # 그대로 json.dump하면 표준이 아닌 "Infinity" 리터럴이 파일에 박혀 다른 JSON
+            # 파서가 못 읽는다(2026-09 발견). 화면 표시용 값이라 null로 직렬화하고, 실제
+            # 계산은 로드 후 이 property로 다시 하면 된다(from_dict가 저장값을 안 씀).
+            "golden_ratio": None if self.product_count == 0 else self.golden_ratio,
             "category": self.category,
             "is_seasonal": self.is_seasonal,
             "notes": self.notes,

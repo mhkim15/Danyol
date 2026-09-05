@@ -189,16 +189,21 @@ def dedupe_by_supply(candidates: List[ProductCandidate]) -> Tuple[List[ProductCa
     등록된다. 상품코드(goods_no) 기준으로 묶고, 코드가 없으면 상품명 완전
     일치로 대체 판단해 점수가 가장 높은 키워드 하나만 남긴다(2026-08).
 
+    키에 track을 반드시 포함한다 — 트랙A(틈새)와 트랙B(리메이크)는 같은 도매매
+    상품에 매칭되는 게 정상이고(같은 상품을 원본 그대로 vs 리메이크해서 등록),
+    goods_no만으로 묶으면 점수가 낮은 트랙(대개 B)이 매번 조용히 삭제된다
+    (2026-09 발견 — 트랙B가 저장 직후 사라지는 원인 중 하나).
+
     Returns: (남길 후보, 제거된 후보)
     """
     groups: dict = {}
     unmatched = []
     for c in candidates:
-        key = c.supply_goods_no or (c.supply_name if c.supply_name else None)
-        if key is None:
+        supply_key = c.supply_goods_no or (c.supply_name if c.supply_name else None)
+        if supply_key is None:
             unmatched.append(c)
             continue
-        groups.setdefault(key, []).append(c)
+        groups.setdefault((supply_key, c.track), []).append(c)
 
     kept, removed = list(unmatched), []
     for group in groups.values():

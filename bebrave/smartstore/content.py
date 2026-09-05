@@ -28,12 +28,15 @@ def _tokens(text: str) -> set:
     return set(re.findall(r"[가-힣A-Za-z0-9]{2,}", text or ""))
 
 
-def _demand_tags(keyword: str, product: "DomemaeProduct", limit: int = 3) -> List[str]:
+def related_demand_keywords(keyword: str, product: "DomemaeProduct", limit: int = 30) -> List["KeywordData"]:
     """
-    네이버 검색광고 API로 실제 월검색수가 있는 관련 키워드를 태그로 채택.
+    네이버 검색광고 API로 실제 월검색수가 있는 관련 키워드를 조회.
     2026-08 시뮬레이션(50건 실측)으로 확인: 원본 제목/카테고리와 단어가 겹치는 것만
     걸러서 검색량 순으로 골라야 무관한 대형 키워드(예: "마사지")가 안 섞임.
     API 실패/키 미설정이면 조용히 빈 리스트 — 호출부가 다른 태그로 채운다.
+
+    태그 채택(_demand_tags)과 미리보기 화면의 "추천 키워드" 목록(2026-09 추가)이 같은
+    관련성 판정 로직을 쓴다 — 예전엔 상위 3개만 쓰고 나머지 27개와 검색량을 그냥 버렸다.
     """
     try:
         related = fetch_related_keywords(keyword, limit=30)
@@ -57,7 +60,11 @@ def _demand_tags(keyword: str, product: "DomemaeProduct", limit: int = 3) -> Lis
         )
     ]
     relevant.sort(key=lambda r: r.monthly_total, reverse=True)
-    return [r.keyword for r in relevant[:limit]]
+    return relevant[:limit]
+
+
+def _demand_tags(keyword: str, product: "DomemaeProduct", limit: int = 3) -> List[str]:
+    return [r.keyword for r in related_demand_keywords(keyword, product, limit=limit)]
 
 
 def generate_product_content(
@@ -77,7 +84,7 @@ def generate_product_content(
         return _generate_with_claude(keyword, product, sale_price, api_key)
     else:
         # Claude API 키 없을 때 기본 템플릿 사용
-        return _generate_fallback(keyword, product, sale_price)
+        return _generate_fallback(keyword, product)
 
 
 def _generate_with_claude(
@@ -89,7 +96,7 @@ def _generate_with_claude(
     try:
         import anthropic
     except ImportError:
-        return _generate_fallback(keyword, product, sale_price)
+        return _generate_fallback(keyword, product)
 
     client = anthropic.Anthropic(api_key=api_key)
 
@@ -124,7 +131,7 @@ def _generate_with_claude(
     )
     optimized_name = _truncate_at_word_boundary(name_msg.content[0].text.strip(), _MAX_NAME_LEN)
 
-    detail_content = _build_detail_html(product, sale_price, keyword)
+    detail_content = _build_detail_html(product, keyword)
     tags = _generate_tags(keyword, product)
 
     return {"name": optimized_name, "detail_content": detail_content, "tags": tags}
@@ -133,19 +140,23 @@ def _generate_with_claude(
 def _generate_fallback(
     keyword: str,
     product: "DomemaeProduct",
-    sale_price: int,
 ) -> dict:
     """Claude API 없을 때 기본 상품명 + 상세설명 생성."""
     name = optimize_name(keyword, product.name, category=product.category)
-    detail_content = _build_detail_html(product, sale_price, keyword)
+    detail_content = _build_detail_html(product, keyword)
     tags = _generate_tags(keyword, product)
     return {"name": name, "detail_content": detail_content, "tags": tags}
+
+
+# 네이버 커머스API sellerTags는 실제로는 10개까지 반영된다 — 예전엔 5개로 캡을 걸어
+# 나머지 절반의 SEO 여지를 그냥 버리고 있었다(2026-09 확인, 공식 가이드 기준).
+MAX_TAGS = 10
 
 
 def _generate_tags(keyword: str, product: "DomemaeProduct") -> List[str]:
     """
     검색어 태그 후보 생성 (code 없이 text만 등록 — 네이버 공식 가이드상 code 생략 가능).
-    우선순위: ① 소싱 키워드 자체 ② 실제 월검색수가 있는 관련 키워드(수요기반, 최대 3개)
+    우선순위: ① 소싱 키워드 자체 ② 실제 월검색수가 있는 관련 키워드(수요기반, 최대 8개)
     ③ 그래도 자리가 남으면 카테고리/원본 제목에서 채움. 상품과 무관한 단어는 억지로 안 채움.
     """
     seen = set()
@@ -158,54 +169,237 @@ def _generate_tags(keyword: str, product: "DomemaeProduct") -> List[str]:
             tags.append(t)
         return len(tags) >= cap
 
-    if _add(keyword, 5):
+    if _add(keyword, MAX_TAGS):
         pass
 
-    for t in _demand_tags(keyword, product, limit=3):
-        if _add(t, 5):
+    for t in _demand_tags(keyword, product, limit=MAX_TAGS - 2):
+        if _add(t, MAX_TAGS):
             break
 
-    if len(tags) < 5 and product.category:
+    if len(tags) < MAX_TAGS and product.category:
         for t in product.category.split(">")[-2:]:
-            if _add(t, 5):
+            if _add(t, MAX_TAGS):
                 break
 
-    if len(tags) < 5:
+    if len(tags) < MAX_TAGS:
         for w in re.findall(r"[가-힣A-Za-z0-9]{2,}", product.name):
-            if _add(w, 5):
+            if _add(w, MAX_TAGS):
                 break
 
-    return tags[:5]
+    return tags[:MAX_TAGS]
 
 
-def _build_detail_html(product: "DomemaeProduct", sale_price: int, keyword: str) -> str:
-    """도매매 이미지 + 실제 상세설명(desc.contents) + 기본 정보로 상세설명 HTML 구성."""
+def _extract_points(description: str, limit: int = 3, min_len: int = 6, max_len: int = 60) -> List[str]:
+    """도매매 원본 설명에서 짧고 실질적인 문장/줄만 골라 상품 포인트로 쓴다.
+
+    지어내지 않는다 — 원본에 없는 장점을 만들어 붙이면 허위·과장 표시가 된다(이
+    코드베이스가 원산지·고시 항목에서 이미 지키는 원칙과 동일, 2026-09 적용).
+    너무 짧은 줄(메뉴/구분선 잔재)과 너무 긴 줄(문단 전체)은 포인트로 부적절해 제외.
+    """
+    text = re.sub(r"<[^>]+>", "\n", description or "")
+    lines = re.split(r"[\n\r]+|(?<=[.!?다요])\s{2,}", text)
+    points = []
+    for line in lines:
+        line = re.sub(r"\s+", " ", line).strip(" -•·*").strip()
+        if min_len <= len(line) <= max_len and line not in points:
+            points.append(line)
+        if len(points) >= limit:
+            break
+    return points
+
+
+def _build_detail_html(product: "DomemaeProduct", keyword: str) -> str:
+    """도매매 이미지 + 실제 상세설명(desc.contents) + 판매 정책 안내로 상세설명 HTML 구성.
+
+    공급사명·도매 재고·판매가는 절대 본문에 넣지 않는다 — 예전엔 여기 그대로
+    찍혀서 공급사 ID(예: seoul7rsoe)와 도매매 재고(수백만 단위)가 구매자 화면에
+    노출되고 있었다. 위탁판매임을 광고하고 소싱처를 경쟁 셀러에게 공개하는
+    꼴이었다(2026-09 발견). 판매가는 스마트스토어 판매가 필드가 이미 보여주므로
+    본문에 중복 기재하면 가격 변경 시 불일치만 생긴다.
+
+    배송/교환·반품/A/S 안내는 실제 등록 페이로드(register.py의 deliveryInfo·
+    afterServiceInfo)와 반드시 같은 값을 쓴다 — 이전에는 도매매 공급사의 출고
+    배송비(product.shipping_fee, 우리가 부담하는 매입 배송비)를 구매자 화면에
+    "배송비"라고 표시하고 있어서 실제 구매자가 내는 배송비(config.SHIPPING_FEE)와
+    다른 숫자를 보여주는 오류가 있었다(2026-09 발견).
+    """
+    from ..config import SHIPPING_FEE, FREE_SHIPPING_THRESHOLD, RETURN_DELIVERY_FEE, EXCHANGE_DELIVERY_FEE
+    from .notice import CS_PHONE_NUMBER
+
     img_tags = ""
     for img_url in product.images:
         img_tags += f'<img src="{img_url}" style="width:100%;max-width:860px;" />\n'
 
-    shipping_note = (
-        f"배송비: {product.shipping_fee:,}원"
-        if product.shipping_fee
-        else "배송비: 조건부 무료"
-    )
+    # 원본 설명에 실제로 있는 내용만 포인트로 뽑는다 — 없으면 이 블록 자체를 생략.
+    points = _extract_points(product.description)
+    points_html = ""
+    if points:
+        items = "\n".join(f"    <li>{p}</li>" for p in points)
+        points_html = f'<ul style="line-height:2;font-size:15px;">\n{items}\n  </ul>'
 
     # 도매매 원본 상세설명 (desc.contents) — 이전 버전에선 이 필드가 통째로 누락돼 있었음
     description_block = product.description or ""
+    policy_html = _build_policy_html()
 
     html = f"""<div style="text-align:center;font-family:sans-serif;">
 {img_tags}
 <div style="margin:20px auto;max-width:860px;text-align:left;padding:0 16px;">
   <h3 style="font-size:18px;">{product.name}</h3>
-  <ul style="line-height:2;">
-    <li>판매가: {sale_price:,}원</li>
-    <li>공급사: {product.supplier}</li>
-    <li>{shipping_note}</li>
-    <li>재고: {product.stock}개</li>
-  </ul>
+  {points_html}
 </div>
 <div style="margin:20px auto;max-width:860px;text-align:left;padding:0 16px;">
 {description_block}
 </div>
+{policy_html}
 </div>"""
     return html
+
+
+def _build_policy_html() -> str:
+    """배송/교환·반품/A/S 안내 블록 — 등록 페이로드(register.py의 deliveryInfo·
+    afterServiceInfo)와 반드시 같은 값을 써야 하므로 한 곳에서만 만든다. 기본형과
+    리메이크형 상세페이지가 각자 다른 문자열을 들고 있으면 나중에 배송비가 바뀔 때
+    한쪽만 고치고 잊어버리는 사고가 난다."""
+    from ..config import SHIPPING_FEE, FREE_SHIPPING_THRESHOLD, RETURN_DELIVERY_FEE, EXCHANGE_DELIVERY_FEE
+    from .notice import CS_PHONE_NUMBER
+
+    return f"""<div style="margin:20px auto;max-width:860px;text-align:left;padding:16px;border-top:1px solid #eee;">
+  <h4 style="font-size:15px;margin-bottom:8px;">배송 안내</h4>
+  <p style="font-size:14px;color:#555;">기본 배송비 {SHIPPING_FEE:,}원 · {FREE_SHIPPING_THRESHOLD:,}원 이상 구매 시 무료배송</p>
+  <h4 style="font-size:15px;margin:16px 0 8px;">교환·반품 안내</h4>
+  <p style="font-size:14px;color:#555;">반품 배송비 {RETURN_DELIVERY_FEE:,}원 · 교환 배송비 {EXCHANGE_DELIVERY_FEE:,}원 (단순 변심 기준, 왕복)</p>
+  <h4 style="font-size:15px;margin:16px 0 8px;">A/S 안내</h4>
+  <p style="font-size:14px;color:#555;">구매 후 문의: {CS_PHONE_NUMBER}</p>
+</div>"""
+
+
+def remake_detail_html(keyword: str, product: "DomemaeProduct") -> str:
+    """
+    리메이크(트랙B) 전용 "다시 만들기" — _build_detail_html과 다른 구성으로 상세페이지를
+    새로 짠다(2026-09, 리메이크 재생성 요청). 지금까지 리메이크는 "손봐서 등록"이라고만
+    안내하고 실제로 손볼 도구(다른 레이아웃 생성)가 없었다.
+
+    원본에 없는 특징은 절대 지어내지 않는다 — 도입 문구는 _extract_points로 원본
+    설명에서 뽑은 사실만 근거로 삼는다. ANTHROPIC_API_KEY가 있으면 그 사실들만 주고
+    짧은 도입 문구를 새로 쓰게 하고(허위 스펙 금지를 프롬프트에 명시), 없으면
+    카테고리 무드어휘 사전(name_optimizer.MOOD_WORDS)만으로 결정적으로 조합한다.
+    포인트는 불릿이 아니라 카드형으로 강조 배치해 원본과 눈에 띄게 다른 레이아웃을 만든다.
+    """
+    points = _extract_points(product.description, limit=4)
+    mood_word = _find_mood_word(product.category)
+    intro = _generate_remake_intro(keyword, product.category, points) or (
+        f"{keyword}, {mood_word}으로 골라보세요." if mood_word else f"{keyword}을(를) 소개합니다."
+    )
+
+    img_tags = "".join(f'<img src="{u}" style="width:100%;max-width:860px;" />\n' for u in product.images)
+
+    points_html = ""
+    if points:
+        cards = "\n".join(
+            f'<div style="flex:1 1 200px;background:#f7f7f9;border-radius:10px;padding:14px 16px;">'
+            f'<div style="font-size:12px;color:#888;margin-bottom:4px;">POINT {i + 1}</div>'
+            f'<div style="font-size:14px;">{p}</div></div>'
+            for i, p in enumerate(points)
+        )
+        points_html = (
+            f'<div style="max-width:860px;margin:0 auto;padding:0 16px;">'
+            f'<div style="display:flex;flex-wrap:wrap;gap:10px;margin:16px 0;">{cards}</div></div>'
+        )
+
+    description_block = product.description or ""
+    policy_html = _build_policy_html()
+
+    return f"""<div style="text-align:center;font-family:sans-serif;">
+<div style="margin:20px auto;max-width:860px;text-align:left;padding:0 16px;">
+  <p style="font-size:17px;font-weight:700;line-height:1.5;">{intro}</p>
+</div>
+{points_html}
+{img_tags}
+<div style="margin:20px auto;max-width:860px;text-align:left;padding:0 16px;">
+{description_block}
+</div>
+{policy_html}
+</div>"""
+
+
+def _generate_remake_intro(keyword: str, category: str, points: List[str]) -> str:
+    """Claude로 도입 문구 생성 — 준 사실(points) 밖의 내용은 쓰지 말라고 명시한다.
+    키 없음/호출 실패/포인트 없음이면 빈 문자열 — 호출부가 결정적 문구로 대체한다."""
+    api_key = os.environ.get("ANTHROPIC_API_KEY", "")
+    if not api_key or not points:
+        return ""
+    try:
+        import anthropic
+        client = anthropic.Anthropic(api_key=api_key)
+        fact_list = "\n".join(f"- {p}" for p in points)
+        prompt = f"""네이버 스마트스토어 상세페이지 최상단에 넣을 도입 문구를 2문장 이내로 써줘.
+
+상품 키워드: {keyword}
+카테고리: {category}
+아래는 실제 상품 설명에서 뽑은 사실이야 — 이 사실만 근거로 써:
+{fact_list}
+
+규칙: 위에 없는 효능·인증·수치를 지어내지 마. "최고", "1위" 같은 과장 표현 금지.
+문구만 출력해(따옴표·설명 없이)."""
+        msg = client.messages.create(
+            model="claude-haiku-4-5-20251001", max_tokens=150,
+            messages=[{"role": "user", "content": prompt}],
+        )
+        return msg.content[0].text.strip()
+    except Exception:
+        return ""
+
+
+def _demo() -> None:
+    """실행 가능한 자체 점검 — 상세페이지에 공급사·도매재고·판매가가 새지 않는지,
+    포인트가 지어내지 않고 원본에서만 뽑히는지, 배송 안내가 도매매 매입 배송비가
+    아니라 실제 구매자 배송정책(config.SHIPPING_FEE)을 쓰는지 확인 (네트워크 호출 없음).
+    2026-09: 공급사 ID·도매 재고 노출 문제 + 매입배송비/구매배송비 혼동 문제를
+    고친 뒤 재발 방지용으로 추가."""
+    from ..sourcing.domemae import DomemaeProduct
+    from ..config import SHIPPING_FEE
+
+    product = DomemaeProduct(
+        goods_no="12345", name="실리콘주걱", supply_price=2300, retail_price=0,
+        min_order_qty=1, stock=3_432_752, supplier="seoul7rsoe", category="주방>조리도구",
+        shipping_fee=9999,  # 도매매 매입 배송비 — 구매자 화면에 절대 이 숫자가 나오면 안 됨
+        description="<p>실리콘 100% 소재라 인체에 무해합니다.</p><p>미끄럼방지 손잡이로 안전합니다.</p>"
+                    "<p>500도 고열에도 변형 없이 오래 씁니다.</p>",
+    )
+    html = _build_detail_html(product, keyword="실리콘주걱")
+    assert "seoul7rsoe" not in html, "공급사 ID가 상세페이지에 노출됨"
+    assert "3,432,752" not in html and "3432752" not in html, "도매 재고 수량이 상세페이지에 노출됨"
+    assert "실리콘 100% 소재라 인체에 무해합니다" in html, "도매매 원본 설명이 누락됨"
+    assert "9,999" not in html, "도매매 매입 배송비가 구매자 화면에 노출됨"
+    assert f"{SHIPPING_FEE:,}원" in html, "실제 구매자 배송비 안내가 없음"
+
+    points = _extract_points(product.description)
+    assert any("실리콘 100% 소재라 인체에 무해합니다" in p for p in points), points
+    assert len(points) <= 3
+
+    empty = DomemaeProduct(
+        goods_no="0", name="상품", supply_price=1000, retail_price=0, min_order_qty=1,
+        stock=1, supplier="s", category="", shipping_fee=0, description="",
+    )
+    assert _extract_points(empty.description) == [], "설명이 없는데 포인트를 지어냄"
+
+    # 리메이크 재생성 — API 키 없이도(이 환경 기본값) 크래시 없이 결정적 문구로 동작하고,
+    # 도입 문구가 원본에 없는 사실을 지어내지 않는지 확인.
+    remake_html = remake_detail_html("실리콘주걱", product)
+    assert "seoul7rsoe" not in remake_html and "9,999" not in remake_html
+    assert "실리콘 100% 소재라 인체에 무해합니다" in remake_html
+    assert "POINT 1" in remake_html, "카드형 포인트 레이아웃이 안 만들어짐"
+    assert remake_html != _build_detail_html(product, keyword="실리콘주걱"), "리메이크가 기본형과 동일함(레이아웃이 안 바뀜)"
+
+    no_desc = DomemaeProduct(
+        goods_no="0", name="상품", supply_price=1000, retail_price=0, min_order_qty=1,
+        stock=1, supplier="s", category="없는카테고리", shipping_fee=0, description="", images=[],
+    )
+    remake_empty = remake_detail_html("테스트", no_desc)
+    assert "테스트" in remake_empty, "포인트·무드어휘가 둘 다 없을 때 기본 도입 문구가 안 나옴"
+
+    print("content._demo self-check OK")
+
+
+if __name__ == "__main__":
+    _demo()

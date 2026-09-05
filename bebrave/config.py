@@ -43,6 +43,10 @@ MIN_MARGIN = 0.15           # 최소 마진율
 TARGET_MARGIN = 0.20        # 목표 마진율
 SHIPPING_FEE = 3_000        # 기본 배송비 (원)
 FREE_SHIPPING_THRESHOLD = 30_000  # 무료배송 기준 (원)
+# 상품 등록 시 반품/교환 배송비 — register.py가 리터럴로 중복 정의하고 있던 것을
+# 여기 한 곳으로 통일(2026-09). 마진 계산과 등록값이 서로 다른 숫자를 쓰던 문제 방지.
+RETURN_DELIVERY_FEE = 3_000
+EXCHANGE_DELIVERY_FEE = 6_000
 MIN_ABS_PROFIT = 5_000      # 최소 절대이익 (원) — %마진이 높아도 개당 이 미만이면 제외
 PRICE_COMPETITIVE_BAND = 0.05  # 시장 평균가 대비 이 비율 안이면 "보통", 밖이면 강함/약함
 

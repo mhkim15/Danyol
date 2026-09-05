@@ -9,6 +9,7 @@ API: POST https://api.commerce.naver.com/external/v1/product-images/upload
 Content-Type: multipart/form-data, 필드명 imageFiles (최대 10개)
 """
 import os
+from io import BytesIO
 from typing import List
 
 try:
@@ -16,6 +17,12 @@ try:
     _HAS_REQUESTS = True
 except ImportError:
     _HAS_REQUESTS = False
+
+try:
+    from PIL import Image
+    _HAS_PIL = True
+except ImportError:
+    _HAS_PIL = False
 
 _BASE_URL = "https://api.commerce.naver.com/external"
 _RECOMMENDED_MIN_PX = 1000  # 네이버쇼핑 이미지 권장 최소 해상도 (변, px)
@@ -30,8 +37,6 @@ def check_min_resolution(image_url: str, min_px: int = _RECOMMENDED_MIN_PX):
     if not _HAS_REQUESTS or not image_url:
         return None
     try:
-        from PIL import Image
-        from io import BytesIO
         resp = requests.get(image_url, timeout=10)
         resp.raise_for_status()
         img = Image.open(BytesIO(resp.content))
@@ -40,10 +45,39 @@ def check_min_resolution(image_url: str, min_px: int = _RECOMMENDED_MIN_PX):
         return None
 
 
-def upload_images(image_urls: List[str], access_token: str) -> List[str]:
+def pad_to_square(image_bytes: bytes, background=(255, 255, 255)) -> bytes:
+    """
+    대표이미지를 1:1 정사각으로 맞춘다 — 크롭(잘라내기)이 아니라 흰 배경 패딩이다.
+    네이버쇼핑 목록 썸네일은 정사각으로 강제 표시되는데, 원본이 직사각형이면 좌우나
+    위아래가 잘려 상품 일부(가격표·구성품 등)가 안 보이는 경우가 있었다(2026-09).
+    잘라내면 정보가 사라지므로, 짧은 변에 흰 여백을 더해 정사각으로 맞춘다.
+    이미 정사각이면 그대로 반환(불필요한 재인코딩 방지).
+    """
+    if not _HAS_PIL:
+        return image_bytes
+    try:
+        img = Image.open(BytesIO(image_bytes))
+        img = img.convert("RGB") if img.mode != "RGB" else img
+        w, h = img.size
+        if w == h:
+            return image_bytes
+        side = max(w, h)
+        canvas = Image.new("RGB", (side, side), background)
+        canvas.paste(img, ((side - w) // 2, (side - h) // 2))
+        buf = BytesIO()
+        canvas.save(buf, format="JPEG", quality=92)
+        return buf.getvalue()
+    except Exception:
+        return image_bytes  # 가공 실패해도 원본 그대로 업로드 — 대표이미지가 아예 빠지는 것보단 낫다
+
+
+def upload_images(image_urls: List[str], access_token: str, square_first: bool = True) -> List[str]:
     """
     외부 이미지 URL들을 다운로드해서 네이버 이미지 서버에 업로드 → 네이버 URL 리스트 반환.
     실패한 개별 이미지는 건너뛰고 성공한 것만 반환.
+
+    square_first: 목록의 첫 번째(대표이미지)만 1:1 정사각으로 패딩한다 — 호출부
+    (pipeline.py)가 항상 대표이미지를 index 0에 놓고 넘기는 관례를 따른다.
     """
     if not _HAS_REQUESTS:
         raise NotImplementedError("pip3 install requests 후 재시도하세요.")
@@ -56,7 +90,11 @@ def upload_images(image_urls: List[str], access_token: str) -> List[str]:
             ext = "jpg"
             if "." in url.split("?")[0].rsplit("/", 1)[-1]:
                 ext = url.split("?")[0].rsplit(".", 1)[-1][:4]
-            files.append(("imageFiles", (f"image_{i}.{ext}", resp.content, "image/jpeg")))
+            image_bytes = resp.content
+            if i == 0 and square_first:
+                image_bytes = pad_to_square(image_bytes)
+                ext = "jpg"  # pad_to_square는 항상 JPEG로 재인코딩
+            files.append(("imageFiles", (f"image_{i}.{ext}", image_bytes, "image/jpeg")))
         except Exception as e:
             print(f"  [경고] 이미지 다운로드 실패 ({url[:60]}...): {e}")
 
@@ -75,3 +113,33 @@ def upload_images(image_urls: List[str], access_token: str) -> List[str]:
     result = resp.json()
     images = result.get("images", result if isinstance(result, list) else [])
     return [img.get("url", "") for img in images if img.get("url")]
+
+
+def _demo() -> None:
+    """실행 가능한 자체 점검 — pad_to_square가 직사각형은 정사각으로 맞추고
+    정사각은 그대로 두는지 확인 (네트워크 호출 없음)."""
+    if not _HAS_PIL:
+        print("Pillow 미설치 — pad_to_square 자체 점검 건너뜀")
+        return
+
+    def _make(w, h):
+        buf = BytesIO()
+        Image.new("RGB", (w, h), (10, 20, 30)).save(buf, format="JPEG")
+        return buf.getvalue()
+
+    wide = pad_to_square(_make(800, 400))
+    img = Image.open(BytesIO(wide))
+    assert img.size == (800, 800), img.size
+
+    tall = pad_to_square(_make(400, 800))
+    img2 = Image.open(BytesIO(tall))
+    assert img2.size == (800, 800), img2.size
+
+    square_bytes = _make(500, 500)
+    assert pad_to_square(square_bytes) == square_bytes, "이미 정사각인데 재인코딩됨"
+
+    print("images.pad_to_square self-check OK")
+
+
+if __name__ == "__main__":
+    _demo()

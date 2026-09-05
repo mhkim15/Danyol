@@ -1,46 +1,301 @@
-<h1 style="{{ 'display:none;' if modal }}">등록 미리보기 — "{{ keyword }}"</h1>
-
-{% if track == 'B' %}
-<div class="panel" style="background:var(--warn-bg);color:var(--warn);">
-  ⚠ 리메이크 후보 — 이미 경쟁이 있는 시장입니다. 상품명뿐 아니라 <b>상세페이지도 새로 만들어야</b> 이길 여지가 있습니다.
-  아래 "상세페이지 미리보기"는 공급사 원본이니 그대로 쓰지 말고 손을 봐서 등록하세요.
-</div>
-{% elif track == 'A' %}
-<p class="hint">틈새 후보 — 경쟁이 적어 상품명만 다듬으면 상세페이지는 공급사 원본 그대로 등록해도 됩니다.</p>
-{% endif %}
+<div class="detail-layout"><div class="detail-main">
+<h1 style="margin:0 0 12px;color:var(--ink);">{{ '리메이크 상품' if track == 'B' else '틈새 상품' if track == 'A' else '등록 미리보기' }}</h1>
 
 <div class="panel">
   <h2>상품명 최적화</h2>
-  <label>도매매 원본</label>
-  <div class="mono" style="padding:8px 10px;background:var(--paper);border-radius:6px;color:var(--ink-soft);">{{ raw_name }}</div>
   {% if not supply_matched %}
-  <p style="color:var(--warn);font-size:13px;margin-top:6px;">⚠ 이 키워드와 형태가 같은 상품인지 자동 확인 못함 — 재료/부자재일 수 있으니 실물·상세페이지 확인 후 등록하세요.</p>
+  <div style="background:var(--warn-bg);border-radius:8px;padding:10px 12px;margin-bottom:12px;">
+    <p style="color:var(--warn);font-size:13px;margin:0 0 8px;">⚠ 이 키워드와 형태가 같은 상품인지 자동 확인 못함 — 재료/부자재일 수 있습니다. 아래 "상세페이지"에서 이미지를 실물로 확인하세요(외부 사이트로 안 나가도 됩니다).</p>
+    <form method="post" action="{{ url_for('confirm_match_bulk') }}">
+      <input type="hidden" name="ids" value="{{ keyword }}||{{ track }}">
+      <input type="hidden" name="tab" value="{{ 'remake' if track == 'B' else 'niche' }}">
+      <button type="submit" class="btn-sm">이미지 확인함 — 실물확인 완료로 표시</button>
+    </form>
+  </div>
   {% endif %}
-  <label for="name_override">최적화 후 (동의어 제거 + SEO 규칙 적용) — 직접 수정 가능</label>
+  <div class="row" style="gap:6px;margin-bottom:8px;">
+    <button type="button" id="nameTabOpt" class="btn-sm" onclick="showNameTab('opt')">최적화 후</button>
+    <button type="button" id="nameTabRaw" class="btn-sm secondary" onclick="showNameTab('raw')">원본 보기</button>
+  </div>
   <input type="text" id="name_override" form="register-form" name="name_override" value="{{ optimized_name }}" maxlength="100" class="mono">
+  <p id="nameHint" class="muted" style="font-size:12px;margin-top:6px;">직접 수정 가능 — 이 값이 등록됩니다</p>
+  {% if removed_words %}
+  <p class="muted" style="font-size:12px;margin-top:4px;">근거 — 원본에서 제거한 중복 단어: {{ removed_words|join(', ') }}</p>
+  {% else %}
+  <p class="muted" style="font-size:12px;margin-top:4px;">근거 — 원본에서 제거할 중복 단어가 없어 그대로 유지했습니다.</p>
+  {% endif %}
+  {% if name_recommend_keywords %}
+  <div class="row" style="flex-wrap:wrap;gap:6px;margin-top:10px;">
+    {% for kw in name_recommend_keywords %}
+    <button type="button" class="badge" style="cursor:pointer;border:none;" onclick="appendToName('{{ kw.keyword }}')">
+      {{ kw.keyword }} <span class="muted mono">{{ '{:,}'.format(kw.monthly_total) }}</span>
+    </button>
+    {% endfor %}
+  </div>
+  {% endif %}
 </div>
 
-<div class="panel">
-  <h2>검색어 태그</h2>
-  <div class="row">
-    {% for t in tags %}<span class="badge">{{ t }}</span>{% else %}<span class="muted">없음</span>{% endfor %}
+<div class="panel" style="margin-bottom:32px;">
+  <h2>상세페이지 {{ '직접 수정' if track == 'B' else '미리보기 · 수정' }}
+    {% if regenerated %}<span class="badge-ok" style="margin-left:6px;">다시 만든 버전</span>{% endif %}
+  </h2>
+  <p class="muted" style="font-size:12.5px;margin:0 0 10px;">
+    화면을 보면서 바로 고칠 수 있습니다 — 글자·이미지를 마우스로 편집하세요.
+    {% if track == 'B' %}리메이크 후보는 공급사 원본 그대로 등록하면 경쟁에서 밀립니다 — 여기서 손보고 등록하세요.{% endif %}
+  </p>
+  {% if track == 'B' %}
+  <div class="row" style="margin-bottom:6px;">
+    <a class="btn secondary"
+       href="{{ url_for('candidates_preview', keyword=keyword, track=track, goods_no=goods_no, regen=1) }}"
+       data-modal-url="{{ url_for('candidates_preview', keyword=keyword, track=track, goods_no=goods_no, modal=1, regen=1) }}"
+       onclick="openPreviewModal(this.dataset.modalUrl); return false;">
+      {{ '내용 다시 만들기 (한 번 더)' if regenerated else '내용 다시 만들기 — 새 구성으로 재생성' }}
+    </a>
+    {% if has_gemini_key %}
+    <form method="post" action="{{ url_for('generate_candidate_image') }}" style="display:inline;">
+      <input type="hidden" name="keyword" value="{{ keyword }}">
+      <input type="hidden" name="track" value="{{ track }}">
+      <input type="hidden" name="goods_no" value="{{ goods_no }}">
+      <button type="submit" class="btn secondary">AI로 새 대표이미지 만들기</button>
+    </form>
+    {% else %}
+    <a class="btn secondary" target="_blank" rel="noopener" href="https://aistudio.google.com/">AI 이미지 도구 열기 (수동)</a>
+    {% endif %}
   </div>
+  <p class="muted" style="font-size:12px;margin:-2px 0 10px;">
+    "내용 다시 만들기"는 원본 설명에 있는 사실만 뽑아 다른 배치로 새로 짭니다 — 없는 특징을 지어내지 않습니다.
+    {% if has_gemini_key %}"AI로 새 대표이미지 만들기"는 원본 사진을 참고해 새 이미지를 생성합니다(구도·색감만 참고, 상품 자체는 바꾸지 않음).
+    {% else %}대표이미지를 새로 그리려면 위 링크에서 <a href="{{ raw_image_url }}" target="_blank" rel="noopener">원본 이미지</a>를 내려받아 업로드하고 생성한 뒤, 결과 이미지를 대표이미지로 등록하고 싶으면 알려주세요. 자동 연결하려면 .env에 GEMINI_API_KEY 추가가 필요합니다.{% endif %}
+  </p>
+  {% if generated_image_url %}
+  <div class="row" style="align-items:center;margin-bottom:10px;">
+    <img src="{{ generated_image_url }}" style="width:120px;height:120px;object-fit:cover;border-radius:8px;border:1px solid var(--line);">
+    <span class="badge-ok">이 이미지로 대표이미지 교체 예정</span>
+  </div>
+  <input type="hidden" form="register-form" name="representative_image_override" value="{{ generated_image_url }}">
+  {% endif %}
+  {% endif %}
+  <div class="row" style="gap:6px;margin-bottom:6px;">
+    <button type="button" id="detailTabWysiwyg" class="btn-sm" onclick="showDetailTab('wysiwyg')">위지윅 편집</button>
+    <button type="button" id="detailTabHtml" class="btn-sm secondary" onclick="showDetailTab('html')">HTML 직접 편집</button>
+  </div>
+  <p class="muted" style="font-size:12px;margin:0 0 10px;">
+    위지윅 화면에서 저장한 내용은 일부 레이아웃 스타일(이미지 폭 지정, 배경색 배너 등)이 단순화될 수 있습니다 — 그대로 유지하려면 "HTML 직접 편집"에서 확인·수정하세요.
+  </p>
+
+  <style>
+    /* "상품명 최적화" 패널 전체 높이(약 218px) × 3 = 654px를 기본값으로 — 입력칸 한
+       줄(39px) 기준이 아니라 그 위 패널 전체를 기준으로 잡은 값이다. 상세페이지가
+       그대로 펼쳐지면 모달이 수천 px로 늘어나 아래 패널들이 다 밀려버린다(2026-09).
+       하단 모서리를 끌어서 원하는 만큼 늘리고 줄일 수 있다(브라우저 기본 리사이즈 핸들). */
+    #detailWysiwygWrap .ck-editor__editable {
+      height: 654px;
+      min-height: 200px;
+      overflow-y: auto;
+      resize: vertical;
+    }
+  </style>
+  <div id="detailWysiwygWrap">
+    <div id="ckeditorMount">{{ detail_content|safe }}</div>
+  </div>
+  <div id="detailHtmlWrap" hidden>
+    <div style="display:flex;gap:12px;flex-wrap:wrap;">
+      <textarea id="detailEditor" form="register-form" name="detail_override" spellcheck="false"
+                oninput="document.getElementById('detailPreviewFrame').srcdoc = this.value"
+                style="flex:1 1 320px;min-width:280px;height:400px;font-family:var(--mono);font-size:12px;
+                       border:1px solid var(--line);border-radius:6px;padding:10px;resize:vertical;">{{ detail_content }}</textarea>
+      <iframe id="detailPreviewFrame" srcdoc="{{ detail_content }}"
+              style="flex:1 1 320px;min-width:280px;height:400px;border:1px solid var(--line);border-radius:6px;background:#fff;"></iframe>
+    </div>
+  </div>
+  <input type="hidden" form="register-form" name="detail_generated" value="{{ detail_content }}">
 </div>
+
+<script src="https://cdn.jsdelivr.net/npm/@ckeditor/ckeditor5-build-classic@44.3.0/build/ckeditor.js"></script>
+<script>
+(function () {
+  var ckInstance = null;
+  var mount = document.getElementById('ckeditorMount');
+  ClassicEditor.create(mount, { licenseKey: 'GPL' }).then(function (editor) {
+    ckInstance = editor;
+    // 실제 등록에 쓰이는 값은 항상 textarea(#detailEditor) — 위지윅에서 실제로 뭔가
+    // 바뀔 때만(초기 로드는 change:data가 안 뜬다) 그 값을 그대로 밀어넣는다. 무조건
+    // 동기화하면 위지윅 탭을 열어보기만 해도(편집 안 해도) CKEditor가 원본 HTML의
+    // 레이아웃 스타일을 자기 모델에 없는 걸로 보고 조용히 지워버릴 수 있다(2026-09).
+    editor.model.document.on('change:data', function () {
+      var html = editor.getData();
+      document.getElementById('detailEditor').value = html;
+      var frame = document.getElementById('detailPreviewFrame');
+      if (frame) frame.srcdoc = html;
+    });
+  }).catch(function (err) { console.error('위지윅 에디터 로드 실패:', err); });
+
+  window.showDetailTab = function (which) {
+    var wysiwygBtn = document.getElementById('detailTabWysiwyg');
+    var htmlBtn = document.getElementById('detailTabHtml');
+    var wysiwygWrap = document.getElementById('detailWysiwygWrap');
+    var htmlWrap = document.getElementById('detailHtmlWrap');
+    if (which === 'html') {
+      wysiwygWrap.hidden = true; htmlWrap.hidden = false;
+      wysiwygBtn.className = 'btn-sm secondary'; htmlBtn.className = 'btn-sm';
+    } else {
+      // HTML 탭에서 직접 고친 내용이 있으면 그걸 위지윅에 다시 반영 — textarea가 항상
+      // 최신 진실이므로 여기서 불러오기만 하면 된다.
+      if (ckInstance) ckInstance.setData(document.getElementById('detailEditor').value);
+      wysiwygWrap.hidden = false; htmlWrap.hidden = true;
+      wysiwygBtn.className = 'btn-sm'; htmlBtn.className = 'btn-sm secondary';
+    }
+  };
+})();
+</script>
+
+<div class="panel">
+  <h2>검색어 태그 — 직접 수정 가능 (최대 10개)</h2>
+  <label class="muted" style="font-size:12px;">적용된 태그</label>
+  <div id="tagChipsApplied" class="row" style="flex-wrap:wrap;gap:6px;margin-top:4px;min-height:28px;"></div>
+  <label class="muted" style="font-size:12px;display:block;margin-top:14px;">이외 추천 키워드 — 클릭하면 위로 이동합니다</label>
+  <div id="tagChipsPool" class="row" style="flex-wrap:wrap;gap:6px;margin-top:4px;min-height:28px;"></div>
+  <p id="tagPoolEmptyMsg" class="muted" style="font-size:12.5px;margin-top:4px;display:none;">이 키워드와 관련된 검색량 있는 단어를 이미 다 태그에 반영했습니다.</p>
+</div>
+<script>
+(function () {
+  var MAX_TAGS = 10;
+  var applied = {{ tags|tojson }};
+  var appliedSet = {};
+  applied.forEach(function (t) { appliedSet[t] = true; });
+  var pool = {{ (tag_recommend_keywords or [])|map(attribute='keyword')|list|tojson }}
+    .map(function (kw, i) { return {keyword: kw, monthly_total: {{ (tag_recommend_keywords or [])|map(attribute='monthly_total')|list|tojson }}[i]}; })
+    .filter(function (kw) { return !appliedSet[kw.keyword]; });
+
+  function renderApplied() {
+    var box = document.getElementById('tagChipsApplied');
+    box.innerHTML = '';
+    applied.forEach(function (word, idx) {
+      var chip = document.createElement('span');
+      chip.style.cssText = 'display:inline-flex;align-items:center;gap:4px;background:var(--chip-bg);border-radius:99px;padding:3px 4px 3px 10px;';
+      var input = document.createElement('input');
+      input.type = 'text'; input.className = 'mono'; input.setAttribute('form', 'register-form');
+      input.name = 'tag'; input.maxLength = 20; input.value = word;
+      input.style.cssText = 'border:none;background:transparent;width:80px;font-size:12.5px;padding:2px 0;';
+      input.oninput = function () { applied[idx] = input.value; };
+      var removeBtn = document.createElement('button');
+      removeBtn.type = 'button'; removeBtn.textContent = '×';
+      removeBtn.style.cssText = 'border:none;background:none;cursor:pointer;color:var(--ink-soft);font-size:14px;line-height:1;padding:2px 6px;';
+      removeBtn.onclick = function () {
+        var removedWord = applied[idx];
+        applied.splice(idx, 1);
+        if (removedWord) { pool.unshift({keyword: removedWord, monthly_total: 0}); }
+        renderApplied(); renderPool();
+      };
+      chip.appendChild(input); chip.appendChild(removeBtn);
+      box.appendChild(chip);
+    });
+    if (!applied.length) { box.innerHTML = '<span class="muted" style="font-size:12.5px;">없음</span>'; }
+  }
+
+  function renderPool() {
+    var box = document.getElementById('tagChipsPool');
+    var emptyMsg = document.getElementById('tagPoolEmptyMsg');
+    box.innerHTML = '';
+    pool.forEach(function (kw, idx) {
+      var btn = document.createElement('button');
+      btn.type = 'button'; btn.className = 'badge'; btn.style.cssText = 'cursor:pointer;border:none;';
+      btn.innerHTML = kw.keyword + ' <span class="muted mono">' + (kw.monthly_total ? kw.monthly_total.toLocaleString() : '') + '</span>';
+      btn.onclick = function () {
+        if (applied.length >= MAX_TAGS) { alert('태그는 최대 ' + MAX_TAGS + '개까지 등록됩니다 — 기존 태그를 지우고 다시 눌러주세요.'); return; }
+        pool.splice(idx, 1);
+        applied.push(kw.keyword);
+        renderApplied(); renderPool();
+      };
+      box.appendChild(btn);
+    });
+    emptyMsg.style.display = pool.length ? 'none' : 'block';
+  }
+
+  renderApplied();
+  renderPool();
+})();
+
+function appendToName(word) {
+  var input = document.getElementById('name_override');
+  var current = input.value.trim();
+  var candidate = current ? (current + ' ' + word) : word;
+  if (candidate.length > 100) { alert('상품명이 100자를 넘어 추가할 수 없습니다.'); return; }
+  input.value = candidate;
+}
+
+var RAW_NAME_TEXT = {{ raw_name|tojson }};
+var lastOptValue = document.getElementById('name_override').value;
+function showNameTab(which) {
+  var input = document.getElementById('name_override');
+  var optBtn = document.getElementById('nameTabOpt');
+  var rawBtn = document.getElementById('nameTabRaw');
+  var hint = document.getElementById('nameHint');
+  if (which === 'raw') {
+    lastOptValue = input.value;
+    input.value = RAW_NAME_TEXT;
+    // disabled(수정 불가 + 폼 미제출)로 — readOnly만 쓰면 입력칸이 눈으로는 수정 가능한
+    // 상태처럼 보이고, 이 화면을 띄운 채 등록을 누르면 원본명이 그대로 제출돼버렸다(2026-09).
+    input.disabled = true;
+    input.style.cssText = 'background:var(--chip-bg);color:var(--ink-soft);cursor:not-allowed;';
+    optBtn.className = 'btn-sm secondary'; rawBtn.className = 'btn-sm';
+    hint.textContent = '도매매 원본 — 참고용, 수정 불가. 등록에는 "최적화 후" 값이 쓰입니다';
+  } else {
+    input.value = lastOptValue;
+    input.disabled = false;
+    input.style.cssText = '';
+    optBtn.className = 'btn-sm'; rawBtn.className = 'btn-sm secondary';
+    hint.textContent = '직접 수정 가능 — 이 값이 등록됩니다';
+  }
+}
+</script>
 
 <div class="panel">
   <h2>카테고리</h2>
   <div>{{ category_name }} <span class="muted mono">({{ category_id or "미확정" }})</span></div>
+  {% if category_error %}
+  <div class="flash flash-error" style="margin-top:10px;">{{ category_error }}</div>
+  {% endif %}
 </div>
 
 <div class="panel">
-  <h2>가격 · 마진</h2>
-  <div class="row">
-    <div class="badge">판매가 {{ "{:,}".format(sale_price) }}원</div>
+  <h2>가격 · 마진
+    <button type="button" class="tip-btn" data-tip-toggle>?<span class="tip-bubble">
+      <p>판매가·할인율은 아래 칸에서 직접 바꿀 수 있습니다.</p>
+      <p><b>바뀐 값으로 마진을 미리 보려면</b> — "실제로 등록" 체크를 <b>끈 채로</b> 등록 버튼을 누르세요. 실제 등록은 안 되고, 그 값 기준 마진·개당이익만 계산해 보여줍니다.</p>
+      <p>마진이 기준(최소 마진율, 개당이익 5,000원) 미달이면 등록이 자동으로 막힙니다. 할인을 걸었다면 <b>할인된 가격 기준으로도</b> 같은 기준을 다시 확인합니다.</p>
+    </span></button>
+  </h2>
+  <div class="row" style="align-items:center;">
+    <label for="sale_price_override" style="font-size:12.5px;">판매가</label>
+    <input type="number" id="sale_price_override" form="register-form" name="sale_price_override"
+           value="{{ sale_price }}" step="100" class="mono" style="width:110px;">원
     <div class="badge">도매가 {{ "{:,}".format(supply_price) }}원</div>
-    <div class="badge">마진율 {{ "%.1f"|format(margin_rate * 100) }}%</div>
+    <div class="badge">마진율(현재 판매가 기준) {{ "%.1f"|format(margin_rate * 100) }}%</div>
   </div>
-  <div class="muted" style="font-size:12.5px;margin:10px 0 6px;">이 판매가가 시장에서 통할지 직접 비교해보세요:</div>
+  <div class="row" style="align-items:center;margin-top:8px;">
+    <label for="discount_percent" style="font-size:12.5px;">즉시할인</label>
+    <input type="number" id="discount_percent" form="register-form" name="discount_percent"
+           min="0" max="90" step="1" placeholder="0" class="mono" style="width:60px;">%
+  </div>
+
+  {% if price_position and price_position.label != '확인불가' %}
+  <div class="muted" style="font-size:12.5px;margin:12px 0 6px;">11번가 시장가 분포 (표본 {{ price_position.sample_size }}건, 판정은 중앙값 기준):</div>
   <div class="row">
+    <span class="{{ 'badge-ok' if price_position.label == '강함' else ('badge-warn' if price_position.label == '약함' else 'badge') }}">{{ price_position.label }}</span>
+    <span class="muted mono" style="font-size:12px;">
+      최저 {{ '{:,}'.format(price_position.min) }} ·
+      {% if price_position.p25 %}25% {{ '{:,}'.format(price_position.p25) }} · {% endif %}
+      중앙값 {{ '{:,}'.format(price_position.market_median) }} ·
+      {% if price_position.p75 %}75% {{ '{:,}'.format(price_position.p75) }} · {% endif %}
+      최고 {{ '{:,}'.format(price_position.max) }}
+      (평균 {{ '{:,}'.format(price_position.market_avg) }} — 참고용, 이상치에 끌릴 수 있음)
+    </span>
+  </div>
+  {% else %}
+  <p class="muted" style="font-size:12.5px;margin-top:10px;">11번가 가격 조회 실패 또는 표본 없음 — 아래 링크로 직접 확인하세요.</p>
+  {% endif %}
+  <div class="row" style="margin-top:10px;">
     <a class="btn secondary" target="_blank" rel="noopener" href="https://search.shopping.naver.com/search/all?query={{ keyword | urlencode }}">네이버가 확인</a>
     <a class="btn secondary" target="_blank" rel="noopener" href="https://search.11st.co.kr/Search.tmall?kwd={{ keyword | urlencode }}">11번가 확인</a>
   </div>
@@ -48,6 +303,9 @@
 
 <div class="panel">
   <h2>리스팅 품질</h2>
+  {% if detail_fetch_error %}
+  <div class="flash flash-error">도매매 상세조회 실패 — 아래 이미지·설명 수치는 검색 결과의 요약값이라 실제와 다를 수 있습니다: {{ detail_fetch_error }}</div>
+  {% else %}
   <div class="row">
     <div class="badge">이미지 {{ image_count }}장</div>
     <div class="badge">설명 {{ description_len }}자</div>
@@ -55,25 +313,91 @@
   {% if image_count <= 1 or description_len < 200 %}
   <div class="flash flash-error" style="margin-top:10px;">원본 리스팅이 부실할 수 있습니다 — 등록 전 도매매 원본 페이지를 육안으로 확인하세요.</div>
   {% endif %}
+  {% endif %}
 </div>
 
 <div class="panel">
-  <h2>상세페이지 미리보기</h2>
-  <div style="border:1px solid var(--line);border-radius:6px;padding:10px;max-height:400px;overflow-y:auto;">
-    {{ detail_content|safe }}
-  </div>
-</div>
-
-<div class="panel">
-  <h2>이 내용으로 등록</h2>
-  <form method="post" action="{{ url_for('register_candidate') }}" id="register-form">
+  <form method="post" action="{{ url_for('register_candidate') }}" id="register-form"
+        onsubmit="return confirm('실제로 스마트스토어에 등록합니다(판매중지 상태). 계속할까요?');">
     <input type="hidden" name="keyword" value="{{ keyword }}">
     <input type="hidden" name="goods_no" value="{{ goods_no }}">
-    <div class="muted" style="font-size:12.5px;margin-bottom:8px;">도매매 상품번호 <span class="mono">{{ goods_no }}</span>를 그대로 등록합니다 — 재검색하지 않으므로 위에서 확인한 것과 동일한 상품이 등록됩니다.</div>
-    <label><input type="checkbox" name="live"> 실제로 등록 (체크 안 하면 미리보기만 한번 더 실행)</label>
-    <div class="row" style="margin-top:12px;">
-      <button type="submit">{{ '리메이크 후 등록' if track == 'B' else '바로 등록' if track == 'A' else '등록 실행' }}</button>
+    <input type="hidden" name="live" value="on">
+    {% if category_error %}
+    <div class="flash flash-error" style="margin-bottom:8px;">카테고리 문제가 해결되지 않으면 등록이 실패합니다 — 그래도 시도하려면 등록 버튼을 누르세요.</div>
+    {% endif %}
+    <div class="row">
+      <button type="submit">등록</button>
+      <button type="button" class="btn secondary" id="auditToggleBtn" onclick="toggleFieldAudit()">
+        등록 항목 점검{% if audit_problem_count %} <span class="badge-warn">문제 {{ audit_problem_count }}건</span>{% endif %}
+      </button>
       {% if not modal %}<a class="btn secondary" href="{{ url_for('candidates') }}">뒤로</a>{% endif %}
     </div>
   </form>
 </div>
+</div>
+
+<div id="fieldAuditPanel" class="panel field-audit-panel" hidden>
+  <h2>등록 항목 점검 — 지금 등록하면</h2>
+  {% if audit_error %}
+  <p class="muted">{{ audit_error }}</p>
+  {% elif not audit_items %}
+  <p class="muted">점검할 항목이 없습니다.</p>
+  {% else %}
+  <label style="display:flex;align-items:center;gap:6px;font-size:12.5px;margin-bottom:6px;">
+    <input type="checkbox" id="auditProblemOnly" checked onchange="filterFieldAudit()"> 문제 항목만 보기
+  </label>
+  <p class="muted" style="font-size:12px;margin:0 0 10px;">입력칸으로 보이는 항목은 여기서 바로 고칠 수 있습니다 — 등록 버튼을 누르면 고친 값 그대로 등록됩니다.</p>
+  {% set groups = [] %}
+  {% for item in audit_items %}
+    {% if item.group not in groups %}{% set _ = groups.append(item.group) %}{% endif %}
+  {% endfor %}
+  {% for g in groups %}
+  <div class="field-audit-group" data-group="{{ g }}">
+    <h4>{{ g }}</h4>
+    {% for item in audit_items if item.group == g %}
+    <div class="field-audit-row" data-problem="{{ '1' if item.problem else '0' }}">
+      <span class="fa-label">{{ item.label }}</span>
+      <span class="fa-value">
+        {% if item.editable %}
+        <input type="text" form="register-form" name="field_override:{{ item.field_path }}"
+               value="{{ '' if item.value == '(없음)' else item.value }}"
+               placeholder="{{ '값을 입력하세요' if item.value == '(없음)' else item.value }}"
+               class="mono" style="width:220px;font-size:12.5px;">
+        {% else %}
+        {{ item.value }}
+        {% endif %}
+        <span class="{{ 'badge-err' if item.verdict == '더미 의심' else ('badge-warn' if item.verdict in ('비어 있음', '기본값') else 'badge-ok') }}" style="margin-left:6px;">{{ item.verdict }}</span>
+        {% if item.note %}<span class="fa-note">{{ item.note }}</span>{% endif %}
+      </span>
+    </div>
+    {% endfor %}
+  </div>
+  {% endfor %}
+  {% endif %}
+</div>
+</div>
+
+<script>
+function toggleFieldAudit() {
+  var panel = document.getElementById('fieldAuditPanel');
+  var modal = document.getElementById('modal');
+  var opening = panel.hidden;
+  panel.hidden = !opening;
+  if (modal) modal.classList.toggle('modal-wide', opening);
+  if (opening) filterFieldAudit();
+}
+function filterFieldAudit() {
+  var onlyProblems = document.getElementById('auditProblemOnly');
+  var problemOnly = onlyProblems ? onlyProblems.checked : false;
+  document.querySelectorAll('.field-audit-row').forEach(function (row) {
+    row.style.display = (!problemOnly || row.dataset.problem === '1') ? '' : 'none';
+  });
+  document.querySelectorAll('.field-audit-group').forEach(function (group) {
+    var anyVisible = Array.prototype.some.call(
+      group.querySelectorAll('.field-audit-row'),
+      function (row) { return row.style.display !== 'none'; }
+    );
+    group.style.display = anyVisible ? '' : 'none';
+  });
+}
+</script>

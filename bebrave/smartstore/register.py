@@ -16,8 +16,11 @@ try:
 except ImportError:
     _HAS_REQUESTS = False
 
+from ..config import (
+    SHIPPING_FEE, FREE_SHIPPING_THRESHOLD, RETURN_DELIVERY_FEE, EXCHANGE_DELIVERY_FEE,
+)
 from .models import StoreProduct
-from .notice import CS_PHONE_NUMBER, build_provided_notice
+from .notice import CS_PHONE_NUMBER, DUMMY_CS_PHONE_NUMBER, build_provided_notice
 
 _BASE_URL = "https://api.commerce.naver.com/external"
 
@@ -124,8 +127,52 @@ def build_request_body(
     product: StoreProduct,
     status: str = "SUSPENSION",
     access_token: str = "",
+    strict: bool = True,
 ) -> dict:
-    """StoreProduct → 커머스 API v2 요청 바디 변환 (originProduct/smartstoreChannelProduct 구조)."""
+    """StoreProduct → 커머스 API v2 요청 바디 변환 (originProduct/smartstoreChannelProduct 구조).
+
+    strict=False는 실제 등록에는 절대 쓰지 않는다 — "등록 항목 점검" 패널이 등록 전에
+    전체 항목을 보여주기 위한 용도다. 원산지 코드나 A/S 연락처가 아직 안 채워졌어도
+    막지 않고 빈 값/더미값 그대로 바디를 만들어 돌려주면, field_audit이 그 자리에서
+    "비어 있음"/"더미 의심"으로 정확히 잡아준다 — 예전엔 이 두 조건 중 하나만 안
+    맞아도 점검 패널 자체가 안 뜨고 사유 한 줄만 보였다(2026-09 발견)."""
+    # A/S 연락처가 더미면 원산지 코드와 같은 방식으로 등록을 막는다 — 예전엔 경고만
+    # 찍고 그대로 등록을 진행해, 실제 연락처 없이 상품이 나가고 있었다(2026-09).
+    if strict and CS_PHONE_NUMBER == DUMMY_CS_PHONE_NUMBER:
+        raise ValueError(
+            "A/S 연락처 미설정 — .env의 CS_PHONE_NUMBER를 실제 번호로 채워야 등록할 수 있습니다 "
+            "(더미 번호 010-0000-0000로 등록되는 걸 막기 위함)"
+        )
+
+    detail_attribute = {
+        "afterServiceInfo": {
+            "afterServiceTelephoneNumber": CS_PHONE_NUMBER,
+            "afterServiceGuideContent": "구매 후 문의사항은 고객센터로 연락 바랍니다.",
+        },
+        "originAreaInfo": _build_origin_area_info(product, strict=strict),
+        # 검색어 태그 — code 없이 text만 등록 (네이버 공식 가이드상 code 생략 가능,
+        # code를 쓰려면 별도 '추천 태그 검색' API로 조회해야 하나 엔드포인트 미확인)
+        "seoInfo": {"sellerTags": [{"text": t} for t in product.tags]},
+        "minorPurchasable": True,
+        # 상품정보제공고시 — 카테고리에 맞는 유형을 골라 그 유형의 항목을 빠짐없이 채운다.
+        # 예전엔 전 상품을 ETC로 고정하고 항목도 일부만 채우고 있었음 (notice.py 참고).
+        "productInfoProvidedNotice": build_provided_notice(product, access_token),
+    }
+    # 판매자상품코드에 도매매 상품번호를 심는다 — 등록/발주 양쪽에서 같은 값으로 상품을
+    # 찾을 수 있는 유일한 확실한 키다. 지금까지는 이게 없어 발주 자동매칭이 상품ID·
+    # 이름 추론에 의존했다(2026-09).
+    if product.domemae_goods_no:
+        detail_attribute["sellerCodeInfo"] = {"sellerManagementCode": product.domemae_goods_no}
+    # 제조사/모델 — 값은 이미 갖고 있는데(도매매 detail.manufacturer/.model) 지금까지
+    # 고시 블록에만 쓰고 정작 가격비교 매칭에 쓰이는 전용 필드엔 안 넣고 있었다(2026-09).
+    # 브랜드는 도매매가 별도로 주지 않아 지어내지 않고 비워둔다.
+    manufacturer = _clean(product.manufacturer)
+    if manufacturer:
+        detail_attribute["manufacturerName"] = manufacturer
+    model = _clean(product.model)
+    if model:
+        detail_attribute["modelName"] = model
+
     origin_product = {
         "statusType": status,
         "saleType": "NEW",
@@ -139,32 +186,54 @@ def build_request_body(
         "salePrice": product.sale_price,
         "stockQuantity": product.stock_quantity,
         "deliveryInfo": _build_delivery_info(),
-        "detailAttribute": {
-            "afterServiceInfo": {
-                "afterServiceTelephoneNumber": CS_PHONE_NUMBER,
-                "afterServiceGuideContent": "구매 후 문의사항은 고객센터로 연락 바랍니다.",
-            },
-            "originAreaInfo": _build_origin_area_info(product),
-            # 검색어 태그 — code 없이 text만 등록 (네이버 공식 가이드상 code 생략 가능,
-            # code를 쓰려면 별도 '추천 태그 검색' API로 조회해야 하나 엔드포인트 미확인)
-            "seoInfo": {"sellerTags": [{"text": t} for t in product.tags]},
-            "minorPurchasable": True,
-            # 상품정보제공고시 — 카테고리에 맞는 유형을 골라 그 유형의 항목을 빠짐없이 채운다.
-            # 예전엔 전 상품을 ETC로 고정하고 항목도 일부만 채우고 있었음 (notice.py 참고).
-            "productInfoProvidedNotice": build_provided_notice(product, access_token),
-        },
+        "detailAttribute": detail_attribute,
     }
     if product.options:
-        origin_product["optionInfo"] = _build_option_info(product.option_group_name, product.options)
+        # 네이버 스펙상 optionInfo는 detailAttribute 아래여야 한다 — 예전엔 originProduct
+        # 최상위에 붙여서 옵션이 통째로 무시될 가능성이 있었다(2026-09 발견).
+        detail_attribute["optionInfo"] = _build_option_info(product.option_group_name, product.options)
 
     smartstore_channel_product = {
         "naverShoppingRegistration": True,
         "channelProductDisplayStatusType": "ON" if status == "SALE" else "SUSPENSION",
     }
-    return {
+    result = {
         "originProduct": origin_product,
         "smartstoreChannelProduct": smartstore_channel_product,
     }
+    if product.discount_rate:
+        # 즉시할인 — 목록에서 할인가·할인율 뱃지가 붙어 클릭률에 직접 영향을 준다.
+        # 정률(PERCENT) 할인만 지원. 실전 등록으로 구조가 검증되진 않았으니(optionInfo와
+        # 같은 이유로) 처음 쓸 때는 반드시 SUSPENSION으로 1건 등록해 센터에서 할인이
+        # 정상 반영됐는지 눈으로 확인할 것(2026-09).
+        result["originProduct"]["customerBenefit"] = {
+            "immediateDiscountPolicy": {
+                "discountMethod": {
+                    "value": round(product.discount_rate * 100, 1),
+                    "unitType": "PERCENT",
+                },
+            },
+        }
+    if product.field_overrides:
+        # "등록 항목 점검" 패널에서 직접 고친 값을 최종 바디에 덮어쓴다 — 점검 화면이
+        # 문제를 보여주기만 하고 고칠 방법이 없다는 지적으로 추가(2026-09). 위에서 만든
+        # 값을 전부 무시하고 사용자가 입력한 값을 최종 우선시킨다.
+        _apply_field_overrides(result["originProduct"], product.field_overrides)
+    return result
+
+
+def _apply_field_overrides(node: dict, overrides: dict) -> None:
+    """overrides의 key는 "detailAttribute.brandName" 같은 점(.) 경로 — 중간 노드가
+    없으면 만들면서 마지막 키에 값을 꽂는다. 빈 문자열 입력은 "안 고침"으로 취급해
+    건너뛴다(사용자가 아무것도 안 적은 칸이 굳이 기존 값을 지우지 않도록)."""
+    for path, value in overrides.items():
+        if value is None or str(value).strip() == "":
+            continue
+        parts = path.split(".")
+        target = node
+        for part in parts[:-1]:
+            target = target.setdefault(part, {})
+        target[parts[-1]] = value
 
 
 def _build_option_info(group_name: str, options: list) -> dict:
@@ -193,7 +262,8 @@ def _build_option_info(group_name: str, options: list) -> dict:
 
 
 def _build_delivery_info() -> dict:
-    """기본 배송 정보 (도매매 배송대행 기준)."""
+    """기본 배송 정보 (도매매 배송대행 기준). 배송비 상수는 마진 계산(config.py)과 값이
+    갈리지 않도록 여기서 리터럴로 다시 정의하지 않고 그대로 가져다 쓴다(2026-09)."""
     return {
         "deliveryType": "DELIVERY",
         "deliveryAttributeType": "NORMAL",
@@ -201,26 +271,29 @@ def _build_delivery_info() -> dict:
         "deliveryFee": {
             "deliveryFeeType": "CONDITIONAL_FREE",
             "deliveryFeePayType": "PREPAID",
-            "baseFee": 3000,
-            "freeConditionalAmount": 30000,
+            "baseFee": SHIPPING_FEE,
+            "freeConditionalAmount": FREE_SHIPPING_THRESHOLD,
         },
         "claimDeliveryInfo": {
-            "returnDeliveryFee": 3000,
-            "exchangeDeliveryFee": 6000,
+            "returnDeliveryFee": RETURN_DELIVERY_FEE,
+            "exchangeDeliveryFee": EXCHANGE_DELIVERY_FEE,
         },
         "installation": False,
     }
 
 
-def _build_origin_area_info(product: StoreProduct) -> dict:
+def _build_origin_area_info(product: StoreProduct, strict: bool = True) -> dict:
     """
     원산지 정보 생성. pipeline이 origin.resolve_origin_code로 미리 찾아둔 코드를 쓴다.
 
     이전 버전은 originAreaCode를 "03"으로 고정하고 주석에 "03(국산)"이라 적어뒀는데,
     실제 코드표상 03은 "상세설명에 표시"였다(2026-08-10 확인). 국산은 00, 수입산은
     02 하위 코드. 코드가 비어 있으면 원산지를 특정하지 못한 것이므로 등록을 막는다.
+    strict=False면(등록 항목 점검용) 막지 않고 빈 코드 그대로 반환한다.
     """
     if not product.origin_code:
+        if not strict:
+            return {"originAreaCode": "", "content": ""}
         raise ValueError(
             f"원산지 코드 미확정 (도매매 원본값: '{product.origin_country or '(미표기)'}') — "
             "잘못된 원산지 표시를 막기 위해 등록 금지"
@@ -255,3 +328,22 @@ def fetch_registered_product(product_id: str, access_token: str) -> dict:
     )
     resp.raise_for_status()
     return resp.json()
+
+
+def _demo() -> None:
+    """실행 가능한 자체 점검 — 등록 항목 점검 패널에서 고친 값이 실제 바디에 정확히
+    꽂히는지, 빈 입력은 기존 값을 안 지우는지 확인 (네트워크 호출 없음, 2026-09)."""
+    body = {"originProduct": {"detailAttribute": {"brandName": ""}}}
+    _apply_field_overrides(body["originProduct"], {
+        "detailAttribute.brandName": "테스트브랜드",
+        "detailAttribute.afterServiceInfo.afterServiceTelephoneNumber": "010-1234-5678",
+        "detailAttribute.manufacturerName": "   ",  # 빈 칸(공백만) — 반영되면 안 됨
+    })
+    assert body["originProduct"]["detailAttribute"]["brandName"] == "테스트브랜드"
+    assert body["originProduct"]["detailAttribute"]["afterServiceInfo"]["afterServiceTelephoneNumber"] == "010-1234-5678"
+    assert "manufacturerName" not in body["originProduct"]["detailAttribute"], "빈 입력인데 덮어씀"
+    print("register._apply_field_overrides self-check OK")
+
+
+if __name__ == "__main__":
+    _demo()

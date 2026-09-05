@@ -4,6 +4,7 @@ python3 bebrave/smartstore/test_name_optimizer.py 로 실행.
 네이버 검색광고 API는 monkeypatch로 대체 — 실제 네트워크 호출 없음.
 """
 from bebrave.smartstore import content
+from bebrave.smartstore.content import MAX_TAGS
 from bebrave.smartstore.name_optimizer import optimize_name
 from bebrave.sourcing.keyword_tool import KeywordData
 
@@ -42,7 +43,7 @@ def test_demand_tags_relevant_and_ranked(monkeypatch):
     assert "괄사" in tags  # 관련 + 검색량 있음 -> 채택
     assert "다이어트보조제" not in tags  # 원본과 단어 안 겹침 -> 제외
     assert "두피마사지기" not in tags  # 검색량 0 -> 제외
-    assert len(tags) <= 5
+    assert len(tags) <= MAX_TAGS
 
 
 def test_demand_tags_api_failure_falls_back(monkeypatch):
@@ -52,13 +53,33 @@ def test_demand_tags_api_failure_falls_back(monkeypatch):
     product = _FakeProduct("정리함 대형 수납박스 원룸용", "생활>수납/정리용품>정리함")
     tags = content._generate_tags("정리함", product)
     assert tags[0] == "정리함"
-    assert len(tags) <= 5
+    assert len(tags) <= MAX_TAGS
     assert len(tags) >= 1  # API 실패해도 카테고리/제목 기반으로 최소한은 채워짐
 
 
 def test_no_regression_when_category_unmatched():
     name = optimize_name("우산", "우산 자동우산 3단자동우산", category="잡화>우산")
     assert name == "우산 자동우산 3단자동우산"
+
+
+def test_substring_redundant_word_removed():
+    # "실리콘주걱"을 이미 골랐는데 뒤에 "실리콘"만 또 나오면 정보가 없으니 제거.
+    name = optimize_name("실리콘주걱", "실리콘주걱 대코 브라이트 미니볶음주걱 실리콘 이유식주걱", category="주방")
+    words = name.split()
+    assert words.count("실리콘") == 0, name
+    assert "실리콘주걱" in words
+
+
+def test_compound_word_with_extra_info_kept():
+    # "자동우산"은 "우산"의 부분집합이 아니라 정보가 추가된 복합어이므로 유지돼야 한다
+    # (substring 필터가 반대 방향으로 오작동해 유용한 복합어까지 지우면 안 됨).
+    name = optimize_name("우산", "우산 자동우산 3단자동우산 골프우산", category="잡화>우산")
+    assert name == "우산 자동우산 3단자동우산 골프우산", name
+
+
+def test_blocked_brand_word_removed_from_title():
+    name = optimize_name("텀블러", "텀블러 락앤락 보온보냉 500ml", category="주방")
+    assert "락앤락" not in name.split(), name
 
 
 if __name__ == "__main__":

@@ -33,7 +33,7 @@ from .register import build_request_body, register_product
 _TARGET_MARGIN = float(os.environ.get("TARGET_MARGIN", "0.20"))
 _MIN_MARGIN = float(os.environ.get("MIN_MARGIN", "0.15"))
 
-from ..config import MAX_LISTING_STOCK
+from ..config import MAX_LISTING_STOCK, MIN_ABS_PROFIT
 
 
 def run(
@@ -45,6 +45,12 @@ def run(
     status: str = "SUSPENSION",
     output_path: Optional[Path] = None,
     name_override: str = "",
+    tags_override: Optional[List[str]] = None,
+    sale_price_override: Optional[int] = None,
+    detail_override: str = "",
+    discount_rate: float = 0.0,
+    representative_image_override: str = "",
+    field_overrides: Optional[dict] = None,
     force: bool = False,
 ) -> List[StoreProduct]:
     """
@@ -62,6 +68,23 @@ def run(
         output_path  : 등록 결과 저장 경로
         name_override: 지정하면 AI/자동생성 상품명 대신 이 값을 그대로 사용 (미리보기에서
                        사용자가 수정한 이름을 반영할 때 사용)
+        tags_override: 지정하면 자동생성 검색어 태그 대신 이 목록을 그대로 사용 (미리보기에서
+                       추천 키워드를 골라 담은 값을 반영할 때 사용)
+        sale_price_override: 지정하면 자동계산 판매가 대신 이 값을 그대로 사용. 단 최소
+                       마진율/절대이익 게이트는 그대로 적용되므로, 마진이 안 나오는 가격을
+                       넣으면 다른 사유들과 마찬가지로 [건너뜀] 처리된다(2026-09)
+        detail_override: 지정하면 자동생성 상세설명 HTML 대신 이 값을 그대로 사용. 리메이크
+                       (트랙B)처럼 상세페이지를 직접 손봐야 하는 경우 미리보기에서 편집한
+                       내용을 등록에 반영할 때 쓴다(2026-09)
+        discount_rate: 즉시할인율(0~1). sale_price는 항상 할인 전 정가이고, 실제 받는 돈은
+                       sale_price*(1-discount_rate)이므로 마진 게이트를 할인 후 가격 기준으로
+                       한 번 더 확인한다 — 할인이 마진을 깎아 절대이익 미달로 만들 수 있다(2026-09)
+        representative_image_override: 지정하면 도매매 원본 대표이미지 대신 이 URL을
+                       사용(AI로 새로 만든 이미지 등록용, 2026-09). 로컬에서 접근 가능한
+                       URL이어야 한다 — 등록 시 이 URL을 다운로드해 네이버 서버로 올린다.
+        field_overrides: 등록 항목 점검 패널에서 문제로 잡힌 항목(더미 A/S 번호·빈 제조사 등)을
+                       직접 고친 값. key는 "detailAttribute.brandName" 같은 점(.) 경로 —
+                       build_request_body()가 최종 바디에 덮어쓴다(2026-09).
         force        : True면 부실 리스팅 경고(사진 1장/설명 부족/저해상도)가 있어도 등록 강행.
                        기본값은 False로, 해당 조건이면 자동으로 건너뜀
 
@@ -111,9 +134,12 @@ def run(
         # discover.py의 "진입 권장" 기준(55점)과 통일 — 예전엔 70점이었는데
         # discover.py 점수 체계 재설계(2026-07-30) 이후로 안 맞춰져 있었다.
         # 화면엔 "진입 권장"이라고 뜨는 상품이 자동등록만 안 되는 불일치였다 (2026-08).
-        recommended = [c for c in candidates if c.score >= 55]
+        # 트랙B(리메이크)는 점수만으로 걸러지지 않는다 — "리메이크 권장"이 상세페이지를
+        # 새로 만들어야 이길 여지가 있다는 뜻인데, 자동등록은 공급사 원본을 그대로 쓰므로
+        # 트랙B를 자동등록하면 리메이크 없이 원본 그대로 나간다(2026-09 발견). 트랙A만 대상.
+        recommended = [c for c in candidates if c.score >= 55 and c.track == "A"]
         if not recommended:
-            print("  진입 권장(55점 이상) 상품 없음")
+            print("  진입 권장(트랙A, 55점 이상) 상품 없음")
             return []
         print(f"  → {len(recommended)}개 상품 처리 예정")
         # 각 키워드별로 파이프라인 실행
@@ -147,7 +173,9 @@ def run(
 
         # ── Step 2: 마진 계산 → 판매가 결정 ──────────────────────────────
         print(f"\n[2] 마진 계산 (도매가: {domemae_p.supply_price:,}원)")
-        sale_price = _decide_sale_price(domemae_p.supply_price, domemae_p.retail_price)
+        sale_price = sale_price_override if sale_price_override else _decide_sale_price(
+            domemae_p.supply_price, domemae_p.retail_price
+        )
         margin = calc_margin(
             sale_price=sale_price,
             cost_price=domemae_p.supply_price,
@@ -156,9 +184,34 @@ def run(
         margin_flag = "✓" if margin.passes_target else ("△" if margin.passes_min else "✗")
         print(f"  판매가: {sale_price:,}원  마진율: {margin.margin_rate:.1%} {margin_flag}")
 
+        # _decide_sale_price()가 정상 경로에선 이미 마진율·절대이익 둘 다 만족하는 값을
+        # 돌려주지만(estimate_sale_price가 둘 중 높은 쪽으로 역산), 발굴 단계(discover.py)는
+        # 두 조건을 독립적으로 다시 확인한다 — 여기도 같은 안전장치를 둔다. name_override처럼
+        # 앞으로 판매가에 사람이 개입할 여지가 생기면 이 지점이 마지막 방어선이 된다
+        # (실제로 절대이익 660원/943원짜리가 등록됐던 사고가 이 게이트 부재로 발생했다, 2026-09).
         if not margin.passes_min:
             print(f"  [건너뜀] 최소 마진율({_MIN_MARGIN:.0%}) 미달")
             continue
+        if not margin.passes_abs_floor:
+            print(f"  [건너뜀] 절대이익 {margin.net_profit:,}원 — 기준({MIN_ABS_PROFIT:,}원) 미달")
+            continue
+
+        # 즉시할인이 있으면 구매자가 실제로 내는 돈은 sale_price가 아니라 할인된 가격이다 —
+        # 위 게이트는 정가 기준으로만 통과했을 뿐, 할인 후에도 마진이 남는지는 따로 봐야
+        # 한다. 확인 안 하면 "정가는 마진 남는데 할인가는 역마진"인 상품이 그대로 나간다.
+        if discount_rate:
+            discounted_price = round(sale_price * (1 - discount_rate))
+            discounted_margin = calc_margin(
+                sale_price=discounted_price,
+                cost_price=domemae_p.supply_price,
+                free_shipping=(discounted_price >= 30_000),
+            )
+            if not discounted_margin.passes_min or not discounted_margin.passes_abs_floor:
+                print(
+                    f"  [건너뜀] 할인 적용가 {discounted_price:,}원 기준 마진 미달 "
+                    f"(할인율 {discount_rate:.0%}, 절대이익 {discounted_margin.net_profit:,}원)"
+                )
+                continue
 
         # 원산지 — 네이버 코드표에서 실제 코드를 찾을 수 있어야 등록한다.
         # 예전엔 "국내산인지"만 검사하고 정작 코드는 03(=상세설명에 표시)을 박아넣고 있었다
@@ -210,6 +263,15 @@ def run(
         # 상세설명은 놔뒀던 게 원인이라, 콘텐츠를 만들기 **전에** 전부 옮기고 주소를
         # 바꿔치기한 뒤 그 주소로 상세설명을 만든다.
         # dry-run에서는 실제 업로드를 하지 않으므로 미리보기엔 도매매 주소가 그대로 보인다.
+        # AI로 새로 만든 대표이미지도 네이버는 자기 서버에 올라간 이미지만 받으므로
+        # (외부 URL은 InvalidImageUrl), 도매매 원본과 똑같이 이 업로드 단계를 거쳐야 한다 —
+        # 그래서 등록 직전에 갈아치우지 않고 목록 맨 앞에 끼워 넣어 같은 파이프를 태운다(2026-09).
+        if representative_image_override:
+            domemae_p.images = [representative_image_override] + [
+                u for u in domemae_p.images if u != representative_image_override
+            ]
+
+        url_map = {}
         if not dry_run:
             from .images import upload_images
             originals = [u for u in domemae_p.images if u][:10]
@@ -228,6 +290,15 @@ def run(
         content = generate_product_content(kw, domemae_p, sale_price)
         if name_override:
             content["name"] = name_override
+        if tags_override is not None:
+            content["tags"] = tags_override
+        if detail_override:
+            # 미리보기에서 편집한 HTML을 그대로 쓴다 — 단, 미리보기는 dry-run이라 이미지가
+            # 아직 도매매 CDN 주소일 수 있다. url_map(위 Step 3.5)으로 같은 치환을 한 번 더
+            # 해줘야, 편집한 내용에 남아있는 도매매 주소도 네이버 주소로 바뀐다(2026-09).
+            for old_url, new_url in url_map.items():
+                detail_override = detail_override.replace(old_url, new_url)
+            content["detail_content"] = detail_override
         print(f"  상품명: {content['name']}")
 
         # ── Step 5: StoreProduct 구성 ─────────────────────────────────────
@@ -238,7 +309,9 @@ def run(
             stock_quantity=min(domemae_p.stock, MAX_LISTING_STOCK),
             detail_content=content["detail_content"],
             representative_image=domemae_p.main_image,
-            optional_images=domemae_p.images[1:4],
+            # 네이버는 대표 1장 + 추가 9장까지 받는데 3장만 올리고 있었다(2026-09) —
+            # upload_images()도 이미 최대 10장(images[:10])을 처리하도록 돼 있어 그대로 씀.
+            optional_images=domemae_p.images[1:10],
             supply_price=domemae_p.supply_price,
             margin_rate=margin.margin_rate,
             domemae_goods_no=domemae_p.goods_no,
@@ -252,13 +325,21 @@ def run(
             model=domemae_p.model,
             option_group_name=domemae_p.option_group_name,
             options=domemae_p.options,
+            discount_rate=discount_rate,
+            field_overrides=field_overrides or {},
         )
 
         if dry_run:
             # ── dry-run: 등록 바디 출력 ────────────────────────────────
+            # build_request_body는 A/S 연락처가 더미면 ValueError로 막는다(D-3, register.py
+            # 참고) — 다른 [건너뜀] 사유들과 같은 방식으로 이 상품만 건너뛰고 계속 진행한다.
             print(f"\n[dry-run] 등록 요청 바디 미리보기:")
-            import json as _json
-            body = build_request_body(store_product, status=status, access_token=token)
+            try:
+                import json as _json
+                body = build_request_body(store_product, status=status, access_token=token)
+            except ValueError as e:
+                print(f"  [건너뜀] {e}")
+                continue
             print(_json.dumps(body, ensure_ascii=False, indent=2)[:1000])
             print(f"\n  {store_product.summary()}")
             registered.append(store_product)

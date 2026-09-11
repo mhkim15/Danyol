@@ -286,7 +286,19 @@ def run(
             print(f"\n[3] [건너뜀] 카테고리 자동 매칭 실패 (키워드: '{kw}', 도매매 카테고리: '{domemae_p.category}') — 잘못된 카테고리로 등록되는 걸 방지하기 위해 건너뜀. 수동으로 카테고리 지정 필요")
             continue
         from .category import describe_category
-        print(f"\n[3] 카테고리 ID: {cat_id} ({describe_category(cat_id, token)})")
+        category_name = describe_category(cat_id, token)
+        print(f"\n[3] 카테고리 ID: {cat_id} ({category_name})")
+
+        # 카테고리 속성(색상/소재/사이즈 등) — 네이버쇼핑 SEO 가이드가 "필터 결과 최상단
+        # 노출"의 조건으로 명시하는데 지금까지 아예 안 보내고 있었다(2026-09 발견).
+        # 조회 실패해도 등록을 막지 않는다 — attributes.py 참고.
+        from .attributes import fetch_category_attributes, match_attributes
+        attribute_specs = fetch_category_attributes(cat_id, token)
+        matched_attributes = match_attributes(
+            attribute_specs, domemae_p.name, domemae_p.option_group_name, domemae_p.options,
+        ) if attribute_specs else []
+        if matched_attributes:
+            print(f"  속성 {len(matched_attributes)}개 매칭")
 
         # ── Step 3.5: 이미지를 네이버 서버로 옮기기 ─────────────────────────
         # 상세설명 HTML 안의 사진이 도매매 CDN 주소를 그대로 가리키고 있었다
@@ -334,7 +346,7 @@ def run(
 
         # ── Step 4: AI 콘텐츠 생성 ────────────────────────────────────────
         print(f"\n[4] 상품 콘텐츠 생성 중...")
-        content = generate_product_content(kw, domemae_p, sale_price)
+        content = generate_product_content(kw, domemae_p, sale_price, category_name=category_name)
         if name_override:
             content["name"] = name_override
         if tags_override is not None:
@@ -372,6 +384,7 @@ def run(
             model=domemae_p.model,
             option_group_name=domemae_p.option_group_name,
             options=domemae_p.options,
+            attributes=matched_attributes,
             discount_rate=discount_rate,
             field_overrides=field_overrides or {},
         )

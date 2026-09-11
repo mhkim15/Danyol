@@ -663,7 +663,24 @@ def candidates_preview():
 
         sale_price = _decide_sale_price(p.supply_price, p.retail_price)
         margin = calc_margin(sale_price=sale_price, cost_price=p.supply_price, free_shipping=(sale_price >= 30_000))
-        content = generate_product_content(keyword, p, sale_price)
+
+        # 카테고리를 먼저 확정해야 태그 생성이 리프 카테고리명을 걸러낼 수 있다(가이드
+        # 11쪽 "카테고리명은 태그로 사용 불가") — 실제 등록 파이프라인(pipeline.py)과
+        # 같은 순서로 옮겼다(2026-09).
+        cat_id, cat_name, cat_error = "", "", ""
+        try:
+            token = get_access_token()
+            cat_id = get_category_id(keyword, p.category, token)
+            if not cat_id:
+                cat_name = "매칭 실패 — 수동 확인 필요"
+                cat_error = "카테고리 자동 매칭 실패 — 이 상태로 등록하면 파이프라인이 건너뜁니다"
+            else:
+                cat_name = describe_category(cat_id, token)
+        except Exception as e:
+            cat_name = f"조회 실패: {e}"
+            cat_error = f"카테고리 조회 실패 — 등록이 실패합니다: {e}"
+
+        content = generate_product_content(keyword, p, sale_price, category_name=cat_name if cat_id else "")
 
         # 리메이크 "다시 만들기" — 지금까지 리메이크(트랙B)는 "손봐서 등록하라"고 안내만
         # 하고 실제로 손볼 도구가 없었다(2026-09). ?regen=1이면 기본형과 다른 레이아웃으로
@@ -703,18 +720,7 @@ def candidates_preview():
         except Exception:
             pass  # 11번가 조회 실패는 부가정보라 미리보기 자체를 막지 않는다
 
-        cat_id, cat_name, cat_error = "", "", ""
-        try:
-            token = get_access_token()
-            cat_id = get_category_id(keyword, p.category, token)
-            if not cat_id:
-                cat_name = "매칭 실패 — 수동 확인 필요"
-                cat_error = "카테고리 자동 매칭 실패 — 이 상태로 등록하면 파이프라인이 건너뜁니다"
-            else:
-                cat_name = describe_category(cat_id, token)
-        except Exception as e:
-            cat_name = f"조회 실패: {e}"
-            cat_error = f"카테고리 조회 실패 — 등록이 실패합니다: {e}"
+        # (카테고리는 위에서 이미 확정 — content 생성에 category_name으로 넘겨줬다)
 
         # 등록 전 항목 점검 — "지금 등록하면 어떤 칸이 비어서/더미로 나가는지"를 누르기
         # 전에 보여준다. 등록 후(상품 상세 화면)와 같은 audit_fields()를 그대로 써서
@@ -738,6 +744,13 @@ def candidates_preview():
             except Exception:
                 pass  # 원산지 코드표 조회 실패 — 빈 값으로 두면 field_audit이 "비어 있음"으로 잡는다
 
+            matched_attributes = []
+            if cat_id:
+                from bebrave.smartstore.attributes import fetch_category_attributes, match_attributes
+                specs = fetch_category_attributes(cat_id, audit_token)
+                if specs:
+                    matched_attributes = match_attributes(specs, p.name, p.option_group_name, p.options)
+
             store_product = StoreProduct(
                 name=content["name"], leaf_category_id=cat_id, sale_price=sale_price,
                 stock_quantity=min(p.stock, MAX_LISTING_STOCK), detail_content=content["detail_content"],
@@ -747,6 +760,7 @@ def candidates_preview():
                 keyword=keyword, tags=content.get("tags", []), origin_country=p.origin_country,
                 origin_code=origin_code, manufacturer=p.manufacturer, model=p.model,
                 option_group_name=p.option_group_name, options=p.options,
+                attributes=matched_attributes,
             )
             dry_run_body = build_request_body(store_product, status="SUSPENSION", access_token=audit_token, strict=False)
             audit_items = audit_fields(dry_run_body["originProduct"], domemae_goods_no=p.goods_no)

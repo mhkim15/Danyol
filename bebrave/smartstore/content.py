@@ -5,19 +5,22 @@ Claude API를 활용한 상품 콘텐츠 자동 생성.
 - 상세설명: 도매매 원본 상세설명(desc.contents) + 이미지 + 핵심 정보
 - 검색어 태그: 노출에 유리한 5개 내외 태그 생성
 
-가이드 출처 (2026-07-12 조사): 네이버쇼핑 상위노출 체크리스트 — 상품명은 동의어·유의어
-중복, 판매조건·홍보문구·카테고리명·판매처명 포함 금지. 브랜드/제조사는 전용 필드에만
-정확히 입력. 검색어 태그는 상품과 무관한 걸 억지로 채우는 것보다 5~7개 정도가 유리.
+가이드 출처 (2026-07-12 조사, 2026-08 공식 SEO 가이드로 재확인): 상품명은 동의어·유의어
+중복·판매조건·홍보문구·판매처명(스토어명) 포함 금지. 반대로 브랜드/카테고리(상품유형)는
+필수 기입 — "카테고리명 포함 금지"로 잘못 적혀 있던 지시(2026-09 정정: 가이드 12쪽은
+브랜드+상품유형+핵심속성 조합을 요구하지, 카테고리명 자체를 금지하지 않는다. 태그는
+반대로 카테고리명이 금지 — content._is_blocked_tag 참고). 검색어 태그는 상품과 무관한
+걸 억지로 채우는 것보다 5~7개 정도가 유리.
 
 환경변수:
   ANTHROPIC_API_KEY
 """
 import os
 import re
-from typing import TYPE_CHECKING, List
+from typing import TYPE_CHECKING, List, Optional
 
 from .name_optimizer import BANNED_PROMO_WORDS, MAX_NAME_LEN as _MAX_NAME_LEN
-from .name_optimizer import _find_mood_word, _is_blocked_brand, optimize_name, truncate_at_word_boundary as _truncate_at_word_boundary
+from .name_optimizer import _find_mood_word, _is_blocked_brand, optimize_name, sanitize_ai_name
 from ..sourcing.keyword_tool import fetch_related_keywords
 
 if TYPE_CHECKING:
@@ -71,9 +74,15 @@ def generate_product_content(
     keyword: str,
     product: "DomemaeProduct",
     sale_price: int,
+    category_name: str = "",
 ) -> dict:
     """
     AI 기반 상품명 + 상세설명 + 검색어 태그 생성.
+
+    category_name: 확정된 스마트스토어 리프 카테고리 경로(예: "생활>침구>이불커버",
+    category.describe_category() 결과) — 태그가 카테고리명을 그대로 달지 않도록 걸러내는
+    데만 쓴다(가이드 11쪽 "카테고리, 브랜드명, 판매처명은 태그로 사용 불가"). 없으면
+    카테고리 기반 태그 차단만 건너뛴다.
 
     Returns:
         {"name": str, "detail_content": str, "tags": List[str]}
@@ -81,10 +90,10 @@ def generate_product_content(
     api_key = os.environ.get("ANTHROPIC_API_KEY", "")
 
     if api_key:
-        return _generate_with_claude(keyword, product, sale_price, api_key)
+        return _generate_with_claude(keyword, product, sale_price, api_key, category_name)
     else:
         # Claude API 키 없을 때 기본 템플릿 사용
-        return _generate_fallback(keyword, product)
+        return _generate_fallback(keyword, product, category_name)
 
 
 def _generate_with_claude(
@@ -92,11 +101,12 @@ def _generate_with_claude(
     product: "DomemaeProduct",
     sale_price: int,
     api_key: str,
+    category_name: str = "",
 ) -> dict:
     try:
         import anthropic
     except ImportError:
-        return _generate_fallback(keyword, product)
+        return _generate_fallback(keyword, product, category_name)
 
     client = anthropic.Anthropic(api_key=api_key)
 
@@ -115,13 +125,12 @@ def _generate_with_claude(
 판매가: {sale_price:,}원
 
 네이버쇼핑 SEO 가이드 규칙 (반드시 준수):
-- 45자 이내
-- 핵심 키워드를 앞에 배치
+- 40자 이내
+- 브랜드(있는 경우) + 핵심 키워드(상품유형) + 핵심 속성(색상/소재/수량 등) + 시즌/사이즈 순서로 구성 — 핵심 키워드를 맨 앞에
 - 동의어·유의어를 나열하지 말 것 (예: "우산 양산 양우산 자동우산"처럼 같은 뜻 반복 금지 — 어뷰징으로 간주되어 검색 노출에 불리함)
-- 브랜드/제조사(있는 경우) + 상품유형 + 핵심 속성(색상/소재/수량 등) 순서로 간결하게 구성
-- 배송·할인·판매조건·홍보 문구, 카테고리명, 판매처명 포함 금지
+- 배송·할인·판매조건·홍보 문구, 스토어명(판매처명), 렌탈/해외/중고 여부 포함 금지
 {mood_hint}
-- 특수문자 최소화
+- 특수문자(★▶◀! 등) 쓰지 말 것 — 한글/영문/숫자/공백/하이픈만 사용
 - 상품명만 출력 (설명 없이)"""
 
     name_msg = client.messages.create(
@@ -129,10 +138,12 @@ def _generate_with_claude(
         max_tokens=100,
         messages=[{"role": "user", "content": name_prompt}],
     )
-    optimized_name = _truncate_at_word_boundary(name_msg.content[0].text.strip(), _MAX_NAME_LEN)
+    # 프롬프트 지시만으론 금지 문구·특수문자·타사몰명이 새어나갈 수 있어(2026-09 발견,
+    # 사후 필터가 폴백 경로에만 걸려 있었음) 폴백과 같은 필터를 여기도 통과시킨다.
+    optimized_name = sanitize_ai_name(name_msg.content[0].text.strip())
 
     detail_content = _build_detail_html(product, keyword)
-    tags = _generate_tags(keyword, product)
+    tags = _generate_tags(keyword, product, category_name)
 
     return {"name": optimized_name, "detail_content": detail_content, "tags": tags}
 
@@ -140,11 +151,12 @@ def _generate_with_claude(
 def _generate_fallback(
     keyword: str,
     product: "DomemaeProduct",
+    category_name: str = "",
 ) -> dict:
     """Claude API 없을 때 기본 상품명 + 상세설명 생성."""
     name = optimize_name(keyword, product.name, category=product.category)
     detail_content = _build_detail_html(product, keyword)
-    tags = _generate_tags(keyword, product)
+    tags = _generate_tags(keyword, product, category_name)
     return {"name": name, "detail_content": detail_content, "tags": tags}
 
 
@@ -153,40 +165,52 @@ def _generate_fallback(
 MAX_TAGS = 10
 
 
-def _is_blocked_tag(t: str) -> bool:
+def _category_segments(category_name: str) -> set:
+    """"생활>침구>이불커버" → {"생활","침구","이불커버"}. 태그 차단 전용 —
+    가이드 11쪽 "카테고리 필드에 입력"(=태그로는 금지) 예시를 그대로 따른다."""
+    return {seg.strip() for seg in re.split(r"[>／/]", category_name or "") if seg.strip()}
+
+
+def _is_blocked_tag(t: str, category_segments: Optional[set] = None) -> bool:
     """차단 목록은 지금까지 소싱 후보 선별(discover.py)에만 적용되고 태그 생성
     경로는 홍보어 완전일치 하나뿐이었다 — 질환명·타사 브랜드가 태그로 그대로
     나갔다(2026-09 실증: "손톱영양제" 후보가 "손톱무좀"·"손톱조갑박리증" 태그를
     달고 있었음). 태그 생성에도 같은 차단 목록을 재사용한다."""
     from ..config import BLOCKED_MEDICAL_KEYWORDS, BLOCKED_INFO_INTENT_SUFFIXES
 
-    tl = t.lower()
     if any(w in t for w in BANNED_PROMO_WORDS):  # 완전일치 → 부분일치(★특가★ 등 우회 방지)
         return True
     if any(w in t for w in BLOCKED_MEDICAL_KEYWORDS):
         return True
     if _is_blocked_brand(t):
         return True
+    if any(m in t for m in _EXTERNAL_MALL_NAMES):  # 판매처명(가이드 11쪽 "판매처명 태그 불가")
+        return True
     if any(t.endswith(s) for s in BLOCKED_INFO_INTENT_SUFFIXES):
+        return True
+    if category_segments and t in category_segments:  # 카테고리명 자체(가이드 11쪽)
         return True
     return False
 
 
-def _generate_tags(keyword: str, product: "DomemaeProduct") -> List[str]:
+def _generate_tags(keyword: str, product: "DomemaeProduct", category_name: str = "") -> List[str]:
     """
     검색어 태그 후보 생성 (code 없이 text만 등록 — 네이버 공식 가이드상 code 생략 가능).
-    우선순위: ① 소싱 키워드 자체 ② 실제 월검색수가 있는 관련 키워드(수요기반, 최대 8개)
-    ③ 그래도 자리가 남으면 원본 제목에서 채움. 상품과 무관한 단어는 억지로 안 채움.
+    우선순위: ① 소싱 키워드 자체 ② 실제 월검색수가 있는 관련 키워드(수요기반, 최대 8개).
+    상품과 무관한 단어는 억지로 안 채운다 — 원본 제목 토큰으로 남는 자리를 채우던
+    마지막 단계는 제거했다(2026-09): 카테고리명·브랜드어가 태그로 새는 주 경로였고,
+    가이드 10쪽도 "억지로 채우면 적합도에 악영향"이라고 명시한다.
 
     도매매 카테고리명을 그대로 태그로 넣던 코드는 제거했다 — "수납/정리"처럼
     슬래시 섞인 카테고리 원문이 그대로 나가고 있었다(2026-09).
     """
+    segments = _category_segments(category_name)
     seen = set()
     tags = []
 
     def _add(t: str, cap: int) -> bool:
         t = t.strip()
-        if t and t not in seen and not _is_blocked_tag(t):
+        if t and t not in seen and not _is_blocked_tag(t, segments):
             seen.add(t)
             tags.append(t)
         return len(tags) >= cap
@@ -194,14 +218,9 @@ def _generate_tags(keyword: str, product: "DomemaeProduct") -> List[str]:
     if _add(keyword, MAX_TAGS):
         pass
 
-    for t in _demand_tags(keyword, product, limit=MAX_TAGS - 2):
+    for t in _demand_tags(keyword, product, limit=MAX_TAGS - 1):
         if _add(t, MAX_TAGS):
             break
-
-    if len(tags) < MAX_TAGS:
-        for w in re.findall(r"[가-힣A-Za-z0-9]{2,}", product.name):
-            if _add(w, MAX_TAGS):
-                break
 
     return tags[:MAX_TAGS]
 
@@ -210,8 +229,8 @@ def _generate_tags(keyword: str, product: "DomemaeProduct") -> List[str]:
 # 링크·직거래 유도 연락처는 즉시 판매정지 사유다(2026-09 적대적 입력 재현으로 확인:
 # 외부 스마트스토어 링크·쿠팡 안내·카카오톡 직거래 유도·공급사 전화번호·"국내 1위"·
 # "아토피 개선"이 전부 그대로 통과하고 있었다).
-_EXTERNAL_MALL_NAMES = ["쿠팡", "11번가", "G마켓", "지마켓", "옥션", "위메프", "티몬", "인터파크"]
-_HYPE_PHRASES = ["국내 1위", "업계 1위", "국내1위", "업계1위", "1위", "최고의", "최고"]
+# config.py로 이동(2026-09) — name_optimizer의 상품명/태그 게이트도 같은 목록을 쓴다.
+from ..config import EXTERNAL_MALL_NAMES as _EXTERNAL_MALL_NAMES, HYPE_PHRASES as _HYPE_PHRASES
 # BLOCKED_MEDICAL_KEYWORDS(config.py)는 소싱 키워드 단계의 질환명 차단 목록이라
 # "아토피"처럼 상세설명에 흔히 섞이는 의약품 오인 효능 표현까지는 안 담고 있다 —
 # 상세페이지 정제 전용으로 별도 보강.

@@ -175,6 +175,12 @@ def build_request_body(
     model = _clean(product.model)
     if model:
         detail_attribute["modelName"] = model
+    # 속성(색상/소재/사이즈 등) — 네이버쇼핑 SEO 가이드가 "필터 결과 최상단 노출"의
+    # 조건으로 명시하는 필드인데 지금까지 아예 안 보내고 있었다(2026-09 발견).
+    # attributes.match_attributes()가 상품명·옵션명에 실제로 등장하는 값만 채택해두므로
+    # 빈 리스트면 그냥 키를 생략한다(제조사/모델과 같은 방식).
+    if product.attributes:
+        detail_attribute["productAttributes"] = product.attributes
 
     # CLI(main.py --on-sale)는 "ON"을, 그 외 호출부는 "SALE"을 판매중 신호로 쓴다 —
     # 둘 다 같은 뜻인데 originProduct.statusType 유효값은 SALE/SUSPENSION뿐이라

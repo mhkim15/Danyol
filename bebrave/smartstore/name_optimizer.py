@@ -13,9 +13,11 @@
 import re
 from typing import List, Set
 
-from ..config import BLOCKED_BRAND_PREFIXES
+from ..config import BLOCKED_BRAND_PREFIXES, EXTERNAL_MALL_NAMES, HYPE_PHRASES
 
-MAX_NAME_LEN = 45
+# 네이버쇼핑 SEO 가이드(2026-08) 20쪽 위반 예시("지나치게 긴 상품명")가 20자 안팎을
+# 보여준다 — 기존 45자는 넉넉한 편이라 40자로 낮춘다.
+MAX_NAME_LEN = 40
 
 # 네이버쇼핑 SEO 가이드가 금지하는 판매조건·홍보문구 — Claude 경로는 프롬프트로 지시하지만
 # API 키 없는 폴백 경로(optimize_name)와 태그 생성(content._generate_tags)엔 필터가 없어서
@@ -54,6 +56,58 @@ def _is_blocked_brand(word: str) -> bool:
     상품명 정제에도 적용 — 새 목록을 따로 만들지 않는다."""
     w = word.lower()
     return any(b.lower() in w for b in BLOCKED_BRAND_PREFIXES)
+
+
+# 렌탈/해외/중고 여부는 네이버가 상품 상태 체크박스로 상품명에 자동 노출한다 —
+# 여기 또 적으면 중복 표시가 된다(가이드 13쪽 "렌탈/해외/중고 상품 여부는 상품명에
+# 기입을 지양해주세요").
+RENTAL_STATUS_WORDS = {
+    "렌탈", "렌탈상품", "해외구매", "해외직구", "해외배송", "해외상품",
+    "중고", "중고상품", "리퍼", "리퍼비시",
+}
+
+# 가이드 20쪽 "특수문자" 위반 예시(★▶◀ 등) — 한글/영문/숫자/공백/하이픈만 남긴다.
+_SPECIAL_CHAR_RE = re.compile(r"[^0-9A-Za-z가-힣\s\-]")
+
+
+def _strip_special_chars(text: str) -> str:
+    return _SPECIAL_CHAR_RE.sub("", text)
+
+
+def _is_blocked_word(word: str) -> bool:
+    """상품명 단어 하나가 가이드 위반 사유(타사 브랜드·공급사코드·렌탈/해외/중고
+    표기·타사 오픈마켓명·과장 표현)에 걸리는지 한 곳에서 판정. optimize_name(폴백
+    경로)과 sanitize_ai_name(Claude 경로)이 이 함수 하나를 공유한다 — 예전엔
+    폴백 경로에만 필터가 걸려 있었다(2026-09 발견)."""
+    if _is_blocked_brand(word) or _is_supplier_code(word):
+        return True
+    if word in RENTAL_STATUS_WORDS:
+        return True
+    if any(m in word for m in EXTERNAL_MALL_NAMES):
+        return True
+    if any(h in word for h in HYPE_PHRASES):
+        return True
+    return False
+
+
+def _clean_word_list(words: List[str], chosen: List[str], seen_keys: set) -> None:
+    """words를 필터링해 chosen에 이어붙인다(in-place) — 동의어 중복·차단어·
+    이미 고른 단어에 완전 포함되는 정보 없는 단어를 걸러낸다."""
+    for w in words:
+        if _is_blocked_word(w):
+            continue
+        key = _synonym_key(w)
+        if key in seen_keys:
+            continue
+        # 동의어 그룹 밖이라도, 이미 고른 단어에 완전히 포함되는 단어는 정보가 없다
+        # (예: "실리콘주걱"을 이미 골랐는데 뒤에 "실리콘"만 또 나오는 경우). "자동우산"이
+        # "우산"을 부분 포함하는 것과는 반대 방향 — 짧은 단어가 이미 고른 긴 단어 안에
+        # 완전히 들어갈 때만 걸러야, "자동우산"·"골프우산"처럼 실제 구분 정보가 붙은
+        # 복합어는 그대로 유지된다(2026-09).
+        if any(w in c for c in chosen):
+            continue
+        seen_keys.add(key)
+        chosen.append(w)
 
 # 동의어/유의어 그룹 — 같은 그룹 안에서는 최초 등장 단어(보통 keyword) 하나만 채택.
 # "자동우산"/"골프우산"처럼 실제 구분 정보가 붙은 복합어는 그룹의 "정확히 동일한 단어"가
@@ -119,8 +173,10 @@ def optimize_name(keyword: str, raw_title: str, category: str = "", max_len: int
     # 공백뿐 아니라 슬래시도 단어 구분자로 처리한다 — 안 그러면
     # "손톱깍이/손톱깍기/손톱깍이세트/…/인쇄가능"처럼 슬래시로 나열된 통짜 토큰
     # 하나가 공백 기준 split()을 그대로 통과해 중복 제거·홍보어·브랜드 필터를
-    # 전부 우회했다(2026-09 발견).
-    words = strip_promo_words([w for w in re.split(r"[\s/]+", raw_title) if w])
+    # 전부 우회했다(2026-09 발견). 특수문자 제거는 분리 "후" 단어별로 해야 한다 —
+    # 슬래시째로 지우면 나열된 단어들이 한 토큰으로 도로 뭉쳐버린다.
+    words = [_strip_special_chars(w) for w in re.split(r"[\s/]+", raw_title) if w]
+    words = strip_promo_words([w for w in words if w])
 
     chosen: List[str] = []
     seen_keys = set()
@@ -129,27 +185,30 @@ def optimize_name(keyword: str, raw_title: str, category: str = "", max_len: int
         chosen.append(keyword)
         seen_keys.add(_synonym_key(keyword))
 
-    for w in words:
-        if _is_blocked_brand(w) or _is_supplier_code(w):
-            continue
-        key = _synonym_key(w)
-        if key in seen_keys:
-            continue
-        # 동의어 그룹 밖이라도, 이미 고른 단어에 완전히 포함되는 단어는 정보가 없다
-        # (예: "실리콘주걱"을 이미 골랐는데 뒤에 "실리콘"만 또 나오는 경우). "자동우산"이
-        # "우산"을 부분 포함하는 것과는 반대 방향 — 짧은 단어가 이미 고른 긴 단어 안에
-        # 완전히 들어갈 때만 걸러야, "자동우산"·"골프우산"처럼 실제 구분 정보가 붙은
-        # 복합어는 그대로 유지된다(2026-09).
-        if any(w in c for c in chosen):
-            continue
-        seen_keys.add(key)
-        chosen.append(w)
+    _clean_word_list(words, chosen, seen_keys)
 
     mood_word = _find_mood_word(category) if category else ""
     if mood_word and mood_word not in chosen:
         candidate = " ".join(chosen + [mood_word])
         if len(candidate) <= max_len:
             chosen.append(mood_word)
+
+    return truncate_at_word_boundary(" ".join(chosen), max_len)
+
+
+def sanitize_ai_name(text: str, max_len: int = MAX_NAME_LEN) -> str:
+    """Claude가 생성한 상품명에 사후 필터를 적용한다. 프롬프트 지시만으로는
+    금지 문구·특수문자·타사몰명·렌탈/중고 표기가 새어나갈 수 있다 — 지금까지
+    이 필터는 API 키 없는 폴백 경로(optimize_name)에만 걸려 있었다(2026-09 발견).
+    AI가 이미 단어 순서를 잡아준 뒤라 keyword를 앞에 강제로 끼워넣지 않고, 같은
+    차단·중복 제거 로직만 통과시킨다."""
+    text = re.sub(r"\[.*?\]|\(.*?\)", "", text or "").strip()
+    words = [_strip_special_chars(w) for w in re.split(r"[\s/]+", text) if w]
+    words = strip_promo_words([w for w in words if w])
+
+    chosen: List[str] = []
+    seen_keys: set = set()
+    _clean_word_list(words, chosen, seen_keys)
 
     return truncate_at_word_boundary(" ".join(chosen), max_len)
 

@@ -20,6 +20,7 @@ MIN_IMAGE_COUNT = 3
 MIN_DETAIL_LENGTH = 500
 MIN_TAG_COUNT = 5
 MIN_NAME_LENGTH = 15
+MIN_ATTRIBUTE_COUNT = 1  # 네이버쇼핑 SEO 가이드 — 속성이 없으면 필터 노출에서 제외됨
 
 
 # 카테고리별 "어떻게 고치나" — 점수·사유만 나열하면 뭘 해야 할지 알 수 없다는
@@ -30,6 +31,7 @@ _GUIDE = {
     "이미지": "아래에서 대표·추가 이미지를 늘리세요.",
     "상세설명": "아래 상세설명 편집기에서 내용을 보강하세요.",
     "태그": "아래 검색어 태그 칸에서 태그를 추가하세요(최대 10개).",
+    "속성": "등록 항목 점검 패널에서 속성이 비어 있는지 확인하세요 — 색상·사이즈 필터에서 제외됩니다.",
 }
 
 
@@ -102,6 +104,10 @@ def score_listing(product: dict, live_detail: Optional[dict] = None) -> QualityS
         tags = ((origin.get("detailAttribute", {}) or {}).get("seoInfo", {}) or {}).get("sellerTags") or []
         if len(tags) < MIN_TAG_COUNT:
             issues.append(QualityIssue("태그", f"{len(tags)}개 — 검색 노출 기회 부족(권장 {MIN_TAG_COUNT}개+)", 10))
+
+        attrs = (origin.get("detailAttribute", {}) or {}).get("productAttributes") or []
+        if len(attrs) < MIN_ATTRIBUTE_COUNT:
+            issues.append(QualityIssue("속성", "0개 — 색상·사이즈 등 필터 검색에서 노출 안 됨", 15))
 
     total_penalty = sum(i.penalty for i in issues)
     issues.sort(key=lambda i: i.penalty, reverse=True)

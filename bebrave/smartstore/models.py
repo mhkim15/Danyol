@@ -29,6 +29,9 @@ class StoreProduct:
     model: str = ""                    # 제조사 모델명 (도매매 detail.model) — 빈 값이면 미확인
     option_group_name: str = ""        # 옵션 축 이름 (예: "색상") — 빈 값이면 옵션 없음
     options: List[dict] = field(default_factory=list)  # [{"name","extra_price","stock"}]
+    attributes: List[dict] = field(default_factory=list)  # [{"attributeSeq","attributeValueSeq"}]
+    # 카테고리 속성(색상/소재/사이즈 등) — attributes.match_attributes() 결과.
+    # 조회 실패(IP 허용목록 미등록 등)나 매칭 없음이면 빈 리스트 — 등록을 막지 않는다.
     registered_date: str = field(default_factory=lambda: date.today().isoformat())
     naver_product_id: str = ""         # 등록 후 부여된 스마트스토어 상품 ID
     discount_rate: float = 0.0         # 즉시할인율 (0~1). 0이면 할인 없음 — sale_price는 항상

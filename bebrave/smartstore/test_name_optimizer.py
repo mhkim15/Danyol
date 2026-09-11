@@ -5,7 +5,7 @@ python3 bebrave/smartstore/test_name_optimizer.py 로 실행.
 """
 from bebrave.smartstore import content
 from bebrave.smartstore.content import MAX_TAGS
-from bebrave.smartstore.name_optimizer import optimize_name
+from bebrave.smartstore.name_optimizer import optimize_name, sanitize_ai_name
 from bebrave.sourcing.keyword_tool import KeywordData
 
 
@@ -125,6 +125,54 @@ def test_category_name_not_added_as_tag(monkeypatch):
     product = _FakeProduct("정리함", "생활>수납/정리용품>정리함")
     tags = content._generate_tags("정리함", product)
     assert "수납/정리용품" not in tags and "수납/정리" not in tags, tags
+
+
+def test_confirmed_leaf_category_name_blocked_from_tags(monkeypatch):
+    # 네이버가 확정한 리프 카테고리명(가이드 11쪽 "카테고리 필드에 입력" — 태그로는
+    # 불가)이 태그로 새면 안 된다. 도매매 원본 category와 달리 이건 등록 확정값이다.
+    monkeypatch.setattr(content, "fetch_related_keywords", lambda seed, limit=30: [])
+    product = _FakeProduct("이불커버", "침구>이불커버")
+    tags = content._generate_tags("이불커버세트", product, category_name="생활>침구단품>이불커버")
+    assert "이불커버" not in tags, tags
+
+
+def test_external_mall_name_blocked_from_tags(monkeypatch):
+    monkeypatch.setattr(content, "fetch_related_keywords", lambda seed, limit=30: _fake_related([
+        ("쿠팡최저가", 1000),
+    ]))
+    product = _FakeProduct("텀블러 쿠팡최저가", "주방>텀블러")
+    tags = content._generate_tags("텀블러", product)
+    assert not any("쿠팡" in t for t in tags), tags
+
+
+# ── 가이드 20쪽 상품명 SEO 위반 예시 6유형 — sanitize_ai_name(Claude 경로) 게이트 ──
+
+def test_ai_name_gate_strips_special_chars_and_promo():
+    name = sanitize_ai_name("★땡땡샵★▶무료배송◀강아지 대리석 쿨매트")
+    assert "★" not in name and "▶" not in name and "◀" not in name, name
+    assert "무료배송" not in name, name
+    assert "쿨매트" in name, name
+
+
+def test_ai_name_gate_strips_hype_and_benefit_phrases():
+    name = sanitize_ai_name("[무료배송] 고무나무 다용도 4단 선반!(오프라인 인기 1위!!)")
+    assert "무료배송" not in name and "1위" not in name, name
+    assert "고무나무" in name and "선반" in name, name
+
+
+def test_ai_name_gate_strips_imitation_brand():
+    name = sanitize_ai_name("PS캐비넷 이케아스타일 TV다이 거실수납장")
+    assert "이케아" not in name, name
+
+
+def test_ai_name_gate_strips_rental_overseas_used():
+    name = sanitize_ai_name("무료배송 렌탈 정수기 해외구매 대행")
+    assert "렌탈" not in name.split() and "해외구매" not in name.split(), name
+
+
+def test_ai_name_gate_respects_max_len():
+    name = sanitize_ai_name("가" * 60)
+    assert len(name) <= 40, name
 
 
 if __name__ == "__main__":

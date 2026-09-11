@@ -103,6 +103,14 @@ def audit_fields(origin_product: dict, domemae_goods_no: str = "") -> list:
         VERDICT_OK if optional else VERDICT_EMPTY,
         "네이버는 9장까지 받는데 3장 이하면 등록 파이프라인이 그만큼만 올렸을 수 있습니다." if len(optional) < 4 else "",
     ))
+    # 텍스트/워터마크 부착, 여러 상품 나열, 허위 이벤트 정보는 자동 판정이 과한
+    # 영역이다(네이버쇼핑 SEO 가이드 2026-08, 21쪽) — 실물확인 단계에서 사람이
+    # 대표이미지를 직접 보고 판단하도록 문구만 남긴다.
+    items.append(_item(
+        g, "이미지 SEO 확인", "실물확인 필요",
+        VERDICT_OK,
+        "대표이미지에 텍스트·워터마크가 박혀있거나 여러 상품이 한 장에 나열돼 있지 않은지 사람이 직접 확인해야 합니다.",
+    ))
 
     # ── 옵션 ──────────────────────────────────────────────────────────
     g = "옵션"
@@ -241,6 +249,14 @@ def audit_fields(origin_product: dict, domemae_goods_no: str = "") -> list:
             for t in (detail.get("seoInfo", {}) or {}).get("sellerTags") or []]
     items.append(_item(g, "검색어 태그", f"{len(tags)}개 — {', '.join(tags)}" if tags else "",
                         VERDICT_OK if tags else VERDICT_EMPTY))
+    # 속성(색상/소재/사이즈 등) — 네이버쇼핑 SEO 가이드가 "필터 결과 최상단 노출"의
+    # 조건으로 명시한다. 지금까지 이 필드가 통째로 비어 있었다(2026-09 발견).
+    attrs = detail.get("productAttributes") or []
+    items.append(_item(
+        g, "속성", f"{len(attrs)}개" if attrs else "",
+        VERDICT_OK if attrs else VERDICT_EMPTY,
+        "값이 없으면 색상·사이즈 등으로 필터를 건 구매자에게 노출되지 않습니다." if not attrs else "",
+    ))
     minor = detail.get("minorPurchasable")
     items.append(_item(g, "미성년자구매", "가능" if minor else "불가", VERDICT_DEFAULT, "전 상품 True로 고정돼 있습니다." if minor else ""))
     benefit = (op.get("customerBenefit", {}) or {}).get("immediateDiscountPolicy")

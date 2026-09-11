@@ -316,15 +316,16 @@ def _build_policy_html() -> str:
     리메이크형 상세페이지가 각자 다른 문자열을 들고 있으면 나중에 배송비가 바뀔 때
     한쪽만 고치고 잊어버리는 사고가 난다."""
     from ..config import SHIPPING_FEE, FREE_SHIPPING_THRESHOLD, RETURN_DELIVERY_FEE, EXCHANGE_DELIVERY_FEE
-    from .notice import CS_PHONE_NUMBER
 
+    # register.py의 afterServiceGuideContent와 문구를 그대로 맞춘다 — 전화번호를
+    # 노출하지 않고 스마트스토어 톡톡으로 문의 채널을 일원화(2026-09).
     return f"""<div style="margin:20px auto;max-width:860px;text-align:left;padding:16px;border-top:1px solid #eee;">
   <h4 style="font-size:15px;margin-bottom:8px;">배송 안내</h4>
   <p style="font-size:14px;color:#555;">기본 배송비 {SHIPPING_FEE:,}원 · {FREE_SHIPPING_THRESHOLD:,}원 이상 구매 시 무료배송</p>
   <h4 style="font-size:15px;margin:16px 0 8px;">교환·반품 안내</h4>
   <p style="font-size:14px;color:#555;">반품 배송비 {RETURN_DELIVERY_FEE:,}원 · 교환 배송비 {EXCHANGE_DELIVERY_FEE:,}원 (단순 변심 기준, 왕복)</p>
   <h4 style="font-size:15px;margin:16px 0 8px;">A/S 안내</h4>
-  <p style="font-size:14px;color:#555;">구매 후 문의: {CS_PHONE_NUMBER}</p>
+  <p style="font-size:14px;color:#555;">구매 후 문의사항은 스마트스토어 톡톡으로 문의해 주세요.</p>
 </div>"""
 
 

@@ -146,8 +146,11 @@ def build_request_body(
 
     detail_attribute = {
         "afterServiceInfo": {
+            # 전화번호 필드 자체는 네이버 스펙상 필수라 비워둘 수 없다 — 다만 안내
+            # 문구는 통화 대신 스마트스토어 톡톡으로 유도한다(2026-09, 1인 운영이라
+            # 전화 응대 대신 톡톡으로 문의 채널을 일원화하기로 함).
             "afterServiceTelephoneNumber": CS_PHONE_NUMBER,
-            "afterServiceGuideContent": "구매 후 문의사항은 고객센터로 연락 바랍니다.",
+            "afterServiceGuideContent": "구매 후 문의사항은 스마트스토어 톡톡으로 문의해 주세요.",
         },
         "originAreaInfo": _build_origin_area_info(product, strict=strict),
         # 검색어 태그 — code 없이 text만 등록 (네이버 공식 가이드상 code 생략 가능,

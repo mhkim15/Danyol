@@ -17,7 +17,7 @@ from ..config import SHIPPING_FEE, FREE_SHIPPING_THRESHOLD, RETURN_DELIVERY_FEE,
 # register.py의 하드코딩과 정확히 같은 값이어야 "기본값"으로 판정할 수 있다 — 여기서
 # 값이 바뀌면 register.py도 같이 바뀐 것인지 확인할 것.
 _DUMMY_CS_PHONE = "010-0000-0000"
-_DEFAULT_AS_GUIDE = "구매 후 문의사항은 고객센터로 연락 바랍니다."
+_DEFAULT_AS_GUIDE = "구매 후 문의사항은 스마트스토어 톡톡으로 문의해 주세요."
 _DEFAULT_DELIVERY_COMPANY = "CJGLS"
 # 배송비 기준값은 리터럴로 다시 정의하지 않고 config.py에서 그대로 가져온다 — 예전엔
 # 여기서 3000/30000/3000/6000을 따로 정의해서, config 값이 바뀌면 감사 패널만 옛
@@ -262,7 +262,7 @@ def _demo() -> None:
         },
         "detailAttribute": {
             "afterServiceInfo": {"afterServiceTelephoneNumber": "010-0000-0000",
-                                  "afterServiceGuideContent": "구매 후 문의사항은 고객센터로 연락 바랍니다."},
+                                  "afterServiceGuideContent": "구매 후 문의사항은 스마트스토어 톡톡으로 문의해 주세요."},
             "originAreaInfo": {"originAreaCode": "0200037"},
             "modelName": "11013443",
             "productInfoProvidedNotice": {"productInfoProvidedNoticeType": "ETC",

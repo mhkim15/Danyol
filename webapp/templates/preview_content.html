@@ -1,11 +1,10 @@
-<div class="detail-layout"><div class="detail-main">
 <h1 style="margin:0 0 12px;color:var(--ink);">{{ '리메이크 상품' if track == 'B' else '틈새 상품' if track == 'A' else '등록 미리보기' }}</h1>
 
 <div class="panel">
   <h2>상품명 최적화</h2>
   {% if not supply_matched %}
   <div style="background:var(--warn-bg);border-radius:8px;padding:10px 12px;margin-bottom:12px;">
-    <p style="color:var(--warn);font-size:13px;margin:0 0 8px;">⚠ 이 키워드와 형태가 같은 상품인지 자동 확인 못함 — 재료/부자재일 수 있습니다. 아래 "상세페이지"에서 이미지를 실물로 확인하세요(외부 사이트로 안 나가도 됩니다).</p>
+    <p style="color:var(--warn);font-size:13px;margin:0 0 8px;">⚠ 재료·부자재가 아닌지 아래 상세페이지 사진으로 확인하세요. 확인해야 등록할 수 있습니다.</p>
     <form method="post" action="{{ url_for('confirm_match_bulk') }}">
       <input type="hidden" name="ids" value="{{ keyword }}||{{ track }}">
       <input type="hidden" name="tab" value="{{ 'remake' if track == 'B' else 'niche' }}">
@@ -18,11 +17,9 @@
     <button type="button" id="nameTabRaw" class="btn-sm secondary" onclick="showNameTab('raw')">원본 보기</button>
   </div>
   <input type="text" id="name_override" form="register-form" name="name_override" value="{{ optimized_name }}" maxlength="100" class="mono">
-  <p id="nameHint" class="muted" style="font-size:12px;margin-top:6px;">직접 수정 가능 — 이 값이 등록됩니다</p>
+  <p id="nameHint" class="muted" style="font-size:12px;margin-top:6px;"></p>
   {% if removed_words %}
-  <p class="muted" style="font-size:12px;margin-top:4px;">근거 — 원본에서 제거한 중복 단어: {{ removed_words|join(', ') }}</p>
-  {% else %}
-  <p class="muted" style="font-size:12px;margin-top:4px;">근거 — 원본에서 제거할 중복 단어가 없어 그대로 유지했습니다.</p>
+  <p class="muted" style="font-size:12px;margin-top:4px;">원본에서 제거한 중복 단어: {{ removed_words|join(', ') }}</p>
   {% endif %}
   {% if name_recommend_keywords %}
   <div class="row" style="flex-wrap:wrap;gap:6px;margin-top:10px;">
@@ -38,31 +35,36 @@
 <div class="panel" style="margin-bottom:32px;">
   <h2>상세페이지</h2>
 
-  {# 버전 탭 — 지금 보고 있는 쪽이 그대로 등록된다. 어느 쪽을 쓸지가 이 화면의
-     첫 번째 결정이라 맨 위에 둔다. #}
+  {# 버전 탭 — 지금 보고 있는 쪽이 그대로 등록된다. 기본은 도매 원본이고, AI 버전은
+     "AI로 만들기"를 눌렀을 때만 생긴다(2026-09 — 예전엔 화면을 열기만 해도 만들어졌다).
+     한번 만들면 사람이 고른 것이므로 그쪽이 기본으로 열린다. #}
   <div class="row" style="gap:6px;margin-bottom:8px;align-items:center;">
     {% if detail_ai %}
-    <button type="button" id="vTabAi" class="btn-sm" onclick="showVersion('ai')">AI 구성</button>
-    <button type="button" id="vTabBasic" class="btn-sm secondary" onclick="showVersion('basic')">기본 · 도매 원본</button>
-    <span style="flex:1;"></span>
-    <a class="btn-sm secondary"
-       href="{{ url_for('candidates_preview', keyword=keyword, track=track, goods_no=goods_no, regen=1) }}"
-       onclick="return confirm('지금 구성을 버리고 같은 재료로 새로 짭니다. 계속할까요?');">다시 만들기</a>
+    <button type="button" id="vTabAi" class="btn-sm" onclick="showVersion('ai')">AI 버전</button>
+    <button type="button" id="vTabBasic" class="btn-sm secondary" onclick="showVersion('basic')">도매 원본</button>
     {% else %}
-    <span class="badge">기본 · 도매 원본</span>
-    <span class="muted" style="font-size:12px;">이 상품은 컷으로 쪼갤 상세 이미지가 없어 AI 구성을 만들지 못했습니다.</span>
+    <span class="badge">도매 원본</span>
+    {% endif %}
+    <span style="flex:1;"></span>
+    {% if goods_no %}
+    <button type="button" class="btn-sm secondary" onclick="toggleSellerPane()">내 사진·메모{% if seller_photos %} ({{ seller_photos|length }}){% endif %}</button>
+    <button type="button" class="btn-sm{{ ' secondary' if detail_ai }}" onclick="startAiBuild({{ 'true' if detail_ai else 'false' }})">
+      {{ 'AI로 다시 만들기' if detail_ai else 'AI로 만들기' }}</button>
     {% endif %}
   </div>
-  <p class="muted" style="font-size:12.5px;margin:0 0 12px;">
-    {% if detail_ai %}<b>지금 보고 있는 버전이 등록됩니다.</b> 아래 "구성 편집"에서 순서·사진·글을 고치면
-    바로 이 화면에 반영됩니다. "다시 만들기"는 같은 재료로 완전히 새 버전을 짭니다.{% endif %}
-  </p>
+  {% if detail_fetch_error %}
+  <div class="flash flash-error" style="margin-bottom:10px;">도매매 상세조회 실패 — 사진·설명이 실제보다 적게 잡혀 있을 수 있습니다: {{ detail_fetch_error }}</div>
+  {% endif %}
 
   {# AI 구성 — 마우스로 바로 고친다 #}
   {% if detail_edit %}
   <div id="vAi">
     <style>
-      #pageEdit { border:1px solid var(--line); border-radius:6px; overflow:hidden; background:#fff; }
+      /* 상세페이지가 만 픽셀을 넘어가서 화면이 끝없이 길어졌다 — 기본 1200px로 끊고
+         아래 손잡이를 끌어(또는 "펼쳐 보기"로) 늘린다 */
+      #pageEdit { border:1px solid var(--line); border-radius:6px; background:#fff;
+                  height:1200px; overflow:auto; resize:vertical; }
+      #pageEdit.full { height:auto; max-height:none; overflow:visible; resize:none; }
       #pageEdit [data-blk] { position:relative; outline:1px dashed transparent; outline-offset:-1px; }
       #pageEdit [data-blk]:hover { outline-color:#2b6cb0; }
       #pageEdit [data-blk].sel { outline:2px solid #2b6cb0; outline-offset:-2px; }
@@ -76,10 +78,10 @@
                  padding:3px 7px; border-radius:4px; font-family:inherit; line-height:1.4; }
       .blk-bar button:hover { background:rgba(255,255,255,.2); }
       .blk-bar .name { color:rgba(255,255,255,.55); font-size:10.5px; padding:3px 5px; }
-      .blk-ins { height:18px; display:flex; align-items:center; justify-content:center; }
-      .blk-ins button { all:unset; cursor:pointer; font-size:11px; color:#2b6cb0; font-family:inherit;
-                 padding:1px 9px; border:1px dashed #2b6cb0; border-radius:999px; opacity:0; background:#fff; }
-      .blk-ins:hover button { opacity:1; }
+      .blk-ins { height:20px; display:flex; align-items:center; justify-content:center; }
+      .blk-ins select { font-size:11px; color:#2b6cb0; font-family:inherit; padding:1px 6px;
+                 border:1px dashed #2b6cb0; border-radius:999px; opacity:0; background:#fff; cursor:pointer; }
+      .blk-ins:hover select, .blk-ins select:focus { opacity:1; }
       #cutPicker { display:none; position:fixed; inset:auto 0 0 0; z-index:200; background:#fff;
                  border-top:2px solid #2b6cb0; padding:12px 16px; max-height:78vh; overflow:auto;
                  box-shadow:0 -6px 24px rgba(0,0,0,.18); }
@@ -92,18 +94,17 @@
     </style>
 
     <div class="row" style="gap:6px;align-items:center;margin-bottom:8px;flex-wrap:wrap;">
-      <span class="muted" style="font-size:12px;">
-        글자를 눌러 바로 고치고, 블록 위 <b>≡</b>를 끌어 순서를 바꿉니다.
-      </span>
+      <span class="muted" style="font-size:12px;">글자를 눌러 고치고, <b>≡</b>를 끌어 순서를 바꿉니다.</span>
       <span style="flex:1;"></span>
-      <select id="newBlockKind" style="padding:5px;font-size:12.5px;">
-        {% for k, label in block_kinds.items() %}<option value="{{ k }}">{{ label }}</option>{% endfor %}
-      </select>
-      <button type="button" class="btn-sm secondary" onclick="blkAppend()">맨 끝에 넣기</button>
-      <button type="button" class="btn-sm" onclick="blkSave()">저장하고 다시 그리기</button>
+      <button type="button" class="btn-sm secondary" onclick="openStoreView()">실제 화면 보기</button>
+      <button type="button" class="btn-sm" onclick="blkSave()">저장</button>
     </div>
 
     <div id="pageEdit">{{ detail_edit|safe }}</div>
+    <div class="row" style="justify-content:center;margin-top:6px;">
+      <button type="button" class="btn-sm secondary" id="pageFullBtn" onclick="togglePageFull()"
+              style="font-size:11.5px;">↕ 펼쳐 보기</button>
+    </div>
 
     <form id="blockSaveForm" method="post" action="{{ url_for('edit_candidate_blocks') }}">
       <input type="hidden" name="keyword" value="{{ keyword }}">
@@ -116,7 +117,6 @@
     <div id="cutPicker">
       <div class="row pick-head" style="align-items:center;margin-bottom:8px;">
         <b style="font-size:13px;">사진 고르기</b>
-        <span class="muted" style="font-size:12px;margin-left:8px;">누르면 바로 바뀝니다</span>
         <span style="flex:1;"></span>
         <button type="button" class="btn-sm secondary" onclick="pickCut(-1)">사진 없이</button>
         <button type="button" class="btn-sm secondary" onclick="closePicker()">닫기</button>
@@ -128,6 +128,11 @@
           <div style="font-size:10.5px;text-align:center;margin-top:2px;line-height:1.25;">
             {{ c.index }}{% if c.source == 'seller' %}·내 사진{% elif c.label %}·{{ c.label }}{% endif %}
           </div>
+          {% if c.recut %}
+          <div style="font-size:10px;text-align:center;color:#c0392b;line-height:1.25;" title="{{ c.reason }}">범위 고치기 필요</div>
+          {% elif not c.use %}
+          <div class="muted" style="font-size:10px;text-align:center;line-height:1.25;" title="{{ c.reason }}">뺀 사진</div>
+          {% endif %}
           {% if c.src_url %}
           <button type="button" class="recut-btn"
                   onclick="openRecut({{ c.index }}, '{{ c.src_url }}', {{ c.y0 }}, {{ c.y1 }})"
@@ -143,7 +148,6 @@
       <div id="recutPane" hidden style="margin-top:12px;border-top:1px solid var(--line);padding-top:10px;">
         <div class="row" style="align-items:center;gap:8px;margin-bottom:6px;flex-wrap:wrap;">
           <b style="font-size:12.5px;">컷 <span id="recutIdx"></span> 범위 고치기</b>
-          <span class="muted" style="font-size:11.5px;">파란 선을 위아래로 끌어 원하는 만큼 잡으세요</span>
           <span style="flex:1;"></span>
           <button type="button" class="btn-sm secondary" onclick="recutNudge(-300)">위로 더</button>
           <button type="button" class="btn-sm secondary" onclick="recutNudge(300)">아래로 더</button>
@@ -166,9 +170,7 @@
       </div>
     </div>
     {% if edit_facts %}
-    <p class="muted" style="font-size:12px;margin:8px 0 0;">
-      사진에서 읽어낸 사실: {{ edit_facts|join(' · ') }} — 이 범위 안에서 쓰면 허위 표시 걱정이 없습니다.
-    </p>
+    <p class="muted" style="font-size:12px;margin:8px 0 0;">사진에서 읽어낸 사실: {{ edit_facts|join(' · ') }}</p>
     {% endif %}
   </div>
   {% endif %}
@@ -176,37 +178,40 @@
   {# 기본 — 지금까지 나가던 형태. 비교용이라 읽기만 한다 #}
   <div id="vBasic" {% if detail_ai %}hidden{% endif %}>
     <iframe srcdoc="{{ detail_basic }}"
-            style="width:100%;height:654px;border:1px solid var(--line);border-radius:6px;background:#fff;"></iframe>
-    <p class="muted" style="font-size:12px;margin:6px 0 0;">
-      도매 원본을 그대로 붙인 형태입니다. 고치려면 AI 구성으로 바꾸세요.
-    </p>
+            style="width:100%;height:1200px;resize:vertical;border:1px solid var(--line);border-radius:6px;background:#fff;"></iframe>
   </div>
 
-  <input type="hidden" form="register-form" name="detail_generated" value="{{ detail_ai or detail_basic }}">
   <input type="hidden" form="register-form" name="use_basic" id="useBasic" value="">
-  {% if regenerated %}<input type="hidden" form="register-form" name="regen" value="1">{% endif %}
 
   {# 내 사진·메모 — 같은 도매 상품을 파는 셀러가 전부 같은 사진을 쓰기 때문에, 직접 찍은
-     사진 한 장이 경쟁자와 겹치지 않는 유일한 자산이 된다. 그래서 첫 화면에 먼저 쓴다. #}
-  <details style="border:1px solid var(--line);border-radius:8px;padding:10px 12px;margin-top:16px;">
-    <summary style="cursor:pointer;font-size:13px;font-weight:700;">
-      내 사진·메모 넣기{% if seller_photos %} <span class="badge-ok">{{ seller_photos|length }}장 넣음</span>{% endif %}
-    </summary>
-    <form method="post" action="{{ url_for('upload_candidate_images') }}" enctype="multipart/form-data"
-          style="margin-top:10px;">
+     사진 한 장이 경쟁자와 겹치지 않는 유일한 자산이 된다. 그래서 첫 화면에 먼저 쓴다.
+     별도 접이식 영역으로 아래에 뒀더니 "이게 어디에 들어가는지 모르겠다"는 피드백을 받아
+     에디터 툴바에서 여는 아래 패널로 옮겼다(2026-09). #}
+  <style>
+    #sellerPane { display:none; position:fixed; inset:auto 0 0 0; z-index:200; background:#fff;
+                  border-top:2px solid #2b6cb0; padding:12px 16px; max-height:78vh; overflow:auto;
+                  box-shadow:0 -6px 24px rgba(0,0,0,.18); }
+    #sellerPane.on { display:block; }
+  </style>
+  <div id="sellerPane">
+    <div class="row" style="align-items:center;margin-bottom:8px;">
+      <b style="font-size:13px;">내 사진·메모</b>
+      <span style="flex:1;"></span>
+      <button type="button" class="btn-sm secondary" onclick="toggleSellerPane()">닫기</button>
+    </div>
+    <form method="post" action="{{ url_for('upload_candidate_images') }}" enctype="multipart/form-data">
       <input type="hidden" name="keyword" value="{{ keyword }}">
       <input type="hidden" name="track" value="{{ track }}">
       <input type="hidden" name="goods_no" value="{{ goods_no }}">
-      {% if regenerated %}<input type="hidden" name="regen" value="1">{% endif %}
       <p class="muted" style="font-size:12px;margin:0 0 8px;">
-        직접 찍은 사진은 상세페이지 첫 화면에 먼저 들어갑니다. 메모에 적은 내용은 문구를 쓸 때
-        사실로 쓰고, 적은 범위 밖으로 지어내지 않습니다.
+        올린 사진·메모는 <b>AI로 만들기</b> 때 도매 사진보다 먼저 쓰이고, 블록의 <b>사진</b> 버튼 목록에도 들어갑니다.
       </p>
       <input type="file" name="photos" accept="image/*" multiple style="font-size:13px;">
       <textarea name="seller_note" rows="2" placeholder="예: 실물 받아보니 손잡이가 짧습니다. 색은 사진보다 진합니다."
                 style="width:100%;margin-top:8px;font-size:13px;padding:8px;border:1px solid var(--line);
                        border-radius:6px;font-family:inherit;">{{ seller_note }}</textarea>
-      <button type="submit" class="btn-sm" style="margin-top:8px;">올리고 다시 만들기</button>
+      <button type="submit" class="btn-sm" style="margin-top:8px;">올리기</button>
+      <span class="muted" style="font-size:11.5px;margin-left:6px;">저장하지 않은 편집은 사라집니다</span>
     </form>
     {% if seller_photos %}
     <div class="row" style="flex-wrap:wrap;gap:10px;margin-top:12px;align-items:flex-start;">
@@ -220,7 +225,6 @@
           <input type="hidden" name="track" value="{{ track }}">
           <input type="hidden" name="goods_no" value="{{ goods_no }}">
           <input type="hidden" name="filename" value="{{ ph.filename }}">
-          {% if regenerated %}<input type="hidden" name="regen" value="1">{% endif %}
           <button type="submit" title="이 사진 빼기"
                   style="width:20px;height:20px;border-radius:50%;border:1px solid var(--line);
                          background:#fff;cursor:pointer;font-size:12px;line-height:1;padding:0;">×</button>
@@ -229,7 +233,53 @@
       {% endfor %}
     </div>
     {% endif %}
-  </details>
+  </div>
+
+  {# 실제 등록되면 어떻게 보이는지 — 편집 표시(점선·툴바) 없는 그대로 #}
+  <dialog id="storeView" style="width:min(560px,96vw);max-width:none;border:none;border-radius:12px;
+          padding:0;background:#fff;">
+    <div class="row" style="align-items:center;padding:10px 14px;border-bottom:1px solid var(--line);">
+      <b style="font-size:13px;">스마트스토어에서 보이는 모습</b>
+      <span style="flex:1;"></span>
+      <button type="button" class="btn-sm secondary" onclick="document.getElementById('storeView').close()">닫기</button>
+    </div>
+    <iframe id="storeViewFrame" src="about:blank" title="등록 화면 미리보기"
+            style="width:100%;height:min(78vh,900px);border:0;display:block;background:#fff;"></iframe>
+  </dialog>
+
+  {# AI 버전 만들기 — 수십 초 걸릴 수 있어 단계마다 서버를 따로 불러 진행을 보여준다.
+     편집까지 모달에 넣으면 좁아서 불편하다는 피드백(2026-09)이 있어, 결과까지만 여기서
+     보여주고 편집은 페이지 에디터로 넘긴다. #}
+  <style>
+    #aiBuild li { display:flex; gap:10px; padding:9px 0; border-top:1px solid var(--line); font-size:13px; }
+    #aiBuild li:first-child { border-top:0; }
+    #aiBuild .st { width:18px; flex:none; text-align:center; color:var(--ink-soft); }
+    #aiBuild li.run .st { animation:aispin 1s linear infinite; color:#2b6cb0; }
+    #aiBuild li.ok .st { color:#1f8a4c; }
+    #aiBuild li.err .st { color:#c0392b; }
+    #aiBuild .sum { font-size:12px; color:var(--ink-soft); margin-top:2px; }
+    #aiBuild li.err .sum { color:#c0392b; }
+    #aiBuild li.warn .st { color:#c77700; }
+    #aiBuild li.warn .sum { color:#a15c00; }
+    @keyframes aispin { to { transform:rotate(360deg); } }
+  </style>
+  <dialog id="aiBuild" style="width:min(460px,94vw);border:none;border-radius:12px;padding:20px 22px;background:#fff;">
+    <b style="font-size:15px;">AI 버전 만들기</b>
+    {% if claude_reason %}
+    <p style="font-size:12.5px;margin:6px 0 0;color:var(--warn);">Claude를 쓸 수 없어 규칙으로 만듭니다 — {{ claude_reason }}</p>
+    {% else %}
+    <p class="muted" style="font-size:12px;margin:6px 0 0;">이 Mac의 Claude Code(구독)로 판독합니다. 1~2분 걸릴 수 있습니다.</p>
+    {% endif %}
+    <ol id="aiSteps" style="list-style:none;padding:0;margin:12px 0 0;">
+      <li data-step="cuts"><span class="st">○</span><div>상세 이미지를 사진 단위로 자르기<div class="sum"></div></div></li>
+      <li data-step="read"><span class="st">○</span><div>사진 판독 — 쓸 사진과 뺄 사진 고르기<div class="sum"></div></div></li>
+      <li data-step="compose"><span class="st">○</span><div>문구 쓰고 페이지 구성하기<div class="sum"></div></div></li>
+    </ol>
+    <div class="row" style="justify-content:flex-end;margin-top:16px;gap:6px;">
+      <button type="button" class="btn-sm secondary" id="aiBuildClose" onclick="document.getElementById('aiBuild').close()">닫기</button>
+      <button type="button" class="btn-sm" id="aiBuildGo" hidden onclick="location.reload()">결과 보고 편집하기</button>
+    </div>
+  </dialog>
 
 </div>
 
@@ -332,7 +382,22 @@
     root.addEventListener('drop', function (e) { e.preventDefault(); redrawInserts(); });
   }
 
-  // 블록 사이 삽입 버튼 — 원하는 자리에 제목·강조·사진을 끼워 넣는다
+  // 블록 사이 삽입 — 넣을 자리에서 종류를 바로 고른다. 예전엔 위쪽에 종류 드롭다운이
+  // 따로 있어서 "저 드롭다운이 무슨 역할인지 모르겠다"는 피드백을 받았다(2026-09).
+  function insertMenu(place) {
+    var sel = document.createElement('select');
+    sel.innerHTML = '<option value="">+ 넣기</option>' + Object.keys(KIND_LABEL).map(function (k) {
+      return '<option value="' + k + '">' + KIND_LABEL[k] + '</option>';
+    }).join('');
+    sel.addEventListener('change', function () {
+      if (!sel.value) return;
+      place(makeBlock(sel.value));
+      sel.value = '';
+      redrawInserts();
+    });
+    return sel;
+  }
+
   function redrawInserts() {
     var root = blocksRoot();
     root.querySelectorAll('.blk-ins').forEach(function (n) { n.remove(); });
@@ -340,10 +405,15 @@
     blks.forEach(function (b) {
       var ins = document.createElement('div');
       ins.className = 'blk-ins';
-      ins.innerHTML = '<button type="button">+ 여기에 넣기</button>';
-      ins.querySelector('button').addEventListener('click', function () { blkInsert(b); });
+      ins.appendChild(insertMenu(function (el) { b.parentNode.insertBefore(el, b); }));
       b.parentNode.insertBefore(ins, b);
     });
+    if (blks.length) {
+      var tail = document.createElement('div');
+      tail.className = 'blk-ins';
+      tail.appendChild(insertMenu(function (el) { root.appendChild(el); }));
+      root.appendChild(tail);
+    }
   }
 
   function makeBlock(kind) {
@@ -374,23 +444,11 @@
              + '<div style="font-size:13px;color:#555;"><span data-f="item:1:0">둘째 항목</span>'
              + ' · <span data-f="item:1:1">설명</span></div>';
     }
-    inner += '<div style="font-size:11.5px;color:#9aa0a6;margin-top:8px;">저장하면 이 자리에 실제 모양으로 나옵니다</div>';
+    inner += '<div style="font-size:11.5px;color:#9aa0a6;margin-top:8px;">저장하면 실제 모양으로 바뀝니다</div>';
     el.innerHTML = inner;
     setupBlock(el);
     return el;
   }
-
-  function blkInsert(before) {
-    var kind = document.getElementById('newBlockKind').value;
-    before.parentNode.insertBefore(makeBlock(kind), before);
-    redrawInserts();
-  }
-
-  window.blkAppend = function () {
-    var kind = document.getElementById('newBlockKind').value;
-    blocksRoot().appendChild(makeBlock(kind));
-    redrawInserts();
-  };
 
   window.pickCut = function (idx) {
     if (!picking) return;
@@ -571,6 +629,71 @@
   bindHandle('recutHandleTop', 'top');
   bindHandle('recutHandleBot', 'bot');
 
+  window.togglePageFull = function () {
+    var el = document.getElementById('pageEdit');
+    el.classList.toggle('full');
+    document.getElementById('pageFullBtn').textContent =
+      el.classList.contains('full') ? '↕ 접기' : '↕ 펼쳐 보기';
+  };
+
+  window.toggleSellerPane = function () {
+    document.getElementById('sellerPane').classList.toggle('on');
+  };
+
+  // 편집 표시(점선·툴바) 없이 실제 등록되는 모습 — 편집 화면과 결과가 같은지 확인하는 곳
+  var VIEW_HTML = {ai: {{ (detail_ai or '')|tojson }}, basic: {{ (detail_basic or '')|tojson }}};
+
+  window.openStoreView = function () {
+    var basic = document.getElementById('useBasic');
+    var v = (basic && basic.value === '1') ? 'basic' : 'ai';
+    document.getElementById('storeViewFrame').srcdoc = VIEW_HTML[v] || VIEW_HTML.basic;
+    document.getElementById('storeView').showModal();
+  };
+
+  var aiRunning = false;
+  window.startAiBuild = function (again) {
+    if (again && !confirm('지금 AI 버전(고친 내용 포함)을 버리고 새로 만듭니다. 잘라둔 사진 범위는 유지됩니다. 계속할까요?')) return;
+    var dlg = document.getElementById('aiBuild');
+    var items = [].slice.call(dlg.querySelectorAll('#aiSteps li'));
+    items.forEach(function (li) {
+      li.className = ''; li.querySelector('.st').textContent = '○'; li.querySelector('.sum').textContent = '';
+    });
+    var closeBtn = document.getElementById('aiBuildClose'), goBtn = document.getElementById('aiBuildGo');
+    goBtn.hidden = true;
+    // 중간에 닫으면 반쯤 만든 결과가 남는다 — 끝날 때까지 닫기·Esc를 막는다
+    closeBtn.disabled = true; aiRunning = true;
+    dlg.showModal();
+
+    var i = 0;
+    function finish(ok) {
+      aiRunning = false; closeBtn.disabled = false;
+      goBtn.hidden = !ok;
+    }
+    function next() {
+      if (i >= items.length) return finish(true);
+      var li = items[i];
+      li.className = 'run'; li.querySelector('.st').textContent = '◐';
+      fetch('{{ url_for("ai_build_candidate") }}', {
+        method: 'POST', headers: {'Content-Type': 'application/x-www-form-urlencoded'},
+        body: new URLSearchParams({goods_no: '{{ goods_no }}', step: li.dataset.step,
+                                   name: {{ (raw_name or '')|tojson }}, category: {{ (supply_category or '')|tojson }}})
+      }).then(function (r) {
+        return r.json().catch(function () { return {ok: false, error: '서버 응답을 읽을 수 없습니다 (' + r.status + ')'}; });
+      }).then(function (d) {
+        li.querySelector('.sum').textContent = d.ok ? (d.summary || '') : (d.error || '실패');
+        if (!d.ok) { li.className = 'err'; li.querySelector('.st').textContent = '✕'; return finish(false); }
+        li.className = d.warn ? 'warn' : 'ok'; li.querySelector('.st').textContent = d.warn ? '!' : '✓';
+        i++; next();
+      }).catch(function (e) {
+        li.className = 'err'; li.querySelector('.st').textContent = '✕';
+        li.querySelector('.sum').textContent = '연결 실패: ' + e;
+        finish(false);
+      });
+    }
+    next();
+  };
+  document.getElementById('aiBuild').addEventListener('cancel', function (e) { if (aiRunning) e.preventDefault(); });
+
   window.showVersion = function (v) {
     var ai = document.getElementById('vAi');
     var basic = document.getElementById('vBasic');
@@ -585,12 +708,12 @@
 </script>
 
 <div class="panel">
-  <h2>검색어 태그 — 직접 수정 가능 (최대 10개)</h2>
+  <h2>검색어 태그 <span class="muted" style="font-size:12px;font-weight:400;">최대 10개</span></h2>
   <label class="muted" style="font-size:12px;">적용된 태그</label>
   <div id="tagChipsApplied" class="row" style="flex-wrap:wrap;gap:6px;margin-top:4px;min-height:28px;"></div>
-  <label class="muted" style="font-size:12px;display:block;margin-top:14px;">이외 추천 키워드 — 클릭하면 위로 이동합니다</label>
+  <label class="muted" style="font-size:12px;display:block;margin-top:14px;">추천 키워드</label>
   <div id="tagChipsPool" class="row" style="flex-wrap:wrap;gap:6px;margin-top:4px;min-height:28px;"></div>
-  <p id="tagPoolEmptyMsg" class="muted" style="font-size:12.5px;margin-top:4px;display:none;">이 키워드와 관련된 검색량 있는 단어를 이미 다 태그에 반영했습니다.</p>
+  <p id="tagPoolEmptyMsg" class="muted" style="font-size:12.5px;margin-top:4px;display:none;">추천할 단어를 이미 다 반영했습니다.</p>
 </div>
 <script>
 (function () {
@@ -674,13 +797,13 @@ function showNameTab(which) {
     input.disabled = true;
     input.style.cssText = 'background:var(--chip-bg);color:var(--ink-soft);cursor:not-allowed;';
     optBtn.className = 'btn-sm secondary'; rawBtn.className = 'btn-sm';
-    hint.textContent = '도매매 원본 — 참고용, 수정 불가. 등록에는 "최적화 후" 값이 쓰입니다';
+    hint.textContent = '원본은 참고용입니다 — 등록에는 "최적화 후" 값이 쓰입니다';
   } else {
     input.value = lastOptValue;
     input.disabled = false;
     input.style.cssText = '';
     optBtn.className = 'btn-sm'; rawBtn.className = 'btn-sm secondary';
-    hint.textContent = '직접 수정 가능 — 이 값이 등록됩니다';
+    hint.textContent = '';
   }
 }
 </script>
@@ -696,8 +819,6 @@ function showNameTab(which) {
 <div class="panel">
   <h2>가격 · 마진
     <button type="button" class="tip-btn" data-tip-toggle>?<span class="tip-bubble">
-      <p>판매가·할인율은 아래 칸에서 직접 바꿀 수 있습니다.</p>
-      <p><b>바뀐 값으로 마진을 미리 보려면</b> — "실제로 등록" 체크를 <b>끈 채로</b> 등록 버튼을 누르세요. 실제 등록은 안 되고, 그 값 기준 마진·개당이익만 계산해 보여줍니다.</p>
       <p>마진이 기준(최소 마진율, 개당이익 5,000원) 미달이면 등록이 자동으로 막힙니다. 할인을 걸었다면 <b>할인된 가격 기준으로도</b> 같은 기준을 다시 확인합니다.</p>
     </span></button>
   </h2>
@@ -715,40 +836,31 @@ function showNameTab(which) {
   </div>
 
   {% if price_position and price_position.label != '확인불가' %}
-  <div class="muted" style="font-size:12.5px;margin:12px 0 6px;">11번가 시장가 분포 (표본 {{ price_position.sample_size }}건, 판정은 중앙값 기준):</div>
-  <div class="row">
+  {# 평균은 소수의 초고가 상품에 끌려 왜곡된다(실측: "우산" 평균 27,724원 vs 중앙값 12,660원) —
+     그래서 기본으로 보여주는 한 줄은 중앙값이고, 전체 분포는 접어둔다 #}
+  <div class="row" style="margin-top:12px;align-items:center;">
+    <span class="muted" style="font-size:12.5px;">11번가 시세</span>
     <span class="{{ 'badge-ok' if price_position.label == '강함' else ('badge-warn' if price_position.label == '약함' else 'badge') }}">{{ price_position.label }}</span>
-    <span class="muted mono" style="font-size:12px;">
+    <span class="muted mono" style="font-size:12px;">중앙값 {{ '{:,}'.format(price_position.market_median) }}원 (표본 {{ price_position.sample_size }}건)</span>
+  </div>
+  <details style="margin-top:6px;">
+    <summary class="muted" style="cursor:pointer;font-size:12px;">전체 분포 보기</summary>
+    <div class="muted mono" style="font-size:12px;margin-top:6px;">
       최저 {{ '{:,}'.format(price_position.min) }} ·
       {% if price_position.p25 %}25% {{ '{:,}'.format(price_position.p25) }} · {% endif %}
       중앙값 {{ '{:,}'.format(price_position.market_median) }} ·
       {% if price_position.p75 %}75% {{ '{:,}'.format(price_position.p75) }} · {% endif %}
-      최고 {{ '{:,}'.format(price_position.max) }}
-      (평균 {{ '{:,}'.format(price_position.market_avg) }} — 참고용, 이상치에 끌릴 수 있음)
-    </span>
-  </div>
+      최고 {{ '{:,}'.format(price_position.max) }} ·
+      평균 {{ '{:,}'.format(price_position.market_avg) }}
+    </div>
+  </details>
   {% else %}
-  <p class="muted" style="font-size:12.5px;margin-top:10px;">11번가 가격 조회 실패 또는 표본 없음 — 아래 링크로 직접 확인하세요.</p>
+  <p class="muted" style="font-size:12.5px;margin-top:10px;">11번가 시세 확인 실패 — 아래 링크로 직접 확인하세요.</p>
   {% endif %}
   <div class="row" style="margin-top:10px;">
     <a class="btn secondary" target="_blank" rel="noopener" href="https://search.shopping.naver.com/search/all?query={{ keyword | urlencode }}">네이버가 확인</a>
     <a class="btn secondary" target="_blank" rel="noopener" href="https://search.11st.co.kr/Search.tmall?kwd={{ keyword | urlencode }}">11번가 확인</a>
   </div>
-</div>
-
-<div class="panel">
-  <h2>리스팅 품질</h2>
-  {% if detail_fetch_error %}
-  <div class="flash flash-error">도매매 상세조회 실패 — 아래 이미지·설명 수치는 검색 결과의 요약값이라 실제와 다를 수 있습니다: {{ detail_fetch_error }}</div>
-  {% else %}
-  <div class="row">
-    <div class="badge">이미지 {{ image_count }}장</div>
-    <div class="badge">설명 {{ description_len }}자</div>
-  </div>
-  {% if image_count <= 1 or description_len < 200 %}
-  <div class="flash flash-error" style="margin-top:10px;">원본 리스팅이 부실할 수 있습니다 — 등록 전 도매매 원본 페이지를 육안으로 확인하세요.</div>
-  {% endif %}
-  {% endif %}
 </div>
 
 <div class="panel">
@@ -763,6 +875,7 @@ function showNameTab(which) {
     {% endif %}
     <div class="row">
       <button type="submit">등록</button>
+      <button type="button" class="btn secondary" onclick="openStoreView()">실제 화면 보기</button>
       <button type="button" class="btn secondary" id="auditToggleBtn" onclick="toggleFieldAudit()">
         등록 항목 점검{% if audit_problem_count %} <span class="badge-warn">문제 {{ audit_problem_count }}건</span>{% endif %}
       </button>
@@ -770,9 +883,10 @@ function showNameTab(which) {
     </div>
   </form>
 </div>
-</div>
 
-<div id="fieldAuditPanel" class="panel field-audit-panel" hidden>
+{# 점검은 오른쪽 사이드 패널이었는데, 보려면 화면 맨 위로 되돌아가야 해서 등록 버튼 바로
+   아래로 내렸다(2026-09) #}
+<div id="fieldAuditPanel" class="panel" hidden>
   <h2>등록 항목 점검 — 지금 등록하면</h2>
   {% if audit_error %}
   <p class="muted">{{ audit_error }}</p>
@@ -782,7 +896,6 @@ function showNameTab(which) {
   <label style="display:flex;align-items:center;gap:6px;font-size:12.5px;margin-bottom:6px;">
     <input type="checkbox" id="auditProblemOnly" checked onchange="filterFieldAudit()"> 문제 항목만 보기
   </label>
-  <p class="muted" style="font-size:12px;margin:0 0 10px;">입력칸으로 보이는 항목은 여기서 바로 고칠 수 있습니다 — 등록 버튼을 누르면 고친 값 그대로 등록됩니다.</p>
   {% set groups = [] %}
   {% for item in audit_items %}
     {% if item.group not in groups %}{% set _ = groups.append(item.group) %}{% endif %}
@@ -811,16 +924,13 @@ function showNameTab(which) {
   {% endfor %}
   {% endif %}
 </div>
-</div>
 
 <script>
 function toggleFieldAudit() {
   var panel = document.getElementById('fieldAuditPanel');
-  var modal = document.getElementById('modal');
   var opening = panel.hidden;
   panel.hidden = !opening;
-  if (modal) modal.classList.toggle('modal-wide', opening);
-  if (opening) filterFieldAudit();
+  if (opening) { filterFieldAudit(); panel.scrollIntoView({behavior: 'smooth', block: 'start'}); }
 }
 function filterFieldAudit() {
   var onlyProblems = document.getElementById('auditProblemOnly');

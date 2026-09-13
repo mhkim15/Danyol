@@ -433,6 +433,15 @@ def candidates():
     items = _load_json(SOURCING_LOG)
     items.sort(key=lambda c: c.get("score", 0), reverse=True)
 
+    # 이미 등록한 도매매 상품은 목록에서 뺀다 — 예전엔 "✓ 등록됨" 배지만 달고 그대로
+    # 남겨뒀는데, 다시 눌러 등록하면 중복 가드에 막혀 이유 없이 실패했다(2026-09).
+    # 할 일이 남은 것만 보이는 게 목록의 역할이다.
+    registered_goods_nos = {
+        p.get("domemae_goods_no") for p in _load_json(REGISTERED_PRODUCTS) if p.get("domemae_goods_no")
+    }
+    items = [c for c in items
+             if not (c.get("supply_goods_no") and c["supply_goods_no"] in registered_goods_nos)]
+
     counts = {"niche": 0, "remake": 0, "unclassified": 0, "hold": 0}
     for c in items:
         counts[_candidate_bucket(c)] += 1
@@ -445,16 +454,8 @@ def candidates():
     unconfirmed_only = request.args.get("unconfirmed") == "1"
 
     filtered = [c for c in items if _candidate_bucket(c) == tab]
-    if unconfirmed_only:
-        filtered = [c for c in filtered
-                    if c.get("supply_name") and not c.get("supply_matched") and not c.get("human_confirmed")]
 
-    # 등록해도 목록에서 안 사라져서 같은 후보를 다시 눌러 등록 시도 → 중복 등록
-    # 가드에 걸려 설명 없이 실패했다(2026-09 발견) — 이미 등록된 도매매 상품번호와
-    # 대조해 배지로 표시한다.
-    registered_goods_nos = {
-        p.get("domemae_goods_no") for p in _load_json(REGISTERED_PRODUCTS) if p.get("domemae_goods_no")
-    }
+    from bebrave.sourcing.models import registration_block_reason
 
     for c in filtered:
         # 점수 숫자만으로는 진입해도 되는지 판단이 안 된다 — 합격선 판정을 화면에도 쓴다.
@@ -464,10 +465,14 @@ def candidates():
         sale = c.get("est_sale_price") or 0
         cost = c.get("est_cost_price") or 0
         c["margin_amount"] = calc_margin(sale_price=sale, cost_price=cost).net_profit if sale and cost else None
-        c["already_registered"] = bool(c.get("supply_goods_no")) and c["supply_goods_no"] in registered_goods_nos
+        # 등록 가능 여부는 등록 게이트와 같은 함수로 판정한다 — 목록에서 "등록 가능"이라고
+        # 해놓고 등록 단계에서 막히면 이유를 알 수 없다.
+        c["block_reason"] = registration_block_reason(c.get("supply_matched"), c.get("human_confirmed", False))
+        c["registerable"] = bool(c.get("supply_name")) and not c["block_reason"]
 
     return render_template("candidates.html", candidates=filtered, target_categories=TARGET_CATEGORIES,
-                            tab=tab, counts=counts, unconfirmed_only=unconfirmed_only)
+                            tab=tab, counts=counts, unconfirmed_only=unconfirmed_only,
+                            list_categories=sorted({c.get("category", "") for c in filtered if c.get("category")}))
 
 
 @app.route("/candidates/confirm_match_bulk", methods=["POST"])
@@ -604,7 +609,7 @@ def discover_scan():
             flash(f"{len(individual_categories)}개 카테고리 스캔 완료 — 신규 후보 {total_added}개({detail}){dupe_note}{stale_note}", "success")
     except Exception as e:
         flash(f"스캔 실패: {e}", "error")
-    return redirect(url_for("candidates"))
+    return redirect(url_for("candidates", tab=request.form.get("tab") or None))
 
 
 @app.route("/candidates/preview")
@@ -685,28 +690,23 @@ def candidates_preview():
 
         content = generate_product_content(keyword, p, sale_price, category_name=cat_name if cat_id else "")
 
-        # 상세페이지는 컷 기반으로 다시 짠다(2026-09) — 도매가 준 초장문 이미지를 통째로
-        # 붙이는 대신 컷으로 쪼개 쓸 것만 고르고, 판매자가 올린 사진·메모를 얹는다.
+        # 상세페이지 AI 버전 — 저장된 게 있을 때만 보여준다(2026-09). 만드는 일은 화면의
+        # "AI로 만들기" 버튼이 단계별로 한다(ai_build_candidate). 예전엔 이 화면을 열기만
+        # 해도 키 없이 규칙으로 초안을 만들어 저장했고, 그게 기본 등록본이 됐다.
         # 여기서는 로컬 컷 주소로 보여주고, 등록할 때 pipeline이 같은 컷을 네이버로 올려
-        # 주소를 바꿔 끼운다. 컷이 안 나오는 상품(원본이 긴 이미지가 아닌 경우)은 실패로
-        # 떨어져 아래 기존 경로를 탄다.
+        # 주소를 바꿔 끼운다.
         from bebrave.smartstore.cuts import load_seller_note, seller_cuts
         from bebrave.smartstore.pipeline import _build_cut_detail
         seller_note = load_seller_note(goods_no_hint) if goods_no_hint else ""
         built = None
         if p.goods_no:
             built = _build_cut_detail(
-                p, "", dry_run=True, seller_note=seller_note,
-                cut_url=lambda g, f: url_for("cut_image", goods_no=g, filename=f),
-                regen=(request.args.get("regen") == "1"))
-        detail_basic = content["detail_content"]     # 도매 원본 기반 (지금까지의 방식)
-        detail_ai = built[0] if built else ""        # 컷 기반 AI 구성
+                p, "", dry_run=True,
+                cut_url=lambda g, f: url_for("cut_image", goods_no=g, filename=f))
+        detail_basic = content["detail_content"]     # 도매 원본
+        detail_ai = built[0] if built else ""        # 저장된 AI 버전
         if built:
             content["detail_content"] = built[0]
-        elif request.args.get("regen") == "1":
-            # 컷을 못 만든 상품은 예전 방식의 "다시 만들기"로 떨어진다.
-            from bebrave.smartstore.content import remake_detail_html
-            content["detail_content"] = remake_detail_html(keyword, p)
         seller_photos = seller_cuts(p.goods_no) if p.goods_no else []
 
         # 구성 손보기 화면용 — 컷 목록과 현재 판독·문구. 사람이 여기서 컷을 빼거나
@@ -723,7 +723,7 @@ def candidates_preview():
                 r = _rd.of(c.index)
                 edit_cuts.append({
                     "index": c.index, "source": c.source, "kind": r.kind, "use": r.use,
-                    "text": r.text, "label": r.label, "reason": r.reason,
+                    "text": r.text, "label": r.label, "reason": r.reason, "recut": r.recut,
                     "url": url_for("cut_image", goods_no=p.goods_no, filename=c.filename),
                     # 원본에서의 위치 — 잘못 잘린 컷의 범위를 화면에서 다시 잡을 때 쓴다
                     "src": c.src, "y0": c.y0, "y1": c.y1,
@@ -847,7 +847,8 @@ def candidates_preview():
             audit_items=audit_items,
             audit_error=audit_error,
             audit_problem_count=sum(1 for i in audit_items if i.problem),
-            regenerated=(request.args.get("regen") == "1"),
+            claude_reason=__import__("bebrave.smartstore.claude_cli", fromlist=["x"]).unavailable_reason(),
+            supply_category=p.category,
             generated_image_url=(
                 url_for("generated_image", filename=request.args.get("generated_image"), _external=True)
                 if request.args.get("generated_image") else ""
@@ -908,24 +909,9 @@ def register_candidate():
     tags_override = tags_input or None
     sale_price_raw = request.form.get("sale_price_override", "").strip()
     sale_price_override = int(sale_price_raw) if sale_price_raw.isdigit() else None
-    # 상세페이지 에디터 — 미리보기에서 직접 고친 HTML이 있으면 그대로 등록에 반영한다.
-    # 자동생성본과 글자 하나도 다르지 않으면(에디터를 안 건드렸으면) 굳이 override로
-    # 취급하지 않는다 — pipeline.run()이 항상 새로 생성한 콘텐츠를 쓰게 둬서, 등록
-    # 시점의 최신 도매매 이미지/설명이 반영되게 한다.
-    # "내용 다시 만들기"로 새로 짠 상세페이지는 사람이 한 글자도 안 고쳐도 그대로 등록한다.
-    # 재생성본과 자동생성본이 문자열로 같아서 override가 꺼지고, pipeline이 기본형을 새로
-    # 만들어 덮어쓰고 있었다 — 화면에서 확인한 것과 다른 페이지가 등록되는 사고(2026-09 발견).
-    regenerated = request.form.get("regen") == "1"
-    # 화면에서 "기본 · 도매 원본" 탭을 보고 있었다면 그 형태로 등록한다 — 컷 재구성을
-    # 건너뛰고 지금까지의 방식을 그대로 쓴다.
+    # 상세페이지 — 화면에서 도매 원본 탭을 골랐으면 저장된 AI 버전을 건너뛴다. AI 버전을
+    # 골랐으면(또는 AI 버전이 없으면) pipeline이 저장된 버전을 쓰고, 없으면 원본으로 간다.
     use_basic = request.form.get("use_basic") == "1"
-    detail_override_raw = request.form.get("detail_override", "").strip()
-    detail_generated = request.form.get("detail_generated", "").strip()
-    detail_override = "" if use_basic else (
-        detail_override_raw if (regenerated or detail_override_raw != detail_generated) else "")
-    # 판매자가 적어둔 메모 — 문구를 쓸 때 사실로 취급한다(업로드 화면에서 저장해 둔 값).
-    from bebrave.smartstore.cuts import load_seller_note
-    seller_note = load_seller_note(goods_no) if goods_no else ""
     # 즉시할인율 — 사람이 % 단위로 입력, 파이프라인엔 0~1 소수로 넘긴다.
     discount_raw = request.form.get("discount_percent", "").strip()
     try:
@@ -957,11 +943,9 @@ def register_candidate():
                     name_override=name_override,
                     tags_override=tags_override,
                     sale_price_override=sale_price_override,
-                    detail_override=detail_override,
                     discount_rate=discount_rate,
                     representative_image_override=representative_image_override,
                     field_overrides=field_overrides,
-                    seller_note=seller_note,
                     skip_cuts=use_basic,
                 )
             else:
@@ -972,11 +956,9 @@ def register_candidate():
                     name_override=name_override,
                     tags_override=tags_override,
                     sale_price_override=sale_price_override,
-                    detail_override=detail_override,
                     discount_rate=discount_rate,
                     representative_image_override=representative_image_override,
                     field_overrides=field_overrides,
-                    seller_note=seller_note,
                     skip_cuts=use_basic,
                 )
 
@@ -1058,6 +1040,75 @@ def recut_candidate_cut():
             "url": url_for("cut_image", goods_no=goods_no, filename=cut.filename)}
 
 
+@app.route("/candidates/ai_build", methods=["POST"])
+def ai_build_candidate():
+    """상세페이지 AI 버전을 만든다 — 화면이 단계(step)마다 한 번씩 불러 진행을 보여준다(2026-09).
+
+    판독·문구는 이 Mac의 Claude Code(지금 쓰는 구독)로 한다. 못 쓰면 규칙으로 떨어지고,
+    그 이유를 warn과 함께 돌려줘 화면에 표시한다.
+
+    한 번에 돌리면 판독에 수십 초가 걸리는 동안 화면이 멈춘 것처럼 보인다. 단계는
+    cuts(사진 자르기) → read(사진 판독) → compose(문구·구성). 사진 자르기는 캐시를
+    쓰므로 다시 만들어도 사람이 고친 컷 범위는 그대로 남는다."""
+    goods_no = request.form.get("goods_no", "")
+    step = request.form.get("step", "")
+    if not goods_no:
+        return {"ok": False, "error": "상품번호가 없습니다"}, 400
+    try:
+        from bebrave.smartstore.cuts import build_cuts, load_cuts, load_seller_note
+        from bebrave.smartstore.cut_reader import load_reading, read_cuts
+        from bebrave.sourcing.domemae import fetch_product_detail
+
+        if step == "cuts":
+            p = fetch_product_detail(goods_no)
+            cs = build_cuts(goods_no, [u for u in p.images if u])
+            if not cs.cuts:
+                return {"ok": False, "error": "사진 단위로 나눌 긴 상세 이미지가 없어 AI 버전을 만들 수 없습니다"}
+            return {"ok": True, "summary": f"사진 {len(cs.cuts)}장으로 나눴습니다"}
+
+        cs = load_cuts(goods_no)
+        if not cs or not cs.cuts:
+            return {"ok": False, "error": "잘라둔 사진이 없습니다 — 처음부터 다시 시도하세요"}
+
+        if step == "read":
+            from bebrave.smartstore.claude_cli import unavailable_reason
+            why = unavailable_reason()
+            prior = load_reading(goods_no)
+            # 규칙으로 골라둔 결과가 남아 있으면 Claude를 쓸 수 있게 된 뒤에도 다시 읽지 않아
+            # 공급사 자료 사진이 계속 섞였다(2026-09 발견) — 쓸 수 있으면 규칙 판독은 버린다.
+            r = read_cuts(cs, request.form.get("name", ""), request.form.get("category", ""),
+                          force=not why and not (prior and prior.by_ai))
+            used = sum(1 for c in cs.cuts if r.of(c.index).use)
+            if not r.by_ai:
+                return {"ok": True, "warn": True,
+                        "summary": f"Claude를 못 써서 규칙으로 골랐습니다 — {r.fallback_reason or why or '저장된 규칙 판독'}"
+                                   f" (쓸 사진 {used}장, 공급사 자료가 섞일 수 있음)"}
+            recut = sum(1 for c in cs.cuts if r.of(c.index).recut)
+            summary = f"Claude가 읽었습니다 — 쓸 사진 {used}장 · 뺀 사진 {len(cs.cuts) - used}장"
+            if recut:
+                summary += (f". 그중 {recut}장은 좋은 사진에 가격·공급사 정보가 섞여 뺐습니다"
+                            " — 사진 고르기의 '범위 고치기'로 살릴 수 있습니다")
+            return {"ok": True, "summary": summary}
+
+        if step == "compose":
+            from bebrave.smartstore.layout import blocks_used_cuts, draft_blocks, save_blocks, write_copy
+            p = fetch_product_detail(goods_no)
+            reading = load_reading(goods_no) or read_cuts(cs, p.name, p.category)
+            copy = write_copy(p, reading.facts, load_seller_note(goods_no), force=True, reading=reading)
+            blocks = draft_blocks(cs, reading, copy)
+            if not blocks_used_cuts(blocks):
+                return {"ok": False, "error": "쓸 수 있는 사진이 없어 페이지를 만들지 못했습니다"}
+            save_blocks(goods_no, blocks)
+            if copy.fallback_reason:
+                return {"ok": True, "warn": True,
+                        "summary": f"블록 {len(blocks)}개로 구성했습니다 — 문구는 기본 문구로 대체 ({copy.fallback_reason})"}
+            return {"ok": True, "summary": f"블록 {len(blocks)}개로 페이지를 구성하고 문구를 썼습니다"}
+
+        return {"ok": False, "error": f"알 수 없는 단계: {step}"}, 400
+    except Exception as e:
+        return {"ok": False, "error": str(e)}, 500
+
+
 @app.route("/candidates/upload_images", methods=["POST"])
 def upload_candidate_images():
     """판매자가 직접 찍은 사진과 메모를 상세페이지 재료로 넣는다(2026-09).
@@ -1070,8 +1121,6 @@ def upload_candidate_images():
     track = request.form.get("track", "")
     goods_no = request.form.get("goods_no", "")
     back = {"keyword": keyword, "track": track, "goods_no": goods_no}
-    if request.form.get("regen") == "1":
-        back["regen"] = 1
 
     if not goods_no:
         flash("상품번호가 없어 사진을 올릴 수 없습니다.", "error")
@@ -1116,8 +1165,6 @@ def drop_candidate_image():
     goods_no = request.form.get("goods_no", "")
     back = {"keyword": request.form.get("keyword", ""), "track": request.form.get("track", ""),
             "goods_no": goods_no}
-    if request.form.get("regen") == "1":
-        back["regen"] = 1
     if drop_seller_cut(goods_no, request.form.get("filename", "")):
         flash("사진을 뺐습니다.", "success")
     return redirect(url_for("candidates_preview", **back))
@@ -1182,11 +1229,7 @@ def generate_candidate_image():
     keyword = request.form.get("keyword", "")
     track = request.form.get("track", "")
     goods_no = request.form.get("goods_no", "")
-    # 되돌아갈 때 재생성 여부를 잃으면 "다시 만들기 → AI 이미지" 순서로 눌렀을 때
-    # 상세페이지가 기본형으로 되돌아간다(2026-09 발견).
     back = {"keyword": keyword, "track": track, "goods_no": goods_no}
-    if request.form.get("regen") == "1":
-        back["regen"] = 1
 
     from bebrave.smartstore.image_ai import has_api_key, generate_product_image, build_remake_prompt
     if not has_api_key():
@@ -1223,7 +1266,9 @@ def register_candidates_bulk():
         if "||" in raw:
             kw, tr = raw.split("||", 1)
             pairs.append((kw, tr))
-    live = request.form.get("live") == "on"
+    # 목록의 dry-run 체크박스는 없앴다 — 미리보기는 상품 상세 화면이 하는 일이고,
+    # 등록은 판매중지(SUSPENSION) 상태로 올라가므로 바로 팔리지 않는다.
+    live = True
     tab = request.form.get("tab", "niche")
 
     if not pairs:

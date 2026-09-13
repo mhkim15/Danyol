@@ -38,11 +38,13 @@ _MIN_MARGIN = float(os.environ.get("MIN_MARGIN", "0.15"))
 from ..config import MAX_LISTING_STOCK, MIN_ABS_PROFIT
 
 
-def _build_cut_detail(product, token: str, dry_run: bool, seller_note: str = "",
-                      cut_url=None, regen: bool = False):
-    """도매가 준 초장문 상세 이미지를 컷으로 쪼개 상세페이지를 다시 짠다(2026-09).
+def _build_cut_detail(product, token: str, dry_run: bool, cut_url=None):
+    """저장된 AI 버전 상세페이지(컷 기반)를 그린다. 반환 (html, 이미지URL목록) 또는 None.
 
-    반환 (html, 이미지URL목록) 또는 None. None이면 호출부가 기존 방식으로 떨어진다.
+    AI 버전은 사람이 미리보기의 "AI로 만들기" 버튼으로 만든 경우에만 쓴다(2026-09).
+    예전엔 여기서 초안을 직접 만들어 저장했기 때문에, 미리보기를 열거나 일괄 등록을
+    누르기만 해도 사람이 본 적 없는 규칙 기반 페이지가 등록본이 됐다. 저장된 버전이
+    없으면 None — 호출부가 도매 원본으로 등록한다.
 
     이미지 목록의 맨 앞이 대표이미지가 된다 — 페이지 첫 화면에 쓰는 컷과 같은 것이라
     목록 화면과 상세페이지가 어긋나지 않는다.
@@ -51,23 +53,16 @@ def _build_cut_detail(product, token: str, dry_run: bool, seller_note: str = "",
     주소가 detailContent에 그대로 들어가면 라이브 페이지의 사진이 전부 깨지므로,
     업로드에 실패한 컷은 plan에서 빼고 그 구간을 비운다.
     """
-    from .cuts import build_cuts
-    from .cut_reader import read_cuts
-    from .layout import (blocks_used_cuts, draft_blocks, load_blocks, render_blocks,
-                         save_blocks, write_copy)
+    from .cuts import load_cuts
+    from .layout import blocks_used_cuts, load_blocks, render_blocks
 
     try:
-        cs = build_cuts(product.goods_no, [u for u in product.images if u])
-        if not cs.cuts:
-            return None
-        reading = read_cuts(cs, product.name, product.category)
-        # regen=True면 저장된 문구·블록을 버리고 새로 짠다 — 안 그러면 "다시 만들기"를
-        # 눌러도, 메모를 고쳐도 같은 페이지가 계속 나온다(2026-09 발견).
-        copy = write_copy(product, reading.facts, seller_note, force=regen, reading=reading)
-        blocks = None if regen else load_blocks(product.goods_no)
+        blocks = load_blocks(product.goods_no) if product.goods_no else None
         if not blocks:
-            blocks = draft_blocks(cs, reading, copy)
-            save_blocks(product.goods_no, blocks)   # 사람이 손볼 대상이 되는 초안
+            return None
+        cs = load_cuts(product.goods_no)
+        if not cs or not cs.cuts:
+            return None
         needed = blocks_used_cuts(blocks)
         if not needed:
             return None
@@ -154,7 +149,6 @@ def run(
     representative_image_override: str = "",
     field_overrides: Optional[dict] = None,
     force: bool = False,
-    seller_note: str = "",
     cut_url=None,
     skip_cuts: bool = False,
 ) -> List[StoreProduct]:
@@ -418,12 +412,12 @@ def run(
                 u for u in domemae_p.images if u != representative_image_override
             ]
 
-        # 컷 기반 상세페이지를 먼저 시도한다 — 도매가 준 초장문 이미지를 통째로 붙이는 대신
-        # 컷으로 쪼개 쓸 것만 고른다. 성공하면 그 컷들만 네이버로 올라가므로 아래의 원본
-        # 일괄 업로드 경로를 타지 않는다(공급사 자료·B2B 안내가 걸러지는 것도 여기서).
+        # 사람이 만든 AI 버전(컷 기반 상세페이지)이 저장돼 있으면 그걸 쓴다. 그러면 쓸 컷만
+        # 네이버로 올라가므로 아래의 원본 일괄 업로드 경로를 타지 않는다. 저장된 버전이
+        # 없으면 도매 원본 그대로 — 여기서 초안을 새로 만들지 않는다(2026-09).
         cut_detail, cut_images = "", []
         if not detail_override and not skip_cuts:
-            built = _build_cut_detail(domemae_p, token, dry_run, seller_note, cut_url)
+            built = _build_cut_detail(domemae_p, token, dry_run, cut_url=cut_url)
             if built:
                 cut_detail, cut_images = built
                 if cut_images:

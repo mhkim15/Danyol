@@ -10,9 +10,10 @@
 cut_reader.py가 맡는다. 여기서 나온 컷은 판독 결과가 없어도 비율·크기만으로 배치할 수
 있어서, 판독이 실패해도 페이지는 만들어진다.
 
-새 의존성을 넣지 않으려고 numpy 대신 Pillow만 쓴다 — 폭을 16px로 줄인 뒤 그 16개
-값의 분산으로 "이 가로줄이 여백인가"를 판정한다. 여백 줄은 줄여도 균일하고 내용이 있는
-줄은 줄여도 들쭉날쭉하므로 결과가 같다(실측: 주걱 13컷·우산 27컷, 0.2초).
+새 의존성을 넣지 않으려고 numpy 대신 Pillow만 쓴다. 가로줄마다 "옆 칸끼리 밝기 차이"로
+여백을 판정하고, 여백 한가운데서 자르며, 여백 없이 맞붙은 긴 덩어리는 이음매에서 한 번 더
+자른다(slice_bounds 참고). 예전의 "폭 16칸으로 줄여 분산 보기"는 글자 한 줄을 여백으로 봐서
+제목 한가운데를 잘랐다(2026-09 교체, 실측: 일자손톱깎이 16컷→26컷, 우산 최대 3,548px→1,312px).
 """
 from __future__ import annotations
 
@@ -38,14 +39,16 @@ except ImportError:
     _HAS_REQUESTS = False
 
 CUTS_DIR = Path(__file__).resolve().parent.parent.parent / "data" / "cuts"
-_CACHE_TTL_SECONDS = 14 * 24 * 3600  # 2주 — 공급사가 상세 이미지를 갈아끼우는 주기를 넉넉히 잡음
 
 # 이 비율(세로/가로)을 넘으면 "여러 컷이 이어 붙은 긴 상세 이미지"로 본다.
 # 실측: 대표 사진 1.0 내외, 도매 상세 이미지 11.9(주걱)·26.3(우산).
 LONG_IMAGE_RATIO = 2.5
 _MIN_CUT_HEIGHT = 260   # 이보다 얇은 조각은 구분선·여백으로 보고 앞 컷에 붙인다
-_BLANK_RUN = 14         # 여백으로 인정할 최소 연속 줄 수
-_BLANK_TOL = 9          # 이 값보다 분산이 작으면 여백 줄
+_BLANK_RUN = 30         # 여백으로 인정할 최소 연속 줄 수 — 14줄이면 아이콘과 이름표가 갈라졌다
+_BLANK_TOL = 6          # 옆 칸끼리 밝기 차이가 이보다 작으면 여백 줄
+_EDGE_COLS = 160        # 판정용으로 줄이는 가로 칸 수 — 16칸이면 글자 한 줄이 평균에 묻혔다
+_MAX_CUT_HEIGHT = 1600  # 이보다 긴 덩어리는 사진끼리 맞붙은 이음매에서 한 번 더 자른다
+_SEAM_MIN = 45          # 이음매로 인정할 위아래 줄의 평균 밝기 변화
 
 
 @dataclass
@@ -84,34 +87,67 @@ class CutSet:
 
 
 # ── 분할 ────────────────────────────────────────────────────────────────
-def _row_variance(im: "Image.Image", cols: int = 16) -> List[float]:
-    """가로줄마다 균일도를 잰다 — 값이 작을수록 여백에 가깝다."""
-    small = im.convert("RGB").resize((cols, im.height), Image.BILINEAR)
-    px = list(small.getdata())
-    out = []
-    for y in range(im.height):
-        flat = [c for p in px[y * cols:(y + 1) * cols] for c in p]
-        m = sum(flat) / len(flat)
-        out.append((sum((v - m) ** 2 for v in flat) / len(flat)) ** 0.5)
-    return out
+def _gray_rows(im: "Image.Image") -> bytes:
+    return im.convert("L").resize((_EDGE_COLS, im.height), Image.BOX).tobytes()
 
 
-def slice_bounds(im: "Image.Image", min_h: int = _MIN_CUT_HEIGHT,
-                 gap: int = _BLANK_RUN, tol: int = _BLANK_TOL) -> List[Tuple[int, int]]:
-    """긴 이미지를 컷 경계 목록으로 쪼갠다. 반환은 [(y0, y1), ...]."""
-    rv = _row_variance(im)
-    bounds, run, start = [], 0, 0
-    for y in range(im.height):
-        if rv[y] < tol:
+def _row_edges(px: bytes, h: int) -> List[int]:
+    """가로줄마다 옆 칸끼리 밝기 차이의 최댓값 — 값이 작을수록 여백에 가깝다.
+
+    예전엔 폭을 16칸으로 줄여 분산을 봤는데, 한 칸이 50px를 넘어 글자 한 줄이 평균에 묻혀
+    여백으로 잡혔다. 옆 칸끼리의 차이는 좌우로 은은하게 변하는 바탕에선 작고, 글자·사진
+    경계에선 크다."""
+    c = _EDGE_COLS
+    return [max(abs(px[y * c + i + 1] - px[y * c + i]) for i in range(c - 1)) for y in range(h)]
+
+
+def _seam(px: bytes, y: int) -> float:
+    """y줄과 그 아랫줄이 가로 전체에서 얼마나 확 바뀌나 — 사진끼리 맞붙은 이음매는 크다."""
+    c, a, b = _EDGE_COLS, y * _EDGE_COLS, (y + 1) * _EDGE_COLS
+    return sum(abs(px[a + i] - px[b + i]) for i in range(c)) / c
+
+
+def slice_bounds(im: "Image.Image", min_h: int = _MIN_CUT_HEIGHT, gap: int = _BLANK_RUN,
+                 tol: int = _BLANK_TOL, max_h: int = _MAX_CUT_HEIGHT,
+                 seam_min: float = _SEAM_MIN) -> List[Tuple[int, int]]:
+    """긴 이미지를 컷 경계 목록으로 쪼갠다. 반환은 [(y0, y1), ...] — 빈틈 없이 이어진다.
+
+    1) 여백이 gap줄 이상 이어진 곳의 한가운데서 자른다. 예전엔 여백이 시작되는 첫 줄에서
+       끊어 글자 바로 밑 흐릿한 가장자리가 잘려 나갔다(일자손톱깎이 제목들).
+    2) 그래도 max_h보다 긴 덩어리는 사진끼리 맞붙은 이음매에서 한 번 더 자른다 — 여백 없이
+       붙은 사진 모음이 3,500px 한 컷이 되던 것(우산).
+    """
+    h = im.height
+    px = _gray_rows(im)
+    edges = _row_edges(px, h)
+    out, run, start = [], 0, 0
+    for y in range(h):
+        if edges[y] < tol:
             run += 1
             continue
         if run >= gap and y - run - start >= min_h:
-            bounds.append((start, y - run))
-            start = y - run // 2
+            mid = y - run // 2
+            out.append((start, mid))
+            start = mid
         run = 0
-    if im.height - start >= min_h:
-        bounds.append((start, im.height))
-    return bounds or [(0, im.height)]
+    if h - start >= min_h or not out:
+        out.append((start, h))
+    else:
+        out[-1] = (out[-1][0], h)      # 짧은 꼬리는 앞 컷에 붙인다
+
+    final, stack = [], list(reversed(out))
+    while stack:
+        a, b = stack.pop()
+        if b - a <= max_h:
+            final.append((a, b))
+            continue
+        best, at = max(((_seam(px, y), y) for y in range(a + min_h, b - min_h)), default=(0.0, -1))
+        if best < seam_min:
+            final.append((a, b))       # 이음매가 뚜렷하지 않으면 사진 한가운데를 가르지 않는다
+            continue
+        stack.append((at + 1, b))
+        stack.append((a, at + 1))
+    return final
 
 
 # ── 팔레트 ──────────────────────────────────────────────────────────────
@@ -195,11 +231,15 @@ def _fetch(url: str) -> Optional["Image.Image"]:
 
 
 def load_cuts(goods_no: str) -> Optional[CutSet]:
-    """캐시된 컷을 읽는다. 없거나 오래됐거나 깨졌으면 None(= 미스)."""
+    """잘라둔 컷을 읽는다. 없거나 깨졌으면 None.
+
+    기한을 두지 않는다(2026-09) — 저장된 AI 버전의 블록이 컷 번호로 사진을 가리키고
+    사람이 범위를 고친 컷도 여기 있어서, 기한이 지나 다시 자르면 AI 버전이 원본으로
+    조용히 돌아가거나 고친 범위가 날아간다.
+    """
+    # 도매 이미지 목록이 바뀐 경우의 다시 자르기는 build_cuts가 _same_sources로 판단한다
     meta = CUTS_DIR / str(goods_no) / "meta.json"
     if not meta.exists():
-        return None
-    if time.time() - meta.stat().st_mtime > _CACHE_TTL_SECONDS:
         return None
     try:
         d = json.loads(meta.read_text(encoding="utf-8"))
@@ -219,15 +259,20 @@ def build_cuts(goods_no: str, image_urls: List[str], force: bool = False) -> Cut
     if not _HAS_PIL:
         raise NotImplementedError("pip3 install Pillow 후 재시도하세요.")
     goods_no = str(goods_no)
-    if not force:
-        cached = load_cuts(goods_no)
-        if cached:
-            return cached
+    old = load_cuts(goods_no)
+    if not force and old and _same_sources(goods_no, image_urls):
+        return old
 
     out_dir = CUTS_DIR / goods_no
     out_dir.mkdir(parents=True, exist_ok=True)
-    for old in out_dir.glob("*.jpg"):
-        old.unlink()
+    # 판매자가 올린 사진은 도매 컷을 다시 잘라도 남긴다 — 예전엔 폴더의 jpg를 전부 지웠다
+    seller = [c for c in (old.cuts if old else []) if c.source == "seller"]
+    for f in out_dir.glob("*.jpg"):
+        if not f.name.startswith("seller_"):
+            f.unlink()
+    # 컷 번호가 바뀌면 이전 판독·문구·구성이 엉뚱한 사진을 가리킨다 — 버린다
+    for stale in ("reading.json", "copy.json", "blocks.json"):
+        (out_dir / stale).unlink(missing_ok=True)
 
     cs = CutSet(goods_no=goods_no, built_at=time.strftime("%Y-%m-%dT%H:%M"))
     idx = 0
@@ -250,11 +295,36 @@ def build_cuts(goods_no: str, image_urls: List[str], force: bool = False) -> Cut
                                src=n, y0=y0, y1=y1))
             idx += 1
 
+    cs.cuts.extend(seller)
     (out_dir / "meta.json").write_text(
         json.dumps({"goods_no": cs.goods_no, "built_at": cs.built_at, "palette": cs.palette,
+                    "sources": _source_keys(image_urls),
                     "cuts": [asdict(c) for c in cs.cuts]}, ensure_ascii=False),
         encoding="utf-8")
     return cs
+
+
+def _source_keys(image_urls: List[str]) -> List[str]:
+    # 주소 뒤 ?hash= 부분은 수시로 바뀐다 — 그것만으로 다시 자르면 사람이 고친 컷 범위가 날아간다
+    return [u.split("?")[0] for u in image_urls if u]
+
+
+def _same_sources(goods_no: str, image_urls: List[str]) -> bool:
+    """잘라둔 컷이 지금의 이미지 목록으로 만든 것인가.
+
+    컷에 기한을 없앤 뒤로, 도매매 정보를 잘못 읽어 이미지가 빠진 채 잘린 컷(일자손톱깎이:
+    대표사진 1장만)이 파싱을 고친 뒤에도 계속 쓰일 뻔했다(2026-09)."""
+    try:
+        d = json.loads((CUTS_DIR / str(goods_no) / "meta.json").read_text(encoding="utf-8"))
+    except Exception:
+        return False
+    # 출처를 기록하기 전에 자른 컷은 판단 근거가 없으니 그대로 쓴다 — 사람이 고친 범위·구성이
+    # 걸려 있다. 잘린 장수로 추측하면, 받기에 실패한 공급사 공지 이미지 1장 때문에(네일아트디자인)
+    # 다시 자르고 또 실패하면서 만들어 둔 AI 버전만 지우게 된다.
+    if "sources" not in d:
+        return True
+    # 받기에 실패한 이미지까지 목록째 기록하므로, 실패만으로 다시 자르지 않는다
+    return d["sources"] == _source_keys(image_urls)
 
 
 def register_seller_image(goods_no: str, image_bytes: bytes, max_px: int = 1400) -> Optional[Cut]:
@@ -383,6 +453,34 @@ def _demo() -> None:
                 im.putpixel((x, y), color)
     bounds = slice_bounds(im, min_h=200)
     assert len(bounds) == 3, f"여백으로 나뉜 3컷을 {len(bounds)}컷으로 쪼갬"
+    assert bounds[0][0] == 0 and bounds[-1][1] == H and all(
+        bounds[i][1] == bounds[i + 1][0] for i in range(len(bounds) - 1)), f"컷 사이 줄이 빠짐: {bounds}"
+
+    # (a2) 제목 두 줄 사이 좁은 여백에선 자르지 않고, 구역 사이 넓은 여백의 한가운데서 자른다
+    #      (일자손톱깎이: 제목 아래 끝이 잘려 나감 / 우산: 아이콘과 이름표가 갈라짐)
+    t = Image.new("RGB", (400, 1000), "white")
+    def text_line(y0, y1):
+        for y in range(y0, min(y1, 1000)):
+            for x in range(20, 380, 7):
+                t.putpixel((x, y), (30, 30, 30))
+    text_line(100, 130)
+    text_line(150, 180)                        # 줄 간격 20줄 — 한 제목
+    for yy in range(300, 1000, 40):
+        text_line(yy, yy + 25)                 # 여백 120줄 뒤의 다음 구역
+    tb = slice_bounds(t, min_h=150)
+    assert len(tb) == 2, f"제목 두 줄 사이 좁은 여백에서 자름: {tb}"
+    assert tb[0][1] - 180 >= 20, f"글자 바로 밑에서 잘라 여유가 없음: {tb[0]}"
+
+    # (a3) 여백 없이 맞붙은 사진 두 장은 이음매에서 자른다(우산 3,500px 덩어리)
+    top = Image.effect_noise((800, 1200), 40).point(lambda v: v // 2 + 60)
+    bot = Image.effect_noise((800, 1200), 40).point(lambda v: min(255, v // 2 + 160))
+    stacked = Image.new("L", (800, 2400))
+    stacked.paste(top, (0, 0))
+    stacked.paste(bot, (0, 1200))
+    sb = slice_bounds(stacked.convert("RGB"))
+    assert len(sb) == 2 and abs(sb[0][1] - 1200) <= 2, f"맞붙은 사진 두 장을 이음매에서 못 자름: {sb}"
+    flat = Image.effect_noise((800, 2400), 40).convert("RGB")
+    assert len(slice_bounds(flat)) == 1, "이음매가 없는 긴 사진 한가운데를 가름"
 
     # (b) 긴 이미지 판별 — 대표 사진은 쪼개지 않는다
     assert (1800 / 200) > LONG_IMAGE_RATIO
@@ -420,6 +518,25 @@ def _demo() -> None:
     assert Image.open(d / "000.jpg").height == 1200, "컷 파일이 새 범위로 안 바뀜"
     assert recut("_demo_recut", 99, 0, 100) is None, "없는 컷 번호가 통과함"
     shutil.rmtree(d, ignore_errors=True)
+
+    # 잘라둔 컷이 지금 이미지 목록과 맞는지 — 이미지가 빠진 채 잘린 컷을 계속 쓰지 않는다
+    import shutil as _sh
+    dd = CUTS_DIR / "_demo_src"
+    dd.mkdir(parents=True, exist_ok=True)
+    try:
+        def meta(obj):
+            (dd / "meta.json").write_text(json.dumps(obj), encoding="utf-8")
+        urls = ["https://a/img_760?hash=1", "https://b/01.jpg", "https://b/02.jpg"]
+        meta({"sources": ["https://a/img_760", "https://b/01.jpg", "https://b/02.jpg"], "cuts": []})
+        assert _same_sources("_demo_src", ["https://a/img_760?hash=2"] + urls[1:]), \
+            "주소 뒤 hash만 바뀌었는데 다시 자름 — 사람이 고친 컷 범위가 날아감"
+        assert not _same_sources("_demo_src", urls[:1]), "이미지 목록이 바뀌었는데 옛 컷을 씀"
+        # 출처 기록 전에 자른 옛 컷 — 원본 6장만 잘렸어도(7번째는 받기 실패) 그대로 쓴다
+        meta({"cuts": [{"src": 0}, {"src": 5}]})
+        assert _same_sources("_demo_src", urls + ["https://c/notice.jpg"] * 5), \
+            "근거 없이 옛 컷을 다시 잘라 사람이 만든 AI 버전을 지움"
+    finally:
+        _sh.rmtree(dd, ignore_errors=True)
 
     print("cuts._demo self-check OK")
 

@@ -340,7 +340,9 @@ def _parse_view_item(data: dict) -> DomemaeProduct:
 
     # 상세설명 HTML 안에 실제 갤러리 사진이 <img> 태그로 들어있는 경우가 많음 → 추출해서 추가
     desc_contents = desc_d.get("contents", "")
-    for img_url in re.findall(r'<img[^>]+src=["\']([^"\']+)["\']', desc_contents):
+    # 대소문자·따옴표를 가리지 않는다 — 공급사에 따라 <IMG src=...>로 써서 긴 상세이미지가
+    # 통째로 빠지고 대표사진 1장만 남았다(2026-09, 일자손톱깎이 67412210).
+    for img_url in re.findall(r'<img[^>]+src=["\']?([^"\'\s>]+)', desc_contents, re.I):
         if img_url not in images:
             images.append(img_url)
 

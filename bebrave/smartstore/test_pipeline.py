@@ -93,11 +93,27 @@ def test_cut_urls_never_reach_naver():
     assert same == plain and none == []
 
 
+def test_no_ai_version_unless_made():
+    """AI 버전은 사람이 "AI로 만들기"를 눌렀을 때만 생긴다 — 저장된 버전이 없는 상품은
+    미리보기·등록이 초안을 만들지 않고 도매 원본으로 간다(2026-09). 예전엔 일괄 등록만
+    눌러도 사람이 본 적 없는 규칙 기반 페이지가 올라갈 수 있었다."""
+    from types import SimpleNamespace
+    from .cuts import CUTS_DIR
+
+    goods = "_test_never_built"
+    p = SimpleNamespace(goods_no=goods, images=["https://example.invalid/a.jpg"],
+                        name="테스트", category="테스트")
+    assert pipeline._build_cut_detail(p, "fake", dry_run=True) is None, \
+        "저장된 AI 버전이 없는데 상세페이지를 만들어냄"
+    assert not (CUTS_DIR / goods).exists(), "버튼을 안 눌렀는데 사진을 잘라 저장함"
+
+
 def test():
     test_merges_live_and_local()
     test_falls_back_when_local_file_missing()
     test_falls_back_when_live_api_fails()
     test_cut_urls_never_reach_naver()
+    test_no_ai_version_unless_made()
     print("ok")
 
 

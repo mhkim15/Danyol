@@ -19,8 +19,8 @@
 from __future__ import annotations
 
 import html
+import re
 import json
-import os
 from dataclasses import dataclass, field
 from typing import List, Optional, Tuple
 
@@ -42,6 +42,7 @@ class Copy:
     # 각 point에 붙일 컷 번호. 비면 배치기가 알아서 고르는데, 그러면 "이음매가 없습니다"
     # 아래에 열탕소독 컷이 붙는 식으로 글과 사진이 어긋난다(2026-09 발견).
     point_cuts: List[int] = field(default_factory=list)
+    fallback_reason: str = ""   # 기본 문구로 떨어진 이유 — 화면에 보여준다
 
 
 def esc(s) -> str:
@@ -131,22 +132,49 @@ def load_copy(goods_no: str) -> Optional[Copy]:
         return None
 
 
+def _copy_from_json(d: dict) -> Copy:
+    """AI 답을 Copy로 옮기며 한 번 더 거른다 — 프롬프트의 과장 금지를 믿지 않는다.
+
+    생각 단계를 끄면 빨라지는 대신 금지한 "완벽 차단"을 써 넣었고, 장점별 사진 번호를
+    [0, 6, 10]처럼 목록으로 줘서 통째로 버려졌다(2026-09 실측)."""
+    from .content import sanitize_detail_html
+
+    def clean(v, n):
+        t = sanitize_detail_html(str(v or ""))
+        return re.sub(r"[ \t]{2,}", " ", t).strip()[:n]
+
+    def pairs(key, n):
+        return [(clean(row[0], 40), clean(row[1], 200)) for row in (d.get(key) or [])[:n]
+                if isinstance(row, (list, tuple)) and len(row) >= 2]
+
+    def first_int(v):
+        if isinstance(v, (list, tuple)):
+            v = v[0] if v else -1
+        return int(v) if str(v).lstrip("-").isdigit() else None
+
+    cuts = [first_int(i) for i in (d.get("point_cuts") or [])[:3]]
+    return Copy(title=clean(d.get("title"), 30), lead=clean(d.get("lead"), 20),
+                empathy=clean(d.get("empathy"), 200), keys=pairs("keys", 3), points=pairs("points", 3),
+                usecase=[clean(u, 20) for u in (d.get("usecase") or [])[:4]],
+                point_cuts=[i for i in cuts if i is not None])
+
+
 def write_copy(product, facts: List[str], seller_note: str = "", force: bool = False,
                reading=None) -> Copy:
-    """읽어낸 사실로 페이지 문구를 쓴다. 저장된 문구가 있으면 그걸 쓰고, 키 없으면 폴백."""
+    """읽어낸 사실로 페이지 문구를 쓴다. 저장된 문구가 있으면 그걸 쓰고, Claude를 못 쓰면 폴백."""
     goods_no = getattr(product, "goods_no", "")
     if not force and goods_no:
         saved = load_copy(goods_no)
         if saved and saved.title:
             return saved
 
-    api_key = os.environ.get("ANTHROPIC_API_KEY", "")
-    if not api_key or not facts:
-        return _fallback_copy(product, facts)
-    try:
-        import anthropic
-    except ImportError:
-        return _fallback_copy(product, facts)
+    def fall(reason: str) -> Copy:
+        c = _fallback_copy(product, facts)
+        c.fallback_reason = reason
+        return c
+
+    if not facts:
+        return fall("사진에서 읽어낸 사실이 없습니다")
 
     note = f"\n판매자가 덧붙인 메모(사실로 취급해라):\n{seller_note}\n" if seller_note.strip() else ""
     cutlist = "\n".join(
@@ -155,30 +183,19 @@ def write_copy(product, facts: List[str], seller_note: str = "", force: bool = F
     prompt = _COPY_PROMPT.format(
         name=getattr(product, "name", ""), category=getattr(product, "category", ""),
         facts="\n".join(f"- {f}" for f in facts), cutlist=cutlist, note=note)
+    # 이 Mac의 Claude Code(지금 쓰는 구독)로 쓴다 — API 키·별도 결제 없음(claude_cli.py)
+    from .claude_cli import ClaudeUnavailable, ask
+    import re as _re
     try:
-        import json as _json
-        import re as _re
-        client = anthropic.Anthropic(api_key=api_key)
-        msg = client.messages.create(model=_MODEL, max_tokens=1500,
-                                     messages=[{"role": "user", "content": prompt}])
-        m = _re.search(r"\{.*\}", msg.content[0].text, _re.S)
-        d = _json.loads(m.group(0))
-    except Exception as e:
+        m = _re.search(r"\{.*\}", ask(prompt, model=_MODEL, timeout=240, think=False), _re.S)
+        d = json.loads(m.group(0))
+    except ClaudeUnavailable as e:
         print(f"  [경고] 상세페이지 문구 생성 실패 — 기본 문구로 대체합니다 ({e})")
-        return _fallback_copy(product, facts)
+        return fall(str(e))
+    except (AttributeError, ValueError):
+        return fall("문구 결과를 읽을 수 없습니다")
 
-    def pairs(key, n):
-        out = []
-        for row in (d.get(key) or [])[:n]:
-            if isinstance(row, (list, tuple)) and len(row) >= 2:
-                out.append((str(row[0])[:40], str(row[1])[:200]))
-        return out
-
-    c = Copy(title=str(d.get("title", ""))[:30], lead=str(d.get("lead", ""))[:20],
-             empathy=str(d.get("empathy", ""))[:200], keys=pairs("keys", 3),
-             points=pairs("points", 3),
-             usecase=[str(u)[:20] for u in (d.get("usecase") or [])[:4]],
-             point_cuts=[int(i) for i in (d.get("point_cuts") or [])[:3] if str(i).lstrip("-").isdigit()])
+    c = _copy_from_json(d)
     if not c.title:
         c.title = _fallback_copy(product, facts).title
     if goods_no:
@@ -530,6 +547,16 @@ def _demo() -> None:
     bare = build_page(P(), cs, reading, Copy(title="주걱"), lambda i: f"/img/{i}.jpg")
     assert "주걱" in bare and len(bare) > 200
 
+    # 생성 문구 사후 거르기 — 과장 표현 제거, 목록으로 온 사진 번호 받아주기(2026-09 실측)
+    cp = _copy_from_json({"title": "크리어 3단 자동우산", "lead": "최고의 우산",
+                          "keys": [["UV차단", "완벽한 자외선 차단"]],
+                          "points": [["강한 햇빛도 완벽 차단", "비와 햇빛을 막는다."]],
+                          "point_cuts": [[0, 6, 10], 6, "x"]})
+    joined = " ".join([cp.title, cp.lead] + [x for k in cp.keys + cp.points for x in k])
+    assert "완벽" not in joined and "최고" not in joined, f"과장 표현이 문구에 남음: {joined}"
+    assert "한 자외선" not in joined, f"과장 표현을 지우다 조각이 남음: {cp.keys}"
+    assert cp.points[0][0] == "강한 햇빛도 차단", cp.points
+    assert cp.point_cuts == [0, 6], f"사진 번호 목록을 못 받음: {cp.point_cuts}"
     print("layout._demo self-check OK")
 
 

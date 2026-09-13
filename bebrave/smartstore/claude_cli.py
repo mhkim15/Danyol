@@ -50,7 +50,8 @@ def ask(prompt: str, *, model: str, files: Iterable[Path] = (), timeout: int = 3
     """Claude Code에 한 번 묻고 답 글자를 돌려준다. 실패하면 ClaudeUnavailable.
 
     think=False면 답하기 전에 속으로 생각하는 단계를 끈다 — 짧은 문구 JSON 하나에 생각이
-    1만3천 토큰 붙어 114초 걸리던 것이 9초·사용량 1/10이 됐다(실측)."""
+    1만3천 토큰 붙어 114초 걸리던 것이 9초·사용량 1/10이 됐다(실측). 단 Sonnet 5는 복잡한 요청에서
+    이 설정과 관계없이 생각을 일부 켠다(29컷 판독: 답 약 3천 토큰, 출력 1만2천~2만1천 토큰)."""
     why = unavailable_reason()
     if why:
         raise ClaudeUnavailable(why)
@@ -59,6 +60,8 @@ def ask(prompt: str, *, model: str, files: Iterable[Path] = (), timeout: int = 3
     cmd = ["claude", "-p", prompt, "--model", model, "--output-format", "json",
            "--system-prompt", _SYSTEM, "--no-session-persistence", "--strict-mcp-config",
            "--tools", "Read" if files else ""]
+    # 작업 강도(--effort low)는 쓰지 않는다 — Sonnet 5 판독이 137초·$0.19로 빨라졌지만 겹치는 사진을
+    # 하나도 못 걸렀다(우산 색상별 7쌍, 2026-09 실측). 기본 강도에서는 150~237초·$0.24~0.35로 걸렀다.
     if files:
         cmd += ["--allowedTools", "Read"]
         for d in sorted({str(f.parent) for f in files}):

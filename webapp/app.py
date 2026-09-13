@@ -420,6 +420,16 @@ def index_demo():
 
 # ── 발굴 후보 ─────────────────────────────────────────────────────────────
 
+def _category_groups(targets) -> list:
+    """발굴 화면에서 스캔 카테고리를 네이버 1단계 카테고리별로 묶는다 — [(묶음, [카테고리...])].
+    묶음 정의(config.TARGET_CATEGORY_GROUPS)에 빠진 대상은 "기타"로 모아 화면에서 사라지지 않게 한다."""
+    from bebrave.config import TARGET_CATEGORY_GROUPS
+    grouped = [(g, [c for c in cats if c in targets]) for g, cats in TARGET_CATEGORY_GROUPS.items()]
+    placed = {c for _, cats in grouped for c in cats}
+    rest = [c for c in targets if c not in placed]
+    return [(g, cats) for g, cats in grouped if cats] + ([("기타", rest)] if rest else [])
+
+
 def _candidate_bucket(c: dict) -> str:
     """트랙(할 일의 종류)으로 후보를 나눈다 — 데이터 종류가 아니라 해야 하는 일의
     종류로 나누라는 설계 원칙. 6단계 데이터 복구 전 저장분은 track이 없어
@@ -479,6 +489,7 @@ def candidates():
         c["margin_amount"] = calc_margin(sale_price=sale, cost_price=cost).net_profit if sale and cost else None
 
     return render_template("candidates.html", candidates=filtered, target_categories=TARGET_CATEGORIES,
+                            category_groups=_category_groups(TARGET_CATEGORIES),
                             tab=tab, counts=counts, unconfirmed_only=unconfirmed_only,
                             list_categories=sorted({c.get("category", "") for c in filtered if c.get("category")}),
                             scan_last=_SCAN["last"])
@@ -748,6 +759,8 @@ def candidates_preview():
                 edit_cuts.append({
                     "index": c.index, "source": c.source, "kind": r.kind, "use": r.use,
                     "text": r.text, "label": r.label, "reason": r.reason, "recut": r.recut,
+                    # 초안에서 뺀 컷(겹침·정보 적음) — 사진 고르기에 "추천 낮음"과 이유를 보여준다
+                    "draft": _rd.in_draft(c.index), "why": r.why,
                     "url": url_for("cut_image", goods_no=p.goods_no, filename=c.filename),
                     # 원본에서의 위치 — 잘못 잘린 컷의 범위를 화면에서 다시 잡을 때 쓴다
                     "src": c.src, "y0": c.y0, "y1": c.y1,
@@ -1148,15 +1161,18 @@ def ai_build_candidate():
             prior = load_reading(goods_no)
             # 규칙으로 골라둔 결과가 남아 있으면 Claude를 쓸 수 있게 된 뒤에도 다시 읽지 않아
             # 공급사 자료 사진이 계속 섞였다(2026-09 발견) — 쓸 수 있으면 규칙 판독은 버린다.
+            # 가치 판단(2026-09)이 없는 예전 판독도 다시 읽는다 — 안 그러면 초안이 원본 순서 그대로다
             r = read_cuts(cs, request.form.get("name", ""), request.form.get("category", ""),
-                          force=not why and not (prior and prior.by_ai))
+                          force=not why and not (prior and prior.by_ai and prior.rated))
             used = sum(1 for c in cs.cuts if r.of(c.index).use)
             if not r.by_ai:
                 return {"ok": True, "warn": True,
                         "summary": f"Claude를 못 써서 규칙으로 골랐습니다 — {r.fallback_reason or why or '저장된 규칙 판독'}"
                                    f" (쓸 사진 {used}장, 공급사 자료가 섞일 수 있음)"}
             recut = sum(1 for c in cs.cuts if r.of(c.index).recut)
-            summary = f"Claude가 읽었습니다 — 쓸 사진 {used}장 · 뺀 사진 {len(cs.cuts) - used}장"
+            drafted = sum(1 for c in cs.cuts if r.in_draft(c.index))
+            summary = (f"Claude가 읽었습니다 — 쓸 사진 {used}장 · 뺀 사진 {len(cs.cuts) - used}장. "
+                       f"초안에는 {drafted}장(겹치거나 정보가 적은 {used - drafted}장은 사진 고르기에만)")
             if recut:
                 summary += (f". 그중 {recut}장은 좋은 사진에 가격·공급사 정보가 섞여 뺐습니다"
                             " — 사진 고르기의 '범위 고치기'로 살릴 수 있습니다")

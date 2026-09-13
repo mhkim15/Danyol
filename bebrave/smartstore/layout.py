@@ -211,12 +211,17 @@ class _Picker:
     def __init__(self, cs: CutSet, reading: Reading):
         self.cs, self.reading, self.used = cs, reading, set()
         self.by_index = {c.index: c for c in cs.cuts}
+        # 판독이 추천한 순서 → 가치 점수 → 원래 순서로 고른다. 가치 판단이 없는 예전 판독은 원래 순서 그대로.
+        rank = {i: k for k, i in enumerate(reading.order)}
+        self.ranked = sorted((c.index for c in cs.cuts),
+                             key=lambda i: (rank.get(i, 10_000), -reading.of(i).value, i))
 
     def _ok(self, idx: int) -> bool:
-        return idx not in self.used and self.reading.of(idx).use
+        # 초안에 넣을 컷만 — 겹치거나 정보가 적은 컷은 사진 고르기 목록에만 남는다(Reading.in_draft)
+        return idx not in self.used and self.reading.in_draft(idx)
 
     def take(self, kind: Optional[str] = None, seller_first: bool = True) -> Optional[int]:
-        pool = [c.index for c in self.cs.cuts if self._ok(c.index)]
+        pool = [i for i in self.ranked if self._ok(i)]
         if seller_first:
             seller = [i for i in pool if self.by_index[i].source == "seller"]
             if seller:
@@ -414,12 +419,13 @@ class PagePlan:
     usecase: Optional[int] = None
     swatches: List[Tuple[int, str]] = field(default_factory=list)
     spec: Optional[int] = None
+    spec_mate: Optional[int] = None    # 사양 컷과 이어지는 짝(제목·표 앞부분 등) — 사양 바로 앞에 싣는다
     gallery: List[int] = field(default_factory=list)
 
     def used(self) -> List[int]:
         """업로드해야 할 컷을 화면에 나오는 순서대로. 대표이미지가 될 hero가 맨 앞."""
         seq = ([self.hero] + list(self.points) + [i for i, _ in self.swatches]
-               + [self.usecase] + self.gallery + [self.spec])
+               + [self.usecase] + self.gallery + [self.spec_mate, self.spec])
         out = []
         for i in seq:
             if i is not None and i not in out:
@@ -436,15 +442,24 @@ class PagePlan:
             usecase=self.usecase if self.usecase in ok else None,
             swatches=[(i, n) for i, n in self.swatches if i in ok],
             spec=self.spec if self.spec in ok else None,
+            spec_mate=self.spec_mate if self.spec_mate in ok else None,
             gallery=[i for i in self.gallery if i in ok])
 
 
-def plan_page(cs: CutSet, reading: Reading, cp: Copy, max_gallery: int = 12) -> PagePlan:
+def plan_page(cs: CutSet, reading: Reading, cp: Copy, max_gallery: int = 20) -> PagePlan:
     """컷을 구간에 배정한다. 한 컷은 한 번만 쓴다."""
     pick = _Picker(cs, reading)
     plan = PagePlan()
+    # 첫 화면 — 판매자 사진이 있으면 그걸, 없으면 판독이 고른 대표 사진. 색상 선택지가 가져가기 전에 잡는다.
+    seller = [c.index for c in cs.cuts if c.source == "seller" and pick._ok(c.index)]
+    if seller:
+        plan.hero = seller[0]
+        pick.used.add(seller[0])
+    elif reading.hero >= 0 and pick.claim(reading.hero):
+        plan.hero = reading.hero
     plan.swatches = pick.labeled()
-    plan.hero = pick.take(kind="product")
+    if plan.hero is None:
+        plan.hero = pick.take(kind="product")
     if plan.hero is None:
         plan.hero = pick.take_any("explain", "product")
     # 문구가 컷을 지정했으면 그걸 쓴다 — 안 그러면 글과 사진이 어긋난다.
@@ -456,9 +471,31 @@ def plan_page(cs: CutSet, reading: Reading, cp: Copy, max_gallery: int = 12) -> 
         else:
             plan.points.append(pick.take_any("explain", "product"))
     plan.usecase = pick.take_any("product") if cp.usecase else None
-    plan.spec = pick.take(kind="spec", seller_first=False)
-    plan.gallery = [c.index for c in cs.cuts
-                    if c.index not in pick.used and reading.of(c.index).use][:max_gallery]
+    # 사양은 같은 종류 중 점수가 가장 높은 컷 — 추천 순서대로 고르니 "제품정보" 제목 컷이 치수표를
+    # 밀어내고 사양 자리를 차지했다(우산 26·27번, 2026-09 실측)
+    specs = [i for i in pick.ranked if pick._ok(i) and reading.of(i).kind == "spec"]
+    if specs:
+        plan.spec = max(specs, key=lambda i: reading.of(i).value)
+        pick.used.add(plan.spec)
+        mate = reading.of(plan.spec).cont
+        # 짝이 2점 이상이면 사양 바로 앞에 붙인다. 1점(제목만 있는 컷)은 사양 구간 제목과 겹쳐 뺀다.
+        if mate >= 0 and pick._ok(mate) and reading.of(mate).value >= 2:
+            plan.spec_mate = mate
+            pick.used.add(mate)
+    # 남은 사진은 추천 순서대로 — 예전엔 원본 순서대로 12장이라 중요한 사진이 뒤에 있으면 빠졌다.
+    rest = [i for i in pick.ranked if pick._ok(i)]
+    # 짝 덕분에 남은 1점 컷(제목만 있는 컷 등)은 짝이 다른 구간으로 갔으면 싣지 않는다 — "제품정보" 제목만
+    # 사진 사이에 떨어져 나오고 짝인 치수표는 사양 구간으로 갔다(우산 26·27번, 2026-09 실측).
+    rest = [i for i in rest
+            if not (reading.of(i).value == 1 and reading.of(i).cont >= 0 and reading.of(i).cont not in rest)]
+    # 이어지는 짝은 붙여서 싣는다(원래 순서대로) — 추천 순서가 둘 사이에 다른 사진을 끼워도 문장이 끊기지 않게
+    gallery = []
+    for i in rest:
+        if i in gallery:
+            continue
+        mate = reading.of(i).cont
+        gallery.extend(sorted([i, mate]) if mate in rest and mate not in gallery else [i])
+    plan.gallery = gallery[:max_gallery]
     return plan
 
 
@@ -479,6 +516,7 @@ def render_page(product, cs: CutSet, reading: Reading, cp: Copy, plan: PagePlan,
             + _sec_usecase(cp, u(plan.usecase), P)
             + _sec_choice([(url_of(i), n) for i, n in plan.swatches], options, P)
             + _sec_gallery([url_of(i) for i in plan.gallery], P)
+            + _sec_gallery([url_of(plan.spec_mate)] if plan.spec_mate is not None else [], P)
             + _sec_spec(product, u(plan.spec), P)
             + _sec_policy(P))
     return (f'<div style="font-family:-apple-system,BlinkMacSystemFont,\'Apple SD Gothic Neo\','
@@ -546,6 +584,41 @@ def _demo() -> None:
     # (g) 문구가 하나도 없어도 페이지는 만들어져야 한다
     bare = build_page(P(), cs, reading, Copy(title="주걱"), lambda i: f"/img/{i}.jpg")
     assert "주걱" in bare and len(bare) > 200
+
+    # 가치 판단이 있으면 대표는 판독이 고른 컷, 나머지는 추천 순서, 겹치는 컷·공급사 자료는 초안에서 뺀다
+    rd2 = Reading(goods_no="_demo", by_ai=True, hero=4, order=[3, 1],
+                  reads=[CutRead(index=0, kind="product", use=True, value=1, dup=4),
+                         CutRead(index=1, kind="explain", use=True, value=2),
+                         CutRead(index=2, kind="supplier", use=False, value=3),
+                         CutRead(index=3, kind="product", use=True, value=2),
+                         CutRead(index=4, kind="product", use=True, value=3)])
+    p2 = plan_page(cs, rd2, Copy(title="주걱"))
+    assert p2.hero == 4, f"판독이 고른 대표 사진을 안 씀: {p2.hero}"
+    assert p2.gallery == [3, 1], f"추천 순서대로 안 실음: {p2.gallery}"
+    assert 0 not in p2.used() and 2 not in p2.used(), f"겹치는 컷·공급사 자료가 초안에 들어감: {p2.used()}"
+
+    # 짝 컷 배치 — 짝이 사양 구간으로 간 제목 컷은 빼고, 이어지는 짝은 붙여서 싣는다(우산 26·27번 사례)
+    rd3 = Reading(goods_no="_demo", by_ai=True, hero=0, order=[2, 0, 1],
+                  reads=[CutRead(index=0, kind="product", use=True, value=3),
+                         CutRead(index=1, kind="explain", use=True, value=2, cont=2),
+                         CutRead(index=2, kind="explain", use=True, value=2, cont=1),
+                         CutRead(index=3, kind="spec", use=True, value=3, cont=4),
+                         CutRead(index=4, kind="explain", use=True, value=1, cont=3)])
+    p3 = plan_page(cs, rd3, Copy(title="주걱"))
+    assert p3.spec == 3 and 4 not in p3.used(), f"짝이 사양으로 간 제목 컷이 사진 사이에 따로 들어감: {p3.used()}"
+    assert p3.gallery == [1, 2], f"이어지는 짝이 순서대로 붙지 않음: {p3.gallery}"
+
+    # 사양 자리는 점수 높은 컷, 2점 이상 짝은 사양 바로 앞 — 제목 컷이 치수표를 밀어내던 우산 26·27번 사례
+    rd4 = Reading(goods_no="_demo", by_ai=True, hero=0, order=[3, 4],
+                  reads=[CutRead(index=0, kind="product", use=True, value=3),
+                         CutRead(index=1, kind="explain", use=True, value=2),
+                         CutRead(index=2, kind="explain", use=True, value=2),
+                         CutRead(index=3, kind="spec", use=True, value=2, cont=4),
+                         CutRead(index=4, kind="spec", use=True, value=3, cont=3)])
+    p4 = plan_page(cs, rd4, Copy(title="주걱"))
+    assert p4.spec == 4, f"점수 낮은 제목 컷이 사양 자리를 차지함: {p4.spec}"
+    assert p4.spec_mate == 3 and 3 not in p4.gallery, f"사양 짝이 사진 사이로 떨어짐: {p4.spec_mate} {p4.gallery}"
+    assert p4.used()[-2:] == [3, 4], f"사양 짝이 사양 바로 앞에 오지 않음: {p4.used()}"
 
     # 생성 문구 사후 거르기 — 과장 표현 제거, 목록으로 온 사진 번호 받아주기(2026-09 실측)
     cp = _copy_from_json({"title": "크리어 3단 자동우산", "lead": "최고의 우산",
@@ -644,6 +717,8 @@ def draft_blocks(cs: CutSet, reading: Reading, cp: Copy) -> List[Block]:
         bs.append(Block("choice", items=[[str(i), n] for i, n in plan.swatches]))
     for i in plan.gallery:
         bs.append(Block("image", cut=i))
+    if plan.spec_mate is not None:
+        bs.append(Block("image", cut=plan.spec_mate))
     bs.append(Block("spec", cut=plan.spec if plan.spec is not None else -1, tone="deep"))
     bs.append(Block("policy"))
     return bs

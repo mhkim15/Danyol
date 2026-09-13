@@ -276,6 +276,8 @@
           <div style="font-size:10px;text-align:center;color:#c0392b;line-height:1.25;" title="{{ c.reason }}">범위 고치기 필요</div>
           {% elif not c.use %}
           <div class="muted" style="font-size:10px;text-align:center;line-height:1.25;" title="{{ c.reason }}">뺀 사진</div>
+          {% elif not c.draft %}
+          <div class="muted" style="font-size:10px;text-align:center;line-height:1.25;" title="{{ c.why }}">추천 낮음</div>
           {% endif %}
           {% if c.src_url %}
           <button type="button" class="recut-btn"
@@ -412,7 +414,7 @@
     {% if claude_reason %}
     <p style="font-size:12.5px;margin:6px 0 0;color:var(--warn);">Claude를 쓸 수 없어 규칙으로 만듭니다 — {{ claude_reason }}</p>
     {% else %}
-    <p class="muted" style="font-size:12px;margin:6px 0 0;">이 Mac의 Claude Code(구독)로 판독합니다. 1~2분 걸릴 수 있습니다.</p>
+    <p class="muted" style="font-size:12px;margin:6px 0 0;">이 Mac의 Claude Code(구독)로 판독합니다. 사진이 많으면 2~4분 걸릴 수 있습니다.</p>
     {% endif %}
     <ol id="aiSteps" style="list-style:none;padding:0;margin:12px 0 0;">
       <li data-step="cuts"><span class="st">○</span><div>상세 이미지를 사진 단위로 자르기<div class="sum"></div></div></li>
@@ -830,7 +832,8 @@
         i++; next();
       }).catch(function (e) {
         li.className = 'err'; li.querySelector('.st').textContent = '✕';
-        li.querySelector('.sum').textContent = '연결 실패: ' + e;
+        // 서버가 응답 전에 꺼지면(재시작 등) 여기로 온다 — 잘라둔 사진·판독은 저장돼 있어 다시 누르면 이어진다
+        li.querySelector('.sum').textContent = '서버와 연결이 끊겼습니다(서버 재시작 등) — 다시 누르면 이어서 진행합니다';
         finish(false);
       });
     }

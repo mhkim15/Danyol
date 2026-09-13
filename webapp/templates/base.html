@@ -290,6 +290,9 @@
     background: var(--accent-soft); border: 1px solid var(--accent);
     border-radius: 12px; padding: 10px 14px;
   }
+  /* hidden 속성은 어떤 display 스타일보다 우선한다 — button/.btn 등의 display가 덮어써서 숨겨야 할 요소가
+     보였다(AI 버전 모달의 "결과 보고 편집하기"가 실패해도 보임, 세부 카테고리가 안 접힘, 2026-09) */
+  [hidden] { display: none !important; }
   .bulkbar[hidden] { display: none; }
   .bulkbar .sel-count { font-weight: 700; color: var(--accent); font-size: 13px; white-space: nowrap; }
   .bulkbar .group-label { font-size: 11px; color: var(--ink-soft); align-self: center; }

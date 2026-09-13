@@ -8,25 +8,74 @@
    기본은 전체 카테고리, 태그의 ×로 빼고 "카테고리 추가"로 다시 넣는다. #}
 <div class="panel" id="scanPanel">
   <h2 style="margin-bottom:10px;">새로 스캔하기
-    <span class="muted" style="font-size:12px;font-weight:400;margin-left:6px;">틈새·리메이크 후보를 함께 찾습니다</span>
   </h2>
-  {# 체크박스 나열 — 태그+드롭다운은 하나씩 골라야 해서 여러 개를 고르거나 몇 개만 빼기가
-     번거로웠다(2026-09). 카테고리가 18개라 한 화면에 다 펼친다. #}
+  {# 카테고리 선택 — 태그+드롭다운은 하나씩 골라야 해서 번거로웠다(2026-09). 18개를 한 화면에
+     태그 모양 체크박스로 펼친다. #}
   <form method="post" action="{{ url_for('discover_scan') }}" id="scanForm">
     <input type="hidden" name="tab" value="{{ tab }}">
-    <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:6px 14px;">
-      <label style="display:flex;align-items:center;gap:6px;font-size:13px;font-weight:700;cursor:pointer;white-space:nowrap;">
-        <input type="checkbox" id="scanAll" checked onchange="scanToggleAll(this.checked)"> 전체
-      </label>
-      {% for cat in target_categories %}
-      <label style="display:flex;align-items:center;gap:6px;font-size:12.5px;font-weight:400;cursor:pointer;white-space:nowrap;">
-        <input type="checkbox" name="categories" value="{{ cat }}" class="scan-cat" checked onchange="scanSync()"> {{ cat }}
-      </label>
-      {% endfor %}
-    </div>
-    <div class="row" style="align-items:center;margin-top:12px;gap:10px;">
-      <button type="submit" id="scanBtn">스캔 실행</button>
-      <span id="scanHint" class="muted" style="font-size:12px;"></span>
+    {# 태그 모양 체크박스 — 네모 칸은 감추고 테두리 두른 글자를 눌러 켜고 끈다. "카테고리" 제목 오른쪽의
+       음영 박스 안에 모아, 패널 전체를 태그가 차지하지 않게 한다(2026-09) #}
+    <style>
+      .scan-grid { display:grid; grid-template-columns:auto 1fr; gap:10px 16px; align-items:start; }
+      /* "카테고리" 제목은 접힌 상태의 오른쪽 박스 높이 한가운데에 둔다 — 박스 높이 53px = 태그 줄 31px
+         (글자 줄 18 + 위아래 여백 10 + 테두리 3) + 박스 안쪽 여백 20 + 테두리 2. 펼쳐도 첫 줄 가운데에 남는다.
+         메인 제목은 "새로 스캔하기"라 여기는 굵기를 뺀다 */
+      .scan-label { height:53px; display:flex; align-items:center; font-size:13px; font-weight:400;
+                    color:var(--ink); white-space:nowrap; }
+      .scan-box { background:var(--paper); border:1px solid var(--line); border-radius:12px; padding:10px; }
+      .scan-top { display:flex; align-items:center; gap:10px; }
+      .scan-picked { flex:1; min-width:0; font-size:12px; color:var(--ink-soft);
+                     overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+      .scan-more { background:none; border:none; padding:4px 2px; font-size:12px; color:var(--accent);
+                   cursor:pointer; white-space:nowrap; }
+      .scan-detail { margin-top:10px; padding-top:10px; border-top:1px solid var(--line);
+                     display:flex; flex-direction:column; gap:8px; }
+      .scan-group { display:grid; grid-template-columns:120px 1fr; gap:8px; align-items:start; }
+      .scan-items { display:flex; flex-wrap:wrap; gap:6px; }
+      .scan-chip.grp span { font-weight:700; }
+      /* 사이트 공통 label 스타일의 위 여백을 받지 않게 한다 — 받으면 태그가 10px 내려가 제목과 어긋났다 */
+      .scan-chip { position:relative; display:inline-flex; margin:0; padding:0; }
+      .scan-chip input { position:absolute; opacity:0; width:1px; height:1px; pointer-events:none; }
+      .scan-chip span { display:inline-flex; align-items:center; padding:5px 12px; border:1.5px solid var(--line);
+                        border-radius:10px; font-size:12.5px; line-height:18px; color:var(--ink-soft); background:var(--panel);
+                        cursor:pointer; user-select:none; white-space:nowrap; }
+      .scan-chip span:hover { border-color:var(--accent); }
+      .scan-chip input:checked + span { border-color:var(--accent); color:var(--accent); font-weight:600; }
+      .scan-chip input:checked + span::before { content:"✓"; margin-right:6px; font-weight:700; }
+      .scan-chip input:indeterminate + span { border-color:var(--accent); border-style:dashed; color:var(--accent); }
+      .scan-chip input:indeterminate + span::before { content:"–"; margin-right:6px; font-weight:700; }
+      .scan-chip input:focus-visible + span { outline:2px solid var(--accent); outline-offset:2px; }
+      .scan-chip input:disabled + span { opacity:.55; cursor:not-allowed; }
+      .scan-chip.all span { font-weight:700; }
+    </style>
+    <div class="scan-grid">
+      <div class="scan-label">카테고리</div>
+      <div class="scan-box">
+        <div class="scan-top">
+          <label class="scan-chip all"><input type="checkbox" id="scanAll" checked onchange="scanToggleAll(this.checked)"><span>전체</span></label>
+          <span id="scanPicked" class="scan-picked"></span>
+          <button type="button" id="scanMore" class="scan-more" onclick="scanToggleDetail()" aria-expanded="false">세부 카테고리 ▾</button>
+        </div>
+        {# 세부 카테고리는 접어두고, 네이버 1단계 카테고리별로 한 줄씩 묶는다. 줄 맨 앞 태그로 묶음째 켜고 끈다 #}
+        <div id="scanDetail" class="scan-detail" hidden>
+          {% for group, cats in category_groups %}
+          {% set gi = loop.index0 %}
+          <div class="scan-group">
+            <label class="scan-chip grp"><input type="checkbox" class="scan-grp" data-group="{{ gi }}" checked onchange="scanToggleGroup(this)"><span>{{ group }}</span></label>
+            <div class="scan-items">
+              {% for cat in cats %}
+              <label class="scan-chip"><input type="checkbox" name="categories" value="{{ cat }}" class="scan-cat" data-group="{{ gi }}" checked onchange="scanSync()"><span>{{ cat }}</span></label>
+              {% endfor %}
+            </div>
+          </div>
+          {% endfor %}
+        </div>
+      </div>
+      <div></div>
+      <div class="row" style="align-items:center;gap:10px;">
+        <button type="submit" id="scanBtn">스캔 실행</button>
+        <span id="scanHint" class="muted" style="font-size:12px;"></span>
+      </div>
     </div>
   </form>
   <div id="scanProgress" hidden style="margin-top:14px;">
@@ -43,22 +92,45 @@
 <script>
 (function () {
   var scanning = false, wasRunning = false;
-  function boxes() { return [].slice.call(document.querySelectorAll('.scan-cat')); }
+  function all(sel) { return [].slice.call(document.querySelectorAll(sel)); }
+
+  // 묶음 태그(전체·그룹)를 아래 카테고리 선택 상태에 맞춘다 — 일부만 고르면 반쯤 찬 표시
+  function setHead(head, items) {
+    var n = items.filter(function (b) { return b.checked; }).length;
+    head.checked = n > 0 && n === items.length;
+    head.indeterminate = n > 0 && n < items.length;
+    return n;
+  }
 
   window.scanSync = function () {
-    var all = boxes();
-    var n = all.filter(function (b) { return b.checked; }).length;
-    var head = document.getElementById('scanAll');
-    head.checked = n === all.length;
-    head.indeterminate = n > 0 && n < all.length;   // 일부만 고르면 "전체"가 반쯤 찬 표시
+    var cats = all('.scan-cat');
+    all('.scan-grp').forEach(function (g) {
+      setHead(g, cats.filter(function (c) { return c.dataset.group === g.dataset.group; }));
+    });
+    var n = setHead(document.getElementById('scanAll'), cats);
+    var picked = cats.filter(function (c) { return c.checked; }).map(function (c) { return c.value; });
+    document.getElementById('scanPicked').textContent =
+      n === cats.length ? cats.length + '개 전체 선택됨' : (n ? n + '개 선택 · ' + picked.join(', ') : '선택된 카테고리 없음');
     document.getElementById('scanHint').textContent =
-      n ? (n === all.length ? '전체 ' : '') + n + '개 카테고리 · 약 ' + n + '~' + (n * 2) + '분' : '카테고리를 하나 이상 고르세요';
+      n ? (n === cats.length ? '전체 ' : '') + n + '개 카테고리 · 약 ' + n + '~' + (n * 2) + '분' : '카테고리를 하나 이상 고르세요';
     document.getElementById('scanBtn').disabled = !n || scanning;
   };
 
   window.scanToggleAll = function (on) {
-    boxes().forEach(function (b) { b.checked = on; });
+    all('.scan-cat').forEach(function (b) { b.checked = on; });
     scanSync();
+  };
+
+  window.scanToggleGroup = function (g) {
+    all('.scan-cat[data-group="' + g.dataset.group + '"]').forEach(function (b) { b.checked = g.checked; });
+    scanSync();
+  };
+
+  window.scanToggleDetail = function () {
+    var d = document.getElementById('scanDetail'), btn = document.getElementById('scanMore');
+    d.hidden = !d.hidden;
+    btn.textContent = d.hidden ? '세부 카테고리 ▾' : '세부 카테고리 접기 ▴';
+    btn.setAttribute('aria-expanded', String(!d.hidden));
   };
 
   // 스캔은 서버 뒤에서 돈다 — 전체 18개면 30분 가까이 걸려 요청 하나로 기다리면 끊긴다.
@@ -69,8 +141,8 @@
         scanning = true;
         if (!wasRunning) {
           // 스캔 중에 화면을 다시 열면 기본값(전체)이 아니라 실제로 스캔 중인 카테고리를 보여준다
-          boxes().forEach(function (b) { b.checked = s.categories.indexOf(b.value) !== -1; b.disabled = true; });
-          document.getElementById('scanAll').disabled = true;
+          all('.scan-cat').forEach(function (b) { b.checked = s.categories.indexOf(b.value) !== -1; b.disabled = true; });
+          all('.scan-grp, #scanAll').forEach(function (b) { b.disabled = true; });
           scanSync();
         }
         wasRunning = true;

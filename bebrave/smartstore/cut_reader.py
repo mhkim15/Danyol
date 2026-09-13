@@ -76,6 +76,11 @@ class CutRead:
     label: str = ""           # 색상명 등 짧은 라벨
     reason: str = ""          # 버리는 경우 그 이유
     recut: bool = False       # 좋은 사진에 금지 정보가 섞여 뺀 컷 — 범위를 고치면 살릴 수 있다
+    # 초안에 넣을 가치(2026-09) — 3 꼭 / 2 넣으면 좋음 / 1 없어도 됨 / 0 넣으면 안 됨 / -1 판단 없음(예전 판독)
+    value: int = -1
+    dup: int = -1             # 내용이 거의 같은 더 나은 컷
+    cont: int = -1            # 앞뒤로 이어지는 한 덩어리(문장·표·질문답변)의 짝 컷
+    why: str = ""             # 가치 판단 이유 — 사진 고르기에 보여준다
 
 
 @dataclass
@@ -86,6 +91,8 @@ class Reading:
     by_ai: bool = False
     read_at: str = ""
     fallback_reason: str = ""   # 규칙으로 떨어진 이유 — 화면에 보여준다(저장하지 않음)
+    hero: int = -1                                   # 판독이 고른 첫 화면 대표 사진
+    order: List[int] = field(default_factory=list)   # 판독이 추천한 배치 순서
 
     def of(self, index: int) -> CutRead:
         for r in self.reads:
@@ -96,6 +103,27 @@ class Reading:
     def usable(self, kind: Optional[str] = None) -> List[int]:
         return [r.index for r in self.reads
                 if r.use and (kind is None or r.kind == kind)]
+
+    @property
+    def rated(self) -> bool:
+        """가치 판단까지 받은 판독인가 — 예전 판독은 없어서 다시 만들 때 새로 읽는다."""
+        return any(r.value >= 0 for r in self.reads)
+
+    def in_draft(self, index: int) -> bool:
+        """초안에 자동으로 넣을 컷인가. 사진 고르기 목록에는 이 값과 관계없이 전부 남는다.
+
+        빼는 규칙(공급사·거래 정보)을 통과한 컷 안에서만 가치를 본다 — 가치 판단이 도매 가격이
+        섞인 컷에 3점을 준 일이 있다(우산 5번). 겹친다고 해도 앞뒤로 이어지는 짝이 들어가면
+        같이 넣는다 — 안 그러면 문장·질문답변이 반쪽만 남는다(퍼프 16·17번, 2026-09 실측)."""
+        r = self.of(index)
+        if not r.use:
+            return False
+        if r.value not in (0, 1):
+            return True                  # 2·3점, 또는 가치 판단이 없는 예전 판독
+        if r.value == 1 and r.cont >= 0:
+            mate = self.of(r.cont)
+            return mate.use and mate.value >= 2
+        return False
 
 
 # ── 글자 인식 ───────────────────────────────────────────────────────────
@@ -239,8 +267,16 @@ _PROMPT = """네이버 스마트스토어에 올릴 상품 상세페이지를 �
   시험성적서 문구·면책조항, 공급사 연락처·주소, 따로 파는 다른 상품이 보이면 false다.
   나머지가 좋은 상품 사진이어도 false로 해라.
 - mixed: 위 이유로 false인데 컷 안에 쓸 만한 상품 사진도 함께 들어 있으면 true.
-- text: 컷 안에 적힌 글자를 읽은 그대로. 가장자리 작은 글자까지. 없으면 빈 문자열.
+- text: 컷의 핵심 글자를 30자 이내로. 원본 크기 글자 인식 결과가 아래에 따로 있으니 전문을 옮기지 마라.
+  단, 가격·단위판매·도매·단체주문·시험성적서 같은 글자가 보이면 그 부분은 반드시 넣어라. 없으면 빈 문자열.
 - label: 색상 컷이면 그 색 이름만(예: "네이비"). 아니면 빈 문자열.
+- value: 구매자를 설득하는 데 이 컷이 필요한 정도.
+  3 꼭 넣을 컷(상품이 무엇인지·핵심 장점·사용법·크기를 가장 잘 보여줌) / 2 넣으면 좋음(다른 컷에 없는
+  정보가 있음) / 1 없어도 됨(다른 컷과 거의 겹치거나, 해시태그·장식 띠·제목만 있는 컷) / 0 넣으면 안 됨
+- dup: 내용이 거의 같은데 더 나은 컷이 있으면 그 컷 번호, 없으면 -1
+- cont: 문장·표·질문답변이 이 컷과 앞뒤 컷에 걸쳐 이어지면 그 짝 컷 번호, 없으면 -1.
+  이어지는 것은 겹치는 것(dup)이 아니다.
+- why: value 판단 이유 20자 이내
 
 아래는 같은 컷들을 원본 크기에서 글자 인식으로 읽은 결과다(오탈자가 있을 수 있다).
 모아 둔 이미지에서 작은 글자가 잘 안 보여도 여기에 있으면 그 컷에 실제로 적힌 글자다.
@@ -251,8 +287,20 @@ _PROMPT = """네이버 스마트스토어에 올릴 상품 상세페이지를 �
 숫자·인증·효능은 또렷하게 읽히지 않으면 아예 빼라. 틀린 숫자가 나가면 허위광고가 된다.
 가격·판매 단위·도매 조건은 facts에 넣지 마라.
 
+hero: 첫 화면 대표 사진으로 가장 좋은 컷 번호 하나 — use가 true이고 글자가 거의 없는 상품 사진 중에서
+  (스마트스토어 대표이미지로도 쓰인다. 제품명·설명 글자가 크게 들어간 카드는 고르지 마라).
+order: use가 true이고 value 2 이상인 컷을 구매자가 보기 좋은 순서로 나열.
+
 JSON만 출력해라. 설명하지 마라.
-{{"cuts":[{{"i":0,"kind":"product","use":true,"mixed":false,"text":"","label":""}}],"facts":["..."]}}"""
+{{"cuts":[{{"i":0,"kind":"product","use":true,"mixed":false,"text":"","label":"","value":3,"dup":-1,"cont":-1,"why":""}}],"facts":["..."],"hero":0,"order":[0]}}"""
+
+
+def _num(v, lo: int, hi: int, default: int = -1) -> int:
+    try:
+        k = int(v)
+    except (TypeError, ValueError):
+        return default
+    return k if lo <= k <= hi else default
 
 
 def _parse(raw: str, n: int, ocr: Optional[Dict[int, str]] = None) -> Optional[Reading]:
@@ -285,14 +333,24 @@ def _parse(raw: str, n: int, ocr: Optional[Dict[int, str]] = None) -> Optional[R
             use = False
         reason = ("좋은 사진에 가격·공급사 정보가 섞여 있음" if mixed
                   else "공급사 자료" if kind == "supplier" else "")
+        dup, cont = _num(c.get("dup"), 0, n - 1), _num(c.get("cont"), 0, n - 1)
         reads.append(CutRead(index=i, kind=kind, use=use, text=text,
-                             label=str(c.get("label", ""))[:20], reason=reason, recut=mixed))
+                             label=str(c.get("label", ""))[:20], reason=reason, recut=mixed,
+                             value=_num(c.get("value"), 0, 3),
+                             dup=dup if dup != i else -1, cont=cont if cont != i else -1,
+                             why=str(c.get("why", ""))[:40]))
     if not reads:
         return None
     facts = [str(f)[:120] for f in d.get("facts", [])
              if str(f).strip() and not _B2B_FACT.search(str(f))][:12]
+    order = []
+    for k in (d.get("order") or []):
+        k = _num(k, 0, n - 1)
+        if k >= 0 and k not in order:
+            order.append(k)
     return Reading(goods_no="", reads=reads, facts=facts, by_ai=True,
-                   read_at=time.strftime("%Y-%m-%dT%H:%M"))
+                   read_at=time.strftime("%Y-%m-%dT%H:%M"),
+                   hero=_num(d.get("hero"), 0, n - 1), order=order)
 
 
 def read_cuts(cs: CutSet, product_name: str = "", category: str = "",
@@ -359,7 +417,8 @@ def load_reading(goods_no: str) -> Optional[Reading]:
         d = json.loads(p.read_text(encoding="utf-8"))
         return Reading(goods_no=d["goods_no"], facts=d.get("facts", []),
                        by_ai=d.get("by_ai", False), read_at=d.get("read_at", ""),
-                       reads=[CutRead(**r) for r in d.get("reads", [])])
+                       reads=[CutRead(**r) for r in d.get("reads", [])],
+                       hero=d.get("hero", -1), order=d.get("order", []))
     except Exception:
         return None
 
@@ -370,7 +429,8 @@ def save_reading(r: Reading) -> None:
     p = _reading_path(r.goods_no)
     p.parent.mkdir(parents=True, exist_ok=True)
     p.write_text(json.dumps({"goods_no": r.goods_no, "facts": r.facts, "by_ai": r.by_ai,
-                             "read_at": r.read_at, "reads": [asdict(x) for x in r.reads]},
+                             "read_at": r.read_at, "hero": r.hero, "order": r.order,
+                             "reads": [asdict(x) for x in r.reads]},
                             ensure_ascii=False), encoding="utf-8")
 
 
@@ -418,6 +478,23 @@ def _demo() -> None:
     assert r4.of(1).recut is False, "공급사 자료 컷에까지 범위 고치기를 권함"
     assert r4.of(2).use is True, "'원터치'의 '원'을 가격으로 오인해 멀쩡한 컷을 뺌"
     assert r4.facts == ["UV 차단율 99.9%(시험성적서 기준)"], f"도매 가격이 문구 재료로 들어감: {r4.facts}"
+
+    # (j) 가치 판단 — 거르기를 되돌리지 않고, 겹치는 컷은 초안에서 빼고, 이어지는 컷은 짝이 들어가면 남긴다
+    r6 = _parse('{"cuts":['
+                '{"i":0,"kind":"product","use":true,"value":3},'
+                '{"i":1,"kind":"explain","use":true,"value":3,"text":"색상 7종 5장단위판매3000원"},'
+                '{"i":2,"kind":"explain","use":true,"value":1,"dup":0},'
+                '{"i":3,"kind":"explain","use":true,"value":1,"cont":4},'
+                '{"i":4,"kind":"explain","use":true,"value":2,"cont":3},'
+                '{"i":5,"kind":"explain","use":true,"value":0}],'
+                '"hero":0,"order":[4,0,4,99,3]}', 6)
+    assert r6.of(1).use is False and not r6.in_draft(1), "가치 3점이 도매 가격 섞인 컷을 되살림"
+    assert not r6.in_draft(2), "다른 컷과 겹친다는 컷이 초안에 들어감"
+    assert r6.in_draft(3) and r6.in_draft(4), "이어지는 문장의 앞 컷만 빠짐"
+    assert not r6.in_draft(5), "넣으면 안 된다는 컷이 초안에 들어감"
+    assert r6.hero == 0 and r6.order == [4, 0, 3], f"대표·순서를 잘못 읽음: {r6.hero} {r6.order}"
+    old = _parse('{"cuts":[{"i":0,"kind":"product","use":true}]}', 4)
+    assert old.in_draft(0) and not old.rated, "가치 판단이 없는 판독이 사진을 빼 버림"
 
     # (h) 판독이 작은 글자를 놓쳐도 원본 크기 글자 인식에 가격이 보이면 뺀다(우산 5번 컷 실측)
     r5 = _parse('{"cuts":[{"i":0,"kind":"explain","use":true,"text":"블랙 네이비 (색상안내)"}]}', 4,

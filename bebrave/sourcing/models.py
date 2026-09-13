@@ -47,6 +47,8 @@ class ProductCandidate:
     # 전엔 to_product_candidates()가 이 값을 복사하지 않아 트랙이 저장 단계에서 사라졌었다).
     track: str = ""
     recommendation: str = ""
+    # 도매매 상세설명 이미지 사용 허용 여부 — True만 목록에 보이고 등록된다. None=아직 확인 안 함.
+    image_usable: Optional[bool] = None
 
     @property
     def golden_ratio(self) -> float:
@@ -78,6 +80,7 @@ class ProductCandidate:
             "human_confirmed": self.human_confirmed,
             "track": self.track,
             "recommendation": self.recommendation,
+            "image_usable": self.image_usable,
         }
 
     @property
@@ -104,4 +107,5 @@ class ProductCandidate:
             human_confirmed=data.get("human_confirmed", False),
             track=data.get("track", ""),
             recommendation=data.get("recommendation", ""),
+            image_usable=data.get("image_usable"),
         )

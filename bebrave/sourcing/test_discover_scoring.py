@@ -1,8 +1,34 @@
 """최소 자가검증 — 프레임워크 없이 python3 -m bebrave.sourcing.test_discover_scoring 로 실행."""
-from .discover import _entry_score, _profit_score, _cap_uncertain_recommendation, DiscoveryResult, to_product_candidates
+from .discover import _entry_score, _profit_score, _cap_uncertain_recommendation, _pick_usable, DiscoveryResult, to_product_candidates
 from .models import registration_block_reason
 from ..margin.calculator import estimate_sale_price, calculate as calc_margin
 from ..config import TARGET_MARGIN, MIN_ABS_PROFIT
+
+
+def test_pick_usable():
+    """도매매 상세설명 이미지 사용이 허용된 상품만 후보가 된다 — 가장 잘 맞는 상품이 불허면
+    같은 형태의 다른 공급사로 바꾸고, 전부 불허면 후보를 내지 않는다(2026-09)."""
+    from .domemae import DomemaeProduct
+    def prod(no):
+        return DomemaeProduct(goods_no=no, name=no, supply_price=1000, retail_price=0,
+                              min_order_qty=1, stock=0, supplier=no, category="")
+    best, a, b, c = prod("best"), prod("a"), prod("b"), prod("c")
+    asked = []
+    def usable(no):
+        asked.append(no)
+        return no in ("b", "c")
+    assert _pick_usable(best, [best, a, b, c], usable) is b, "불허 상품을 두고 허용된 다른 공급사로 못 바꿈"
+    assert asked == ["best", "a", "b"], f"같은 상품을 두 번 조회했거나 순서가 틀림: {asked}"
+    assert _pick_usable(best, [a], lambda no: False) is None, "전부 불허인데 후보를 냄"
+    asked.clear()
+    assert _pick_usable(best, [a, b, c], lambda no: asked.append(no) or False) is None
+    assert len(asked) == 3, f"상세조회를 {len(asked)}번 — 한도(3곳)를 넘김"
+    def flaky(no):
+        if no == "best":
+            raise RuntimeError("timeout")
+        return True
+    assert _pick_usable(best, [a], flaky) is a, "조회 실패 한 번에 다음 공급사를 안 봄"
+    print("ok")
 
 
 def test_cap_uncertain_recommendation():
@@ -107,3 +133,4 @@ if __name__ == "__main__":
     test_cap_uncertain_recommendation()
     test_estimate_sale_price_shipping_gap()
     test_registration_block_reason()
+    test_pick_usable()

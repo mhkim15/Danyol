@@ -238,7 +238,7 @@ def run(
         # 트랙B를 자동등록하면 리메이크 없이 원본 그대로 나간다(2026-09 발견). 트랙A만 대상.
         eligible = [c for c in candidates if c.score >= 55 and c.track == "A"]
         # 오매칭 차단 — 실물 미확인이거나 자동판정이 불일치를 의심하면 자동등록에서도
-        # 제외한다. webapp의 등록 경로(register_candidate/register_candidates_bulk)와
+        # 제외한다. webapp의 등록 경로(register_candidate)와
         # 같은 게이트를 여기도 태운다(2026-09).
         from ..sourcing.models import registration_block_reason
         recommended = [c for c in eligible if not registration_block_reason(c.supply_matched, c.human_confirmed)]
@@ -288,6 +288,15 @@ def run(
         )
         if kc_hit:
             print(f"  [건너뜀] KC 인증 대상 의심 — 상품명에 '{kc_hit}' 포함 (도매매: {domemae_p.name[:40]})")
+            continue
+
+        # 상세설명 이미지 사용 허용 — 허용 안 된 이미지로 상세페이지를 만들어 올리면 저작권 문제가
+        # 된다. 발굴 목록은 허용된 후보만 보여주지만 --supply-id·일괄 등록은 목록을 안 거치므로
+        # 여기서 모든 경로 공통으로 막는다(2026-09). 상세조회에 실패해 확인을 못 한 경우도 막는다.
+        if domemae_p.image_usable is not True:
+            why = ("도매매가 상세설명 이미지 사용을 허용하지 않음" if domemae_p.image_usable is False
+                   else "상세설명 이미지 사용 허용 여부를 확인하지 못함(도매매 상세조회 실패)")
+            print(f"  [건너뜀] {why} — 도매매 {domemae_p.goods_no}")
             continue
 
         kw = keyword or domemae_p.name.split()[0]

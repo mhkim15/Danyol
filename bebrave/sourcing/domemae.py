@@ -46,6 +46,9 @@ class DomemaeProduct:
     model: str = ""            # 제조사 모델명 (도매매 detail.model) — "해당없음"으로 올 수 있음
     option_group_name: str = ""  # 옵션 축 이름 (예: "색상") — 옵션 없으면 빈 값
     options: list = field(default_factory=list)  # [{"name","extra_price","stock"}] — 단일 축만 지원
+    # 상세설명 이미지 사용 허용(desc.license.usable) — 허용 안 된 이미지를 쓰면 저작권 문제가 된다.
+    # 상세조회(getItemView)에만 있어서 검색 목록에서 만든 상품은 None(확인 안 됨).
+    image_usable: Optional[bool] = None
 
     @property
     def main_image(self) -> str:
@@ -77,6 +80,13 @@ class DomemaeSearchResult:
 
 
 # ── 가격 파싱 헬퍼 ─────────────────────────────────────────────────────────────
+
+
+def goods_page_url(goods_no) -> str:
+    """도매매 상품 페이지 주소. 도매꾹 형식(www.domeggook.com/main/goods/view.php?no=)은
+    도매매 전용 상품에서 "요청하신 페이지를 표시할 수 없습니다"로 떨어졌다(2026-09 확인)."""
+    return f"https://domeme.domeggook.com/s/{goods_no}"
+
 
 def _parse_price(raw) -> int:
     """
@@ -277,7 +287,7 @@ def _parse_list_item(item: dict) -> DomemaeProduct:
         supplier=str(item.get("id", "")),
         category="",
         shipping_fee=shipping_fee,
-        url=f"https://www.domeggook.com/main/goods/view.php?no={item.get('no','')}",
+        url=goods_page_url(item.get('no', '')),
         images=[item.get("thumb", "")] if item.get("thumb") else [],
     )
 
@@ -373,6 +383,11 @@ def _parse_view_item(data: dict) -> DomemaeProduct:
     # 그 외에는 옵션 없는 단일상품으로 취급 (기존 동작과 동일, 회귀 없음).
     option_group_name, options = _parse_options(data.get("selectOpt", ""))
 
+    lic = desc_d.get("license") if isinstance(desc_d.get("license"), dict) else {}
+    usable = lic.get("usable")
+    image_usable = None if usable is None else (
+        usable if isinstance(usable, bool) else str(usable).strip().lower() in ("true", "y", "1"))
+
     return DomemaeProduct(
         goods_no=str(basis.get("no", "")),
         name=basis.get("title", ""),
@@ -383,7 +398,7 @@ def _parse_view_item(data: dict) -> DomemaeProduct:
         supplier=data.get("seller", {}).get("id", ""),
         category=category,
         shipping_fee=shipping_fee,
-        url=f"https://www.domeggook.com/main/goods/view.php?no={basis.get('no','')}",
+        url=goods_page_url(basis.get('no', '')),
         images=images,
         detail_image_url="",  # desc.contents에 HTML로 포함됨
         origin_country=country,
@@ -391,6 +406,7 @@ def _parse_view_item(data: dict) -> DomemaeProduct:
         model=model,
         option_group_name=option_group_name,
         options=options,
+        image_usable=image_usable,
         # desc.notice는 연휴/배송 공지 등 상품과 무관한 안내문이라 폴백으로 쓰면 안 됨
         # (2026-07-12 확인된 버그 수정 — 이전엔 contents 없으면 notice가 상세설명으로 들어갔음)
         description=desc_contents,

@@ -1,5 +1,5 @@
 """최소 자가검증 — 프레임워크 없이 python3 -m bebrave.sourcing.test_domemae 로 실행."""
-from .domemae import _form_signals, _tokenize, find_matching_product, is_accessory_name, DomemaeProduct
+from .domemae import _form_signals, _tokenize, find_matching_product, is_accessory_name, DomemaeProduct, _parse_view_item
 
 
 def _p(name, price=1000):
@@ -48,6 +48,16 @@ def test():
     # 키워드 자체가 부자재 명칭이면(예: "화장품공병") 예외적으로 통과시킨다 —
     # 그럴 땐 부자재가 곧 완제품이다.
     assert is_accessory_name("휴대용 화장품 공병 세트", keyword="화장품공병") is False
+
+    # 상세설명 이미지 사용 허용(desc.license.usable) — 허용된 상품만 쓸 수 있다(2026-09)
+    view = lambda desc: _parse_view_item({"basis": {"no": "1"}, "desc": desc})
+    assert view({"license": {"usable": True}}).image_usable is True
+    assert view({"license": {"usable": False}}).image_usable is False, "불허 상품을 허용으로 읽음"
+    assert view({}).image_usable is None, "허용 항목이 없는데 허용으로 봄"
+
+    # 대문자 <IMG>·따옴표 없는 src도 상세이미지로 읽는다(일자손톱깎이: 대표사진 1장만 남던 문제)
+    imgs = view({"contents": '<P align=center><IMG src="https://x/a_01.jpg"></p><img src=https://x/b.jpg>'}).images
+    assert "https://x/a_01.jpg" in imgs and "https://x/b.jpg" in imgs, f"상세이미지를 빠뜨림: {imgs}"
 
     print("ok")
 

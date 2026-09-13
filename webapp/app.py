@@ -16,6 +16,7 @@ import os
 import re
 import secrets
 import sys
+import threading
 import time
 from contextlib import redirect_stdout
 from datetime import date, datetime, timedelta
@@ -56,6 +57,13 @@ app.secret_key = os.environ.get("DASHBOARD_SECRET_KEY", "local-dev-only-not-secr
 # 상세페이지용 사진 업로드 상한 — 없으면 무제한이라 실수로 큰 파일을 올리면 메모리를
 # 그대로 먹는다. 폰 사진 10장(장당 5MB급)을 한 번에 올리는 정도는 통과시킨다.
 app.config["MAX_CONTENT_LENGTH"] = 60 * 1024 * 1024
+
+
+@app.template_global("domemae_url")
+def _domemae_url(goods_no):
+    """목록·상세의 "도매매 상품 보기" 링크 — 주소 형식은 domemae.py 한 곳에서만 정한다."""
+    from bebrave.sourcing.domemae import goods_page_url
+    return goods_page_url(goods_no)
 
 FRIDAY_USER = os.environ.get("FRIDAY_USER")
 FRIDAY_PASSWORD = os.environ.get("FRIDAY_PASSWORD")
@@ -102,7 +110,7 @@ def _load_json(path: Path) -> list:
 
 def _extract_pipeline_reasons(buf_text: str, include_info: bool = False) -> list:
     """pipeline.run()/discover()가 stdout에 찍는 중단 사유([건너뜀]/[오류]/[경고], 필요시
-    [안내]까지)를 그대로 뽑아온다. register_candidate/register_candidates_bulk/discover_scan
+    [안내]까지)를 그대로 뽑아온다. register_candidate/discover_scan
     셋이 같은 정규식을 따로 들고 있었다(2026-09) — 한 곳으로 합침."""
     markers = r"건너뜀|오류|경고" + (r"|안내" if include_info else "")
     return [
@@ -441,21 +449,25 @@ def candidates():
     }
     items = [c for c in items
              if not (c.get("supply_goods_no") and c["supply_goods_no"] in registered_goods_nos)]
+    # 도매매가 상세설명 이미지 사용을 허용한 상품만 보인다(2026-09) — 허용 안 된 이미지로
+    # 상세페이지를 만들면 저작권 문제. 확인 안 된 후보도 숨긴다("허용된 것만"이 기준).
+    items = [c for c in items if c.get("image_usable") is True]
 
-    counts = {"niche": 0, "remake": 0, "unclassified": 0, "hold": 0}
+    # 보류·제외는 보여주지 않는다(2026-09) — 점수 미달이라 팔아도 남기기 어렵다. 스캔은 아예
+    # 저장하지 않지만 CLI 등 다른 경로로 들어온 기록이 있을 수 있어 여기서도 거른다.
+    items = [c for c in items if _candidate_bucket(c) != "hold"]
+    counts = {"niche": 0, "remake": 0, "unclassified": 0}
     for c in items:
         counts[_candidate_bucket(c)] += 1
 
     # 기본 탭이 틈새 고정이라, 옛 스캔 데이터처럼 전부 미분류면 첫 화면이 빈 표였다.
-    default_tab = next((t for t in ("niche", "remake", "unclassified", "hold") if counts[t]), "niche")
+    default_tab = next((t for t in ("niche", "remake", "unclassified") if counts[t]), "niche")
     tab = request.args.get("tab", default_tab)
     if tab not in counts:
         tab = default_tab
     unconfirmed_only = request.args.get("unconfirmed") == "1"
 
     filtered = [c for c in items if _candidate_bucket(c) == tab]
-
-    from bebrave.sourcing.models import registration_block_reason
 
     for c in filtered:
         # 점수 숫자만으로는 진입해도 되는지 판단이 안 된다 — 합격선 판정을 화면에도 쓴다.
@@ -465,14 +477,11 @@ def candidates():
         sale = c.get("est_sale_price") or 0
         cost = c.get("est_cost_price") or 0
         c["margin_amount"] = calc_margin(sale_price=sale, cost_price=cost).net_profit if sale and cost else None
-        # 등록 가능 여부는 등록 게이트와 같은 함수로 판정한다 — 목록에서 "등록 가능"이라고
-        # 해놓고 등록 단계에서 막히면 이유를 알 수 없다.
-        c["block_reason"] = registration_block_reason(c.get("supply_matched"), c.get("human_confirmed", False))
-        c["registerable"] = bool(c.get("supply_name")) and not c["block_reason"]
 
     return render_template("candidates.html", candidates=filtered, target_categories=TARGET_CATEGORIES,
                             tab=tab, counts=counts, unconfirmed_only=unconfirmed_only,
-                            list_categories=sorted({c.get("category", "") for c in filtered if c.get("category")}))
+                            list_categories=sorted({c.get("category", "") for c in filtered if c.get("category")}),
+                            scan_last=_SCAN["last"])
 
 
 @app.route("/candidates/confirm_match_bulk", methods=["POST"])
@@ -523,93 +532,108 @@ def clear_stale_candidates():
     return redirect(url_for("candidates"))
 
 
+# ── 스캔 — 서버 뒤에서 돈다 ─────────────────────────────────────────────
+# 전체 18개 카테고리면 30분 가까이 걸려, 요청 하나로 기다리면 브라우저·연결이 끊긴다(2026-09).
+_SCAN = {"running": False, "categories": [], "total": 0, "done": 0, "current": "", "added": 0,
+         "started": 0.0, "last": None}
+_SCAN_LOCK = threading.Lock()
+
+
+class _ThreadStdout:
+    """스캔 스레드가 찍는 줄만 따로 모은다 — contextlib.redirect_stdout은 프로세스 전체의
+    출력을 바꿔서, 30분 스캔 동안 다른 요청의 출력까지 섞인다."""
+    # ponytail: 그 사이 다른 요청이 redirect_stdout을 쓰면 몇 줄이 그쪽으로 샐 수 있다 — 스캔을 별도 프로세스로 돌리면 해결
+
+    def __init__(self, target, thread_id):
+        self.target, self.thread_id, self.buf = target, thread_id, io.StringIO()
+
+    def write(self, text):
+        return (self.buf if threading.get_ident() == self.thread_id else self.target).write(text)
+
+    def flush(self):
+        self.target.flush()
+
+
+def _run_scan(categories: list) -> None:
+    from bebrave.sourcing.analyzer import load_from_json, save_to_json, dedupe_by_supply
+    from bebrave.sourcing.discover import discover, to_product_candidates
+
+    router = _ThreadStdout(sys.stdout, threading.get_ident())
+    sys.stdout = router
+    added, dupes_removed, stale_cleared, error = {}, 0, 0, ""
+    try:
+        for i, category in enumerate(categories):
+            _SCAN.update(done=i, current=category)
+            result = discover(category=category, limit=15)
+            # 목록에 나올 후보만 저장한다 — 보류·제외는 점수 미달이라 팔아도 남기기 어렵고, 도매매
+            # 이미지 사용 허용이 확인 안 된 후보(도매매 조회 대상 밖 포함)는 목록에서 숨겨진다.
+            # 안 거르면 "신규 후보 21개"라고 해놓고 목록엔 안 보이는 후보만 파일에 쌓였다(2026-09).
+            fresh = [c for c in to_product_candidates(result)
+                     if c.recommendation not in ("보류", "제외") and c.image_usable is True]
+            # 카테고리마다 파일을 새로 읽어 합친다 — 스캔 도중 사람이 실물확인 등으로 바꾼 걸 덮지 않게
+            existing = load_from_json(SOURCING_LOG)
+            # 트랙·검색량이 없는 옛 스캔분은 같은 카테고리를 다시 스캔하는 이 시점에 치운다
+            stale = [c for c in existing if c.category == category and not c.track and not c.monthly_search]
+            existing = [c for c in existing if c not in stale]
+            stale_cleared += len(stale)
+            # (키워드, 트랙)으로 중복을 거른다 — 키워드만 보면 두 트랙 중 한쪽이 조용히 사라진다
+            have = {(c.keyword, c.track) for c in existing}
+            n = 0
+            for c in fresh:
+                if (c.keyword, c.track) not in have:
+                    existing.append(c)
+                    have.add((c.keyword, c.track))
+                    n += 1
+            existing, dupes = dedupe_by_supply(existing)
+            dupes_removed += len(dupes)
+            save_to_json(existing, SOURCING_LOG)
+            added[category] = n
+            _SCAN["added"] += n
+    except Exception as e:
+        error = f"스캔 실패({_SCAN['current']}): {e}"
+    finally:
+        if sys.stdout is router:
+            sys.stdout = router.target
+        # discover()는 실패해도 예외 없이 [경고]만 찍고 빈 결과를 낸다 — 그 줄을 화면으로 올린다
+        problems = _extract_pipeline_reasons(router.buf.getvalue(), include_info=True)
+        problems = list(dict.fromkeys(([error] if error else []) + problems))[:8]
+        detail = ", ".join(f"{k} {v}개" for k, v in added.items() if v)
+        message = (f"{len(added)}/{len(categories)}개 카테고리 · 신규 후보 {sum(added.values())}개"
+                   + (f"({detail})" if detail else "")
+                   + (f" · 동일상품 중복 {dupes_removed}개 제거" if dupes_removed else "")
+                   + (f" · 옛 미분류 {stale_cleared}건 정리" if stale_cleared else ""))
+        _SCAN.update(running=False, done=len(added),
+                     last={"finished": datetime.now().strftime("%m-%d %H:%M"),
+                           "message": message, "problems": problems})
+
+
 @app.route("/candidates/discover", methods=["POST"])
 def discover_scan():
-    # 체크박스로 여러 카테고리를 한 번에 고를 수 있다(2026-09) — "전체 비교 스캔"은
-    # 카테고리별 기회밀도를 비교하는 별도 모드라 다른 카테고리와 같이 고르면 무시하고
-    # 비교 스캔만 실행한다.
-    categories = [c for c in request.form.getlist("categories") if c]
+    """스캔을 뒤에서 시작하고 바로 목록으로 돌아간다 — 진행은 화면이 candidates_scan_status로
+    3초마다 가져간다. 한 번 스캔하면 틈새·리메이크 후보가 함께 나온다."""
+    from bebrave.config import TARGET_CATEGORIES
+    tab = request.form.get("tab") or None
+    categories = [c for c in request.form.getlist("categories") if c in TARGET_CATEGORIES]
     if not categories:
         flash("스캔할 카테고리를 하나 이상 선택하세요.", "error")
-        return redirect(url_for("candidates"))
-    run_all = "all" in categories
-    individual_categories = [c for c in categories if c != "all"]
+        return redirect(url_for("candidates", tab=tab))
+    with _SCAN_LOCK:
+        if _SCAN["running"]:
+            flash("이미 스캔이 진행 중입니다 — 끝난 뒤 다시 누르세요.", "error")
+            return redirect(url_for("candidates", tab=tab))
+        _SCAN.update(running=True, categories=categories, total=len(categories), done=0,
+                     current=categories[0], added=0, started=time.time())
+    threading.Thread(target=_run_scan, args=(categories,), daemon=True).start()
+    return redirect(url_for("candidates", tab=tab))
 
-    buf = io.StringIO()
-    total_added = 0
-    total_removed_dupes = 0
-    total_stale_cleared = 0
-    per_category_added = {}
-    ranking = ""
-    try:
-        from bebrave.sourcing.analyzer import load_from_json, save_to_json, dedupe_by_supply
-        existing = load_from_json(SOURCING_LOG)
-        # (키워드, 트랙)으로 중복을 걸러야 한다 — 키워드만 보면 같은 키워드가 두
-        # 트랙에서 다 나왔을 때 먼저 도는 트랙만 남고 리메이크 후보가 조용히 사라진다.
-        existing_kw = {(c.keyword, c.track) for c in existing}
 
-        with redirect_stdout(buf):
-            if run_all:
-                from bebrave.sourcing.discover import scan_categories, to_product_candidates
-                scores = scan_categories(limit=15)
-                for score in scores:
-                    for c in to_product_candidates(score.results):
-                        if (c.keyword, c.track) not in existing_kw:
-                            existing.append(c)
-                            existing_kw.add((c.keyword, c.track))
-                            total_added += 1
-                ranking = ", ".join(f"{s.category}({s.opportunity_density:.0%})" for s in
-                                     sorted(scores, key=lambda s: s.opportunity_density, reverse=True))
-            else:
-                from bebrave.sourcing.discover import discover, to_product_candidates
-                for category in individual_categories:
-                    # 미분류 자동 정리 — 이 카테고리에 트랙·검색량이 전혀 없는 옛
-                    # 스캔분(로직이 바뀌기 전 데이터)이 있으면, 재스캔으로 새 데이터가
-                    # 들어오는 이 시점에 같이 치운다. 옛 스캔 정리 버튼을 매번 따로
-                    # 누르지 않아도 되게(2026-09).
-                    stale_in_cat = [c for c in existing
-                                    if c.category == category and not c.track and not c.monthly_search]
-                    if stale_in_cat:
-                        stale_ids = {id(c) for c in stale_in_cat}
-                        existing = [c for c in existing if id(c) not in stale_ids]
-                        existing_kw = {(c.keyword, c.track) for c in existing}
-                        total_stale_cleared += len(stale_in_cat)
-
-                    result = discover(category=category, limit=15)
-                    added_here = 0
-                    for c in to_product_candidates(result):
-                        if (c.keyword, c.track) not in existing_kw:
-                            existing.append(c)
-                            existing_kw.add((c.keyword, c.track))
-                            added_here += 1
-                    per_category_added[category] = added_here
-                    total_added += added_here
-
-            existing, removed_dupes = dedupe_by_supply(existing)
-            total_removed_dupes = len(removed_dupes)
-            save_to_json(existing, SOURCING_LOG)
-
-        # discover()/scan_categories()는 실패해도 예외를 던지지 않고 [경고]를 찍은 뒤
-        # 빈 리스트를 반환한다 — 예전엔 이걸 못 잡아서 "신규 후보 0개 추가됨"이 성공
-        # 플래시로 떴다(2026-09 발견, S9). 콘솔에만 찍히던 [경고]/[오류]/[안내]를 화면으로
-        # (DOMEMAE_API_KEY 미설정으로 도매가 조회가 전량 생략된 경우도 [안내]로 찍힌다 — S10).
-        problems = _extract_pipeline_reasons(buf.getvalue(), include_info=True)
-        blocking = [p for p in problems if not p.startswith("[안내]")]
-        for p in problems:
-            flash(p, "error" if not p.startswith("[안내]") else "success")
-
-        dupe_note = f", 동일상품 중복 {total_removed_dupes}개 제거" if total_removed_dupes else ""
-        stale_note = f", 옛 미분류 {total_stale_cleared}건 자동 정리" if total_stale_cleared else ""
-        if total_added == 0 and blocking:
-            pass  # 사유는 위에서 이미 개별 flash로 표시됨 — 뭉뚱그린 성공 메시지를 덧붙이지 않는다
-        elif run_all:
-            flash(f"전체 카테고리 스캔 완료 — 신규 후보 {total_added}개{dupe_note}. 기회밀도: {ranking}", "success")
-        else:
-            detail = ", ".join(f"{cat} {n}개" for cat, n in per_category_added.items())
-            flash(f"{len(individual_categories)}개 카테고리 스캔 완료 — 신규 후보 {total_added}개({detail}){dupe_note}{stale_note}", "success")
-    except Exception as e:
-        flash(f"스캔 실패: {e}", "error")
-    return redirect(url_for("candidates", tab=request.form.get("tab") or None))
+@app.route("/candidates/scan_status")
+def candidates_scan_status():
+    return {"running": _SCAN["running"], "total": _SCAN["total"], "done": _SCAN["done"],
+            # 스캔 중에 화면을 다시 열면 태그가 기본값(전체)으로 보여 뭘 스캔하는지 헷갈렸다
+            "categories": _SCAN["categories"] if _SCAN["running"] else [],
+            "current": _SCAN["current"], "added": _SCAN["added"],
+            "elapsed": int(time.time() - _SCAN["started"]) if _SCAN["running"] else 0}
 
 
 @app.route("/candidates/preview")
@@ -849,6 +873,7 @@ def candidates_preview():
             audit_problem_count=sum(1 for i in audit_items if i.problem),
             claude_reason=__import__("bebrave.smartstore.claude_cli", fromlist=["x"]).unavailable_reason(),
             supply_category=p.category,
+            image_usable=p.image_usable,
             generated_image_url=(
                 url_for("generated_image", filename=request.args.get("generated_image"), _external=True)
                 if request.args.get("generated_image") else ""
@@ -1253,69 +1278,6 @@ def generate_candidate_image():
     except Exception as e:
         flash(f"AI 이미지 생성 실패: {e}", "error")
         return redirect(url_for("candidates_preview", **back))
-
-
-@app.route("/candidates/register_bulk", methods=["POST"])
-def register_candidates_bulk():
-    """발굴 후보 화면 체크박스로 여러 개를 골라 한 번에 등록 — 후보 하나씩 미리보기를
-    거쳐야만 등록할 수 있어서, 여러 개를 올리려면 그만큼 반복해야 했다(2026-09).
-    태그·판매가·상세설명 같은 개별 조정은 여기서 못 한다 — 그게 필요하면 미리보기에서
-    하나씩. 이건 "손댈 필요 없는 것들을 한 번에" 보내는 용도."""
-    pairs = []
-    for raw in request.form.getlist("ids"):
-        if "||" in raw:
-            kw, tr = raw.split("||", 1)
-            pairs.append((kw, tr))
-    # 목록의 dry-run 체크박스는 없앴다 — 미리보기는 상품 상세 화면이 하는 일이고,
-    # 등록은 판매중지(SUSPENSION) 상태로 올라가므로 바로 팔리지 않는다.
-    live = True
-    tab = request.form.get("tab", "niche")
-
-    if not pairs:
-        flash("선택된 후보가 없습니다.", "error")
-        return redirect(url_for("candidates", tab=tab))
-
-    items = _load_json(SOURCING_LOG)
-    by_pair = {(c.get("keyword", ""), c.get("track", "")): c for c in items}
-
-    from bebrave.smartstore.pipeline import run as pipeline_run
-    from bebrave.sourcing.models import registration_block_reason
-
-    succeeded, skipped = [], []
-    for kw, tr in pairs:
-        cand = by_pair.get((kw, tr), {})
-        # 오매칭 차단 — register_candidate()와 같은 게이트(2026-09).
-        block_reason = registration_block_reason(cand.get("supply_matched"), cand.get("human_confirmed", False))
-        if block_reason:
-            skipped.append((kw, block_reason))
-            continue
-        goods_no = cand.get("supply_goods_no", "")
-        buf = io.StringIO()
-        try:
-            with redirect_stdout(buf):
-                if goods_no:
-                    results = pipeline_run(supply_id=goods_no, dry_run=not live, status="SUSPENSION")
-                else:
-                    results = pipeline_run(keyword=kw, dry_run=not live, status="SUSPENSION")
-            if results:
-                succeeded.append(kw)
-            else:
-                reasons = _extract_pipeline_reasons(buf.getvalue())
-                skipped.append((kw, reasons[0] if reasons else "사유 미상"))
-        except Exception as e:
-            skipped.append((kw, str(e)))
-        # 네이버·도매매 API를 후보 수만큼 연속 호출한다 — 발주 쪽(purchase_bulk_place)과
-        # 같은 이유로 과부하 방지 딜레이를 둔다.
-        time.sleep(1.0)
-
-    verb = "등록" if live else "미리보기"
-    msg = f"일괄 {verb} 완료 — 성공 {len(succeeded)}건"
-    if skipped:
-        detail = ", ".join(f"{k}({r[:30]})" for k, r in skipped[:5])
-        more = f" 외 {len(skipped) - 5}건" if len(skipped) > 5 else ""
-        msg += f" / 건너뜀 {len(skipped)}건: {detail}{more}"
-    flash(msg, "success" if succeeded else "error")
-    return redirect(url_for("candidates", tab=tab))
 
 
 # ── 상품 관리 (등록상품 + 재고동기화 + 판매추적 + 판매성과 통합) ──────────────────

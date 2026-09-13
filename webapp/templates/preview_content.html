@@ -1,4 +1,13 @@
-<h1 style="margin:0 0 12px;color:var(--ink);">{{ '리메이크 상품' if track == 'B' else '틈새 상품' if track == 'A' else '등록 미리보기' }}</h1>
+<div class="row" style="align-items:center;margin:0 0 12px;">
+  <h1 style="margin:0;color:var(--ink);">{{ '리메이크 상품' if track == 'B' else '틈새 상품' if track == 'A' else '등록 미리보기' }}</h1>
+  <span style="flex:1;"></span>
+  {% if goods_no %}<a class="btn secondary" href="{{ domemae_url(goods_no) }}" target="_blank" rel="noopener">도매매 상품 보기 ↗</a>{% endif %}
+</div>
+{% if image_usable is sameas false %}
+<div class="flash flash-error" style="margin-bottom:12px;">도매매가 이 상품의 <b>상세설명 이미지 사용을 허용하지 않습니다</b> — 등록되지 않습니다.</div>
+{% elif image_usable is none %}
+<div class="flash flash-error" style="margin-bottom:12px;"><b>상세설명 이미지 사용 허용 여부를 확인하지 못했습니다</b> — 이대로는 등록되지 않습니다. 새로고침해 보고, 계속되면 도매매 상품 페이지에서 확인하세요.</div>
+{% endif %}
 
 <div class="panel">
   <h2>상품명 최적화</h2>

@@ -35,7 +35,7 @@ from ..config import (
 )
 from ..margin.calculator import calculate as calc_margin, estimate_sale_price
 from .competition import CompetitionResult, fetch_competition
-from .domemae import search_products, find_matching_product, find_all_matches
+from .domemae import search_products, find_matching_product, find_all_matches, fetch_product_detail
 from .keyword_tool import KeywordData, discover_keywords
 from .models import ProductCandidate
 from .trend import TrendResult, fetch_trend
@@ -271,6 +271,7 @@ class DiscoveryResult:
     price_gate_passed: Optional[bool] = None       # 11번가 시세 게이트 결과 — None=미실행(예산 초과/미대상)
     price_gate_reason: str = ""
     price_gate_sample: int = 0                     # 11번가 표본 수 — 화면에 "표본 N건" 노출용
+    image_usable: Optional[bool] = None            # 도매매 상세설명 이미지 사용 허용 — None=확인 안 함
 
     def one_line(self) -> str:
         trend_ko = {"up": "상승", "stable": "안정", "down": "하락"}.get(self.trend_direction, "-")
@@ -378,6 +379,26 @@ def _prefilter_candidates(kds: List[KeywordData], cap: int) -> List[KeywordData]
         return base * 0.5 if kd.comp_idx == "높음" else base
     pool.sort(key=_pre, reverse=True)
     return pool[:cap]
+
+
+def _pick_usable(best, same_form, is_usable, limit: int = 3):
+    """도매매 상세설명 이미지 사용이 허용된 상품을 고른다. 없으면 None.
+
+    가장 잘 맞는 상품이 불허면 같은 형태의 다른 공급사를 본다 — 공급사 하나가 막았다고
+    수요가 확인된 키워드 자체를 버리지 않는다. 허용 여부는 상세조회에만 있어 호출이 들므로
+    limit개까지만 본다."""
+    seen, pool = set(), []
+    for c in [best] + list(same_form):
+        if c is not None and c.goods_no and c.goods_no not in seen:
+            seen.add(c.goods_no)
+            pool.append(c)
+    for c in pool[:limit]:
+        try:
+            if is_usable(c.goods_no):
+                return c
+        except Exception:
+            continue   # 조회 실패는 "허용 확인 못 함" — 다음 공급사를 본다
+    return None
 
 
 def discover(
@@ -542,6 +563,16 @@ def discover(
                 same_form = find_all_matches([r.keyword], domemae_result.products, top_n=50)
                 r.supply_seller_count = len({c.supplier for c in same_form if c.supplier})
                 if p:
+                    # 상세설명 이미지 사용이 허용된 상품만 후보로 쓴다(2026-09) — 허용 안 된
+                    # 이미지로 상세페이지를 만들면 저작권 문제가 된다.
+                    def _usable(no):
+                        time.sleep(api_delay)
+                        return fetch_product_detail(no).image_usable is True
+                    usable = _pick_usable(p, same_form, _usable)
+                    r.image_usable = usable is not None
+                    if usable is not None and usable is not p:
+                        p, matched = usable, True   # same_form은 형태 일치가 확인된 상품들
+                if p:
                     r.supply_price = p.supply_price
                     r.supply_name = p.name
                     r.supply_goods_no = p.goods_no
@@ -643,6 +674,7 @@ def to_product_candidates(results: List[DiscoveryResult]) -> List[ProductCandida
             supply_matched=(not r.supply_match_uncertain) if r.supply_price else None,
             track=r.track,
             recommendation=r.recommendation,
+            image_usable=r.image_usable,
         )
         c.score = r.score
         candidates.append(c)

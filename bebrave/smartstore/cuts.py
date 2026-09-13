@@ -271,7 +271,7 @@ def build_cuts(goods_no: str, image_urls: List[str], force: bool = False) -> Cut
         if not f.name.startswith("seller_"):
             f.unlink()
     # 컷 번호가 바뀌면 이전 판독·문구·구성이 엉뚱한 사진을 가리킨다 — 버린다
-    for stale in ("reading.json", "copy.json", "blocks.json"):
+    for stale in ("reading.json", "copy.json", "blocks.json", "thumbs.json"):
         (out_dir / stale).unlink(missing_ok=True)
 
     cs = CutSet(goods_no=goods_no, built_at=time.strftime("%Y-%m-%dT%H:%M"))

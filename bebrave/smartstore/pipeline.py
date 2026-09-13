@@ -373,10 +373,24 @@ def run(
         if len(domemae_p.description) < 200:
             quality_issues.append(f"상세설명이 {len(domemae_p.description)}자로 짧음")
         if domemae_p.images:
-            from .images import check_min_resolution
-            size = check_min_resolution(domemae_p.images[0])
-            if size and min(size) < 1000:
-                quality_issues.append(f"대표이미지 해상도 {size[0]}x{size[1]}px (권장 최소 1000px 미만)")
+            from .images import MIN_SOURCE_PX, check_min_resolution
+            from .thumbs import load_thumbs
+            # 대표이미지는 올릴 때 1000px로 키우므로(images.pad_to_square), 여기선 키워도 흐리지
+            # 않을 만큼 원본이 큰지만 본다(2026-09). 예전엔 1000px 미만이면 전부 막아서 도매매
+            # 대표사진(760px)을 쓰는 상품은 사실상 등록이 안 됐다.
+            # 정사각으로 여백을 붙인 뒤 키우므로 긴 변이 기준이다.
+            # 상품 상세 화면에서 대표이미지를 골라뒀으면(추천 자동 적용 포함) 막지 않고 경고만 한다 —
+            # 사람이 크기 경고를 보고 고른 사진이고, 대시보드 등록엔 강행 옵션이 없어 막으면 우회할
+            # 길이 없다. 막는 건 사람이 사진을 안 본 경로(CLI 일괄 등록)뿐이다(2026-09).
+            ts = load_thumbs(domemae_p.goods_no) if domemae_p.goods_no else None
+            chosen = ts.chosen_thumb() if ts else None
+            if chosen:
+                if chosen.px < MIN_SOURCE_PX:
+                    print(f"  [경고] 고른 대표이미지 원본이 {chosen.px}px로 작아 1000px로 키워 올립니다 — 확대하면 흐릴 수 있습니다")
+            else:
+                size = check_min_resolution(domemae_p.images[0])
+                if size and max(size) < MIN_SOURCE_PX:
+                    quality_issues.append(f"대표이미지 원본 {size[0]}x{size[1]}px — {MIN_SOURCE_PX}px 미만이라 1000px로 키우면 흐림")
 
         if quality_issues:
             label = "[경고]" if force else "[건너뜀]"
@@ -489,17 +503,32 @@ def run(
         print(f"  상품명: {content['name']}")
 
         # ── Step 5: StoreProduct 구성 ─────────────────────────────────────
+        # 컷으로 재구성했으면 상세페이지 첫 화면에 쓴 컷이 그대로 대표이미지가 된다 —
+        # 목록에서 본 사진과 페이지 첫 장면이 어긋나지 않는다.
+        # 네이버는 대표 1장 + 추가 9장까지 받는데 3장만 올리고 있었다(2026-09).
+        representative = cut_images[0] if cut_images else domemae_p.main_image
+        optional = cut_images[1:10] if cut_images else domemae_p.images[1:10]
+        # 상품 상세 화면에서 대표이미지를 골랐으면(추천 자동 적용 포함) 그 사진이 이긴다(2026-09) —
+        # 화면에서 본 대표이미지와 등록본이 같아야 한다. 후보를 만든 적이 없으면 위 규칙 그대로.
+        from .thumbs import chosen_thumb_path
+        chosen_path = None if representative_image_override else chosen_thumb_path(domemae_p.goods_no)
+        if chosen_path:
+            from .images import upload_images
+            up = str(chosen_path) if dry_run else upload_images([str(chosen_path)], token)[0]
+            if up:
+                representative, optional = up, (cut_images or domemae_p.images)[:9]
+                print(f"  대표이미지: 상품 상세 화면에서 고른 사진 ({chosen_path.name})")
+            else:
+                print("  [경고] 고른 대표이미지를 올리지 못해 기존 대표이미지로 등록합니다")
+
         store_product = StoreProduct(
             name=content["name"],
             leaf_category_id=cat_id,
             sale_price=sale_price,
             stock_quantity=min(domemae_p.stock, MAX_LISTING_STOCK),
             detail_content=content["detail_content"],
-            # 컷으로 재구성했으면 상세페이지 첫 화면에 쓴 컷이 그대로 대표이미지가 된다 —
-            # 목록에서 본 사진과 페이지 첫 장면이 어긋나지 않는다.
-            representative_image=(cut_images[0] if cut_images else domemae_p.main_image),
-            # 네이버는 대표 1장 + 추가 9장까지 받는데 3장만 올리고 있었다(2026-09).
-            optional_images=(cut_images[1:10] if cut_images else domemae_p.images[1:10]),
+            representative_image=representative,
+            optional_images=optional,
             supply_price=domemae_p.supply_price,
             margin_rate=margin.margin_rate,
             domemae_goods_no=domemae_p.goods_no,

@@ -45,13 +45,23 @@ def check_min_resolution(image_url: str, min_px: int = _RECOMMENDED_MIN_PX):
         return None
 
 
+# 대표이미지 원본이 이보다 작으면 흐리다고 본다(2026-09). 등록 때 1000px로 키우는데, 1.67배를
+# 넘게 키우면 확대했을 때 눈에 띄게 흐리다. 사람이 고른 사진은 경고만, 사람이 안 본 CLI 일괄
+# 등록은 건너뛴다(pipeline.py). 도매매 대표사진 760px·상세 사진 860px(실측 5개
+# 상품)는 1.2~1.3배라 통과하고, 상세 사진에서 잘라낸 400px 안팎의 칸은 걸린다.
+# 네이버 자체 최소는 160px이고 1000px는 권장치다.
+MIN_SOURCE_PX = 600
+
+
 def pad_to_square(image_bytes: bytes, background=(255, 255, 255)) -> bytes:
     """
     대표이미지를 1:1 정사각으로 맞춘다 — 크롭(잘라내기)이 아니라 흰 배경 패딩이다.
     네이버쇼핑 목록 썸네일은 정사각으로 강제 표시되는데, 원본이 직사각형이면 좌우나
     위아래가 잘려 상품 일부(가격표·구성품 등)가 안 보이는 경우가 있었다(2026-09).
     잘라내면 정보가 사라지므로, 짧은 변에 흰 여백을 더해 정사각으로 맞춘다.
-    이미 정사각이면 그대로 반환(불필요한 재인코딩 방지).
+    한 변이 네이버 권장 1000px보다 작으면 1000px로 키운다(2026-09) — 도매 대표사진이 760px라
+    그대로 올리면 권장 미달이다. 너무 작은 원본은 pipeline이 MIN_SOURCE_PX로 먼저 막는다.
+    이미 1000px 이상 정사각이면 그대로 반환(불필요한 재인코딩 방지).
     """
     if not _HAS_PIL:
         return image_bytes
@@ -59,11 +69,13 @@ def pad_to_square(image_bytes: bytes, background=(255, 255, 255)) -> bytes:
         img = Image.open(BytesIO(image_bytes))
         img = img.convert("RGB") if img.mode != "RGB" else img
         w, h = img.size
-        if w == h:
+        if w == h and w >= _RECOMMENDED_MIN_PX:
             return image_bytes
         side = max(w, h)
         canvas = Image.new("RGB", (side, side), background)
         canvas.paste(img, ((side - w) // 2, (side - h) // 2))
+        if side < _RECOMMENDED_MIN_PX:
+            canvas = canvas.resize((_RECOMMENDED_MIN_PX, _RECOMMENDED_MIN_PX), Image.LANCZOS)
         buf = BytesIO()
         canvas.save(buf, format="JPEG", quality=92)
         return buf.getvalue()
@@ -164,16 +176,19 @@ def _demo() -> None:
         Image.new("RGB", (w, h), (10, 20, 30)).save(buf, format="JPEG")
         return buf.getvalue()
 
-    wide = pad_to_square(_make(800, 400))
+    wide = pad_to_square(_make(1200, 600))
     img = Image.open(BytesIO(wide))
-    assert img.size == (800, 800), img.size
+    assert img.size == (1200, 1200), img.size
 
     tall = pad_to_square(_make(400, 800))
     img2 = Image.open(BytesIO(tall))
-    assert img2.size == (800, 800), img2.size
+    assert img2.size == (1000, 1000), f"권장 1000px 미만인데 안 키움: {img2.size}"
 
-    square_bytes = _make(500, 500)
-    assert pad_to_square(square_bytes) == square_bytes, "이미 정사각인데 재인코딩됨"
+    small_square = Image.open(BytesIO(pad_to_square(_make(760, 760))))
+    assert small_square.size == (1000, 1000), f"도매 대표사진 760px 정사각을 안 키움: {small_square.size}"
+
+    square_bytes = _make(1000, 1000)
+    assert pad_to_square(square_bytes) == square_bytes, "이미 1000px 정사각인데 재인코딩됨"
 
     print("images.pad_to_square self-check OK")
 

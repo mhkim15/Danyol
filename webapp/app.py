@@ -893,6 +893,7 @@ def candidates_preview():
             edit_facts=edit_facts,
             detail_edit=detail_edit,
             block_kinds=block_kinds,
+            thumbs=_thumbs_view(p.goods_no),
         )
     except Exception as e:
         return _fail(f"미리보기 생성 실패: {e}")
@@ -1063,6 +1064,52 @@ def recut_candidate_cut():
         return {"ok": False, "error": "컷을 찾을 수 없습니다 (원본이 없는 사진일 수 있습니다)"}, 404
     return {"ok": True, "index": cut.index, "height": cut.height,
             "url": url_for("cut_image", goods_no=goods_no, filename=cut.filename)}
+
+
+def _thumbs_view(goods_no: str):
+    """대표이미지 영역에 보낼 값. 후보를 만든 적이 없으면 None — 화면이 열리자마자 만든다."""
+    from bebrave.smartstore.images import MIN_SOURCE_PX
+    from bebrave.smartstore.thumbs import load_thumbs
+    ts = load_thumbs(goods_no) if goods_no else None
+    if not ts:
+        return None
+    return {"min_px": MIN_SOURCE_PX,   # 등록이 막히는 원본 크기 — 화면 경고와 등록 판정이 같은 값을 쓴다
+            "items":[{"id": t.id, "px": t.px, "text": t.text,
+                       # 다시 만들면 같은 파일 이름을 덮어써서 브라우저가 옛 사진을 보여준다
+                       "url": url_for("cut_image", goods_no=goods_no, filename=t.filename, v=ts.built_at)}
+                      for t in ts.thumbs],
+            "recommended": ts.recommended, "why": ts.why, "by_ai": ts.by_ai,
+            "fallback_reason": ts.fallback_reason, "chosen": ts.chosen, "chosen_by": ts.chosen_by}
+
+
+@app.route("/candidates/thumbs", methods=["POST"])
+def candidate_thumbs():
+    """대표이미지 — 후보 만들기(build) → 추천(recommend) → 사람이 고르기(choose) (2026-09).
+
+    추천은 자동 적용되지만, 사람이 추천과 다른 사진을 골라뒀으면 다시 추천받아도 그대로 둔다.
+    고른 사진은 서버에 저장돼 등록(pipeline)이 그대로 대표이미지로 쓴다 — 등록 폼에 싣지 않는다."""
+    goods_no = request.form.get("goods_no", "")
+    step = request.form.get("step", "")
+    if not goods_no:
+        return {"ok": False, "error": "상품번호가 없습니다"}, 400
+    try:
+        from bebrave.smartstore import thumbs as th
+        if step == "build":
+            from bebrave.sourcing.domemae import fetch_product_detail
+            p = fetch_product_detail(goods_no)
+            ts = th.build_thumbs(goods_no, [u for u in p.images if u])
+            if not ts.thumbs:
+                return {"ok": False, "error": "글자 없이 상품만 보이는 사진을 찾지 못했습니다 — 지금 대표사진 그대로 등록됩니다"}
+        elif step == "recommend":
+            th.recommend(goods_no, request.form.get("name", ""))
+        elif step == "choose":
+            if not th.choose(goods_no, int(request.form.get("id", "-1"))):
+                return {"ok": False, "error": "없는 후보입니다 — 새로고침하세요"}
+        else:
+            return {"ok": False, "error": f"알 수 없는 단계: {step}"}, 400
+        return {"ok": True, "view": _thumbs_view(goods_no)}
+    except Exception as e:
+        return {"ok": False, "error": f"대표이미지 처리 실패: {e}"}
 
 
 @app.route("/candidates/ai_build", methods=["POST"])

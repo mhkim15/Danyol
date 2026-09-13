@@ -41,6 +41,141 @@
   {% endif %}
 </div>
 
+{# 대표이미지 — 검색 목록에 뜨는 한 장. 도매 사진을 칸 단위로 잘라 글자 없는 후보를 만들고
+   Claude 추천을 자동 적용한다. 고른 사진은 서버에 저장돼 등록이 그대로 쓴다(2026-09). #}
+{% if goods_no %}
+<style>
+  #thumbGrid .thumb-pick { position:relative; width:96px; height:96px; padding:0; margin:0; border:2px solid var(--line);
+                           border-radius:8px; background:#fff; cursor:pointer; overflow:hidden; }
+  #thumbGrid .thumb-pick img { width:100%; height:100%; object-fit:contain; display:block; }
+  #thumbGrid .thumb-pick.on { border:3px solid #2b6cb0; }
+  #thumbGrid .rec { position:absolute; left:3px; top:3px; background:var(--warn); color:#fff; font-size:10.5px;
+                    padding:1px 5px; border-radius:4px; }
+  #thumbGrid .px { position:absolute; right:3px; bottom:3px; background:rgba(255,255,255,.9); color:#555;
+                   font-size:10px; padding:0 4px; border-radius:3px; }
+  #thumbGrid .px.low { color:#b42318; }
+</style>
+<div class="panel" id="thumbPanel">
+  <h2>대표이미지 <span class="muted" style="font-size:12px;font-weight:400;">검색 목록에 뜨는 사진 — 추천이 자동 적용되고, 오른쪽에서 다시 고를 수 있습니다</span></h2>
+  <div class="row" style="gap:18px;align-items:flex-start;flex-wrap:wrap;">
+    <div style="width:220px;flex:none;">
+      <div id="thumbMain" style="width:220px;height:220px;border:1px solid var(--line);border-radius:10px;background:#fff;
+                                 display:flex;align-items:center;justify-content:center;overflow:hidden;">
+        <span class="muted" style="font-size:12px;">준비 중…</span>
+      </div>
+      <p id="thumbInfo" style="font-size:12.5px;margin:8px 0 0;line-height:1.55;"></p>
+    </div>
+    <div style="flex:1;min-width:240px;">
+      <p id="thumbStatus" class="muted" style="font-size:12.5px;margin:0 0 8px;"></p>
+      <div id="thumbGrid" class="row" style="flex-wrap:wrap;gap:8px;"></div>
+      <div class="row" style="margin-top:10px;">
+        <button type="button" class="btn-sm secondary" id="thumbRebuild" onclick="thumbRun(true)">후보 다시 만들기</button>
+      </div>
+    </div>
+  </div>
+</div>
+<script>
+(function () {
+  var GOODS = {{ goods_no|tojson }}, NAME = {{ (optimized_name or raw_name or '')|tojson }};
+  var view = {{ thumbs|tojson }}, busy = false;
+
+  function esc(s) { var d = document.createElement('div'); d.textContent = s || ''; return d.innerHTML; }
+  function status(t) { document.getElementById('thumbStatus').textContent = t || ''; }
+  function post(params) {
+    params.goods_no = GOODS;
+    return fetch('{{ url_for("candidate_thumbs") }}', {
+      method: 'POST', headers: {'Content-Type': 'application/x-www-form-urlencoded'}, body: new URLSearchParams(params)
+    }).then(function (r) {
+      return r.json().catch(function () { return {ok: false, error: '서버 응답을 읽을 수 없습니다 (' + r.status + ')'}; });
+    }).catch(function () { return {ok: false, error: '서버와 연결이 끊겼습니다(서버 재시작 등) — 후보 다시 만들기를 누르세요'}; });
+  }
+
+  function render() {
+    var main = document.getElementById('thumbMain'), info = document.getElementById('thumbInfo'),
+        grid = document.getElementById('thumbGrid');
+    grid.innerHTML = '';
+    if (!view || !view.items.length) {
+      main.innerHTML = '<span class="muted" style="font-size:12px;">후보 없음</span>';
+      info.textContent = '지금 대표사진 그대로 등록됩니다.';
+      return;
+    }
+    var cur = null;
+    view.items.forEach(function (t) {
+      if (t.id === view.chosen) cur = t;
+      var b = document.createElement('button');
+      b.type = 'button';
+      b.className = 'thumb-pick' + (t.id === view.chosen ? ' on' : '');
+      b.title = '원본 ' + t.px + 'px' + (t.text ? ' · 읽힌 글자: ' + t.text : '');
+      b.innerHTML = '<img src="' + t.url + '" alt="">'
+        + (t.id === view.recommended ? '<span class="rec">★ 추천</span>' : '')
+        // 빨간색 = 1000px로 키우면 눈에 띄게 흐린 크기(등록은 된다). 그 이상은 키워도 티가 거의 안 난다
+        + '<span class="px' + (t.px < view.min_px ? ' low' : '') + '">' + t.px + 'px</span>';
+      b.onclick = function () { thumbChoose(t.id); };
+      grid.appendChild(b);
+    });
+    if (!cur) {
+      main.innerHTML = '<span class="muted" style="font-size:12px;">추천 기다리는 중</span>';
+      info.textContent = '';
+      return;
+    }
+    main.innerHTML = '<img src="' + cur.url + '" alt="" style="width:100%;height:100%;object-fit:contain;">';
+    var html = view.chosen_by === 'user'
+      ? '<b>직접 고름</b> — 등록 시 이 사진이 대표이미지가 됩니다'
+      : '<b>추천 자동 적용</b> · ' + (view.by_ai ? 'Claude' : '규칙') + ': ' + esc(view.why);
+    if (!view.by_ai && view.fallback_reason)
+      html += '<br><span class="muted">Claude를 못 써서 규칙으로 골랐습니다 — ' + esc(view.fallback_reason) + '</span>';
+    if (cur.px < view.min_px)
+      html += '<br><span style="color:#b42318;">원본 ' + cur.px + 'px — 작아서 1000px로 키우면 확대했을 때 흐립니다. 등록은 됩니다</span>';
+    else if (cur.px < 1000)
+      html += '<br><span class="muted">원본 ' + cur.px + 'px — 등록할 때 1000px로 키워 올립니다</span>';
+    info.innerHTML = html;
+  }
+
+  window.thumbRun = function (rebuild) {
+    if (busy) return;
+    if (rebuild && view && view.chosen_by === 'user'
+        && !confirm('직접 고른 대표이미지가 풀리고, 새 후보에서 다시 추천받습니다. 계속할까요?')) return;
+    busy = true;
+    document.getElementById('thumbRebuild').disabled = true;
+    var step1;
+    if (rebuild || !view) {
+      status('도매 사진에서 상품만 보이는 칸을 찾는 중… (처음엔 사진을 내려받느라 30초쯤 걸립니다)');
+      step1 = post({step: 'build'});
+    } else {
+      step1 = Promise.resolve({ok: true, view: view});
+    }
+    step1.then(function (d) {
+      if (!d.ok) throw d;
+      view = d.view; render();
+      if (view.recommended >= 0) return;
+      status('Claude가 후보 ' + view.items.length + '장 중에서 대표이미지를 고르는 중…');
+      return post({step: 'recommend', name: NAME}).then(function (d2) {
+        if (!d2.ok) throw d2;
+        view = d2.view; render();
+      });
+    }).then(function () { status(''); }, function (e) {
+      status('✕ ' + (e && e.error ? e.error : e));
+    }).then(function () {
+      busy = false;
+      document.getElementById('thumbRebuild').disabled = false;
+    });
+  };
+
+  window.thumbChoose = function (id) {
+    if (busy || !view || id === view.chosen) return;
+    var prev = view.chosen, prevBy = view.chosen_by;
+    view.chosen = id; view.chosen_by = (id === view.recommended) ? 'auto' : 'user'; render();
+    post({step: 'choose', id: id}).then(function (d) {
+      if (!d.ok) { view.chosen = prev; view.chosen_by = prevBy; render(); status('✕ ' + d.error); return; }
+      view = d.view; render();
+    });
+  };
+
+  if (!view || view.recommended < 0) thumbRun(false); else render();
+})();
+</script>
+{% endif %}
+
 <div class="panel" style="margin-bottom:32px;">
   <h2>상세페이지</h2>
 

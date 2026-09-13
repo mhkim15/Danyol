@@ -106,19 +106,25 @@ def ocr_cuts(cs: CutSet, cuts: List[Cut]) -> Dict[int, str]:
     "5장단위판매3000원(개당600원)"을 못 읽고 통과시킴). 가격·공급사 문구 거르기는 이
     결과로 한다. 우산 29컷 6초.
     """
-    if not cuts:
+    paths = {str(cs.path_of(c)): c.index for c in cuts}
+    return {paths[p]: t for p, t in ocr_files(list(paths)).items() if p in paths}
+
+
+def ocr_files(paths: List) -> Dict[str, str]:
+    """이미지 파일들의 글자를 읽어 {경로: 글자}. 실패하면 빈 dict — 호출부는 계속 진행한다.
+    대표이미지 후보(thumbs.py)에서 글자 있는 칸을 거를 때도 쓴다."""
+    if not paths:
         return {}
     try:
         if not _OCR_BIN.exists() or _OCR_BIN.stat().st_mtime < _OCR_SRC.stat().st_mtime:
             _OCR_BIN.parent.mkdir(parents=True, exist_ok=True)
             subprocess.run(["swiftc", "-O", str(_OCR_SRC), "-o", str(_OCR_BIN)],
                            check=True, capture_output=True, timeout=300)
-        paths = {str(cs.path_of(c)): c.index for c in cuts}
-        out = subprocess.run([str(_OCR_BIN), *paths], capture_output=True, text=True,
+        out = subprocess.run([str(_OCR_BIN), *map(str, paths)], capture_output=True, text=True,
                              timeout=300, check=True)
-        return {paths[p]: t for p, t in json.loads(out.stdout).items() if p in paths}
+        return json.loads(out.stdout)
     except Exception as e:
-        print(f"  [경고] 글자 인식 실패 — 판독만으로 거릅니다 ({e})")
+        print(f"  [경고] 글자 인식 실패 — 글자로 거르지 못합니다 ({e})")
         return {}
 
 

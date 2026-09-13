@@ -86,17 +86,41 @@ def upload_images(image_urls: List[str], access_token: str, square_first: bool =
     if not _HAS_REQUESTS:
         raise NotImplementedError("pip3 install requests 후 재시도하세요.")
 
-    image_urls = image_urls[:10]
+    # 네이버는 호출당 10장까지만 받는다. 예전엔 11장째부터 그냥 버렸는데, 상세페이지를
+    # 컷 단위로 재구성하면서 한 상품에 10장을 넘게 쓰게 됐다 — 나눠서 여러 번 부르면
+    # 더 올릴 수 있으므로 잘라내지 않고 배치로 처리한다(2026-09).
+    if len(image_urls) > 10:
+        out: List[Optional[str]] = []
+        for start in range(0, len(image_urls), 10):
+            out.extend(_upload_batch(image_urls[start:start + 10], access_token,
+                                     square_first and start == 0))
+        return out
+    return _upload_batch(image_urls, access_token, square_first)
+
+
+def _read_source(src) -> bytes:
+    """이미지 바이트를 가져온다 — http(s) 주소면 내려받고, 로컬 경로면 파일에서 읽는다.
+
+    컷은 우리가 로컬에 만들어 둔 파일이라 주소가 없다. 로컬 웹서버 주소로 우회하면
+    CLI에서 등록할 때(웹서버가 안 떠 있을 때) 통째로 실패한다."""
+    s = str(src)
+    if s.startswith(("http://", "https://")):
+        resp = requests.get(s, timeout=10)
+        resp.raise_for_status()
+        return resp.content
+    from pathlib import Path as _Path
+    return _Path(s).read_bytes()
+
+
+def _upload_batch(image_urls: List[str], access_token: str, square_first: bool) -> List[Optional[str]]:
     files = []
     positions = []  # files의 각 항목이 image_urls의 몇 번째였는지
     for i, url in enumerate(image_urls):
         try:
-            resp = requests.get(url, timeout=10)
-            resp.raise_for_status()
             ext = "jpg"
-            if "." in url.split("?")[0].rsplit("/", 1)[-1]:
-                ext = url.split("?")[0].rsplit(".", 1)[-1][:4]
-            image_bytes = resp.content
+            if "." in str(url).split("?")[0].rsplit("/", 1)[-1]:
+                ext = str(url).split("?")[0].rsplit(".", 1)[-1][:4]
+            image_bytes = _read_source(url)
             if i == 0 and square_first:
                 image_bytes = pad_to_square(image_bytes)
                 ext = "jpg"  # pad_to_square는 항상 JPEG로 재인코딩

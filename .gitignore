@@ -30,3 +30,7 @@ data/claims.json
 data/settlements.json
 data/purchase_queue.json
 data/backup/
+data/cuts/
+data/generated_images/
+data/naver_attributes_cache/
+webapp/static/

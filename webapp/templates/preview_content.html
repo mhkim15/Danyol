@@ -36,115 +36,550 @@
 </div>
 
 <div class="panel" style="margin-bottom:32px;">
-  <h2>상세페이지 {{ '직접 수정' if track == 'B' else '미리보기 · 수정' }}
-    {% if regenerated %}<span class="badge-ok" style="margin-left:6px;">다시 만든 버전</span>{% endif %}
-  </h2>
-  <p class="muted" style="font-size:12.5px;margin:0 0 10px;">
-    화면을 보면서 바로 고칠 수 있습니다 — 글자·이미지를 마우스로 편집하세요.
-    {% if track == 'B' %}리메이크 후보는 공급사 원본 그대로 등록하면 경쟁에서 밀립니다 — 여기서 손보고 등록하세요.{% endif %}
-  </p>
-  {% if track == 'B' %}
-  <div class="row" style="margin-bottom:6px;">
-    <a class="btn secondary"
+  <h2>상세페이지</h2>
+
+  {# 버전 탭 — 지금 보고 있는 쪽이 그대로 등록된다. 어느 쪽을 쓸지가 이 화면의
+     첫 번째 결정이라 맨 위에 둔다. #}
+  <div class="row" style="gap:6px;margin-bottom:8px;align-items:center;">
+    {% if detail_ai %}
+    <button type="button" id="vTabAi" class="btn-sm" onclick="showVersion('ai')">AI 구성</button>
+    <button type="button" id="vTabBasic" class="btn-sm secondary" onclick="showVersion('basic')">기본 · 도매 원본</button>
+    <span style="flex:1;"></span>
+    <a class="btn-sm secondary"
        href="{{ url_for('candidates_preview', keyword=keyword, track=track, goods_no=goods_no, regen=1) }}"
-       data-modal-url="{{ url_for('candidates_preview', keyword=keyword, track=track, goods_no=goods_no, modal=1, regen=1) }}"
-       onclick="openPreviewModal(this.dataset.modalUrl); return false;">
-      {{ '내용 다시 만들기 (한 번 더)' if regenerated else '내용 다시 만들기 — 새 구성으로 재생성' }}
-    </a>
-    {% if has_gemini_key %}
-    <form method="post" action="{{ url_for('generate_candidate_image') }}" style="display:inline;">
+       onclick="return confirm('지금 구성을 버리고 같은 재료로 새로 짭니다. 계속할까요?');">다시 만들기</a>
+    {% else %}
+    <span class="badge">기본 · 도매 원본</span>
+    <span class="muted" style="font-size:12px;">이 상품은 컷으로 쪼갤 상세 이미지가 없어 AI 구성을 만들지 못했습니다.</span>
+    {% endif %}
+  </div>
+  <p class="muted" style="font-size:12.5px;margin:0 0 12px;">
+    {% if detail_ai %}<b>지금 보고 있는 버전이 등록됩니다.</b> 아래 "구성 편집"에서 순서·사진·글을 고치면
+    바로 이 화면에 반영됩니다. "다시 만들기"는 같은 재료로 완전히 새 버전을 짭니다.{% endif %}
+  </p>
+
+  {# AI 구성 — 마우스로 바로 고친다 #}
+  {% if detail_edit %}
+  <div id="vAi">
+    <style>
+      #pageEdit { border:1px solid var(--line); border-radius:6px; overflow:hidden; background:#fff; }
+      #pageEdit [data-blk] { position:relative; outline:1px dashed transparent; outline-offset:-1px; }
+      #pageEdit [data-blk]:hover { outline-color:#2b6cb0; }
+      #pageEdit [data-blk].sel { outline:2px solid #2b6cb0; outline-offset:-2px; }
+      #pageEdit [data-blk].drag { opacity:.4; }
+      #pageEdit [data-f] { outline:1px dotted rgba(43,108,176,.45); outline-offset:2px; border-radius:2px; }
+      #pageEdit [data-f]:focus { outline:2px solid #2b6cb0; background:rgba(43,108,176,.08); }
+      .blk-bar { position:absolute; top:4px; right:4px; z-index:9; display:none; gap:2px;
+                 background:rgba(20,22,26,.92); border-radius:6px; padding:3px; }
+      #pageEdit [data-blk]:hover > .blk-bar, #pageEdit [data-blk].sel > .blk-bar { display:flex; }
+      .blk-bar button, .blk-bar span.h { all:unset; cursor:pointer; color:#fff; font-size:11.5px;
+                 padding:3px 7px; border-radius:4px; font-family:inherit; line-height:1.4; }
+      .blk-bar button:hover { background:rgba(255,255,255,.2); }
+      .blk-bar .name { color:rgba(255,255,255,.55); font-size:10.5px; padding:3px 5px; }
+      .blk-ins { height:18px; display:flex; align-items:center; justify-content:center; }
+      .blk-ins button { all:unset; cursor:pointer; font-size:11px; color:#2b6cb0; font-family:inherit;
+                 padding:1px 9px; border:1px dashed #2b6cb0; border-radius:999px; opacity:0; background:#fff; }
+      .blk-ins:hover button { opacity:1; }
+      #cutPicker { display:none; position:fixed; inset:auto 0 0 0; z-index:200; background:#fff;
+                 border-top:2px solid #2b6cb0; padding:12px 16px; max-height:78vh; overflow:auto;
+                 box-shadow:0 -6px 24px rgba(0,0,0,.18); }
+      #cutPicker.recutting #cutGrid, #cutPicker.recutting .pick-head { display:none; }
+      #cutPicker.on { display:block; }
+      #cutPicker .pick { width:86px; cursor:pointer; }
+      #cutPicker .pick img { width:86px; height:86px; object-fit:cover; border-radius:5px;
+                 border:2px solid var(--line); display:block; }
+      #cutPicker .pick:hover img { border-color:#2b6cb0; }
+    </style>
+
+    <div class="row" style="gap:6px;align-items:center;margin-bottom:8px;flex-wrap:wrap;">
+      <span class="muted" style="font-size:12px;">
+        글자를 눌러 바로 고치고, 블록 위 <b>≡</b>를 끌어 순서를 바꿉니다.
+      </span>
+      <span style="flex:1;"></span>
+      <select id="newBlockKind" style="padding:5px;font-size:12.5px;">
+        {% for k, label in block_kinds.items() %}<option value="{{ k }}">{{ label }}</option>{% endfor %}
+      </select>
+      <button type="button" class="btn-sm secondary" onclick="blkAppend()">맨 끝에 넣기</button>
+      <button type="button" class="btn-sm" onclick="blkSave()">저장하고 다시 그리기</button>
+    </div>
+
+    <div id="pageEdit">{{ detail_edit|safe }}</div>
+
+    <form id="blockSaveForm" method="post" action="{{ url_for('edit_candidate_blocks') }}">
       <input type="hidden" name="keyword" value="{{ keyword }}">
       <input type="hidden" name="track" value="{{ track }}">
       <input type="hidden" name="goods_no" value="{{ goods_no }}">
-      <button type="submit" class="btn secondary">AI로 새 대표이미지 만들기</button>
+      <input type="hidden" name="blocks_json" id="blocksJson">
     </form>
-    {% else %}
-    <a class="btn secondary" target="_blank" rel="noopener" href="https://aistudio.google.com/">AI 이미지 도구 열기 (수동)</a>
+
+    {# 사진 고르기 — 블록의 사진 버튼을 누르면 아래에서 올라온다 #}
+    <div id="cutPicker">
+      <div class="row pick-head" style="align-items:center;margin-bottom:8px;">
+        <b style="font-size:13px;">사진 고르기</b>
+        <span class="muted" style="font-size:12px;margin-left:8px;">누르면 바로 바뀝니다</span>
+        <span style="flex:1;"></span>
+        <button type="button" class="btn-sm secondary" onclick="pickCut(-1)">사진 없이</button>
+        <button type="button" class="btn-sm secondary" onclick="closePicker()">닫기</button>
+      </div>
+      <div class="row" id="cutGrid" style="flex-wrap:wrap;gap:8px;">
+        {% for c in edit_cuts %}
+        <div class="pick">
+          <img src="{{ c.url }}" alt="" onclick="pickCut({{ c.index }})">
+          <div style="font-size:10.5px;text-align:center;margin-top:2px;line-height:1.25;">
+            {{ c.index }}{% if c.source == 'seller' %}·내 사진{% elif c.label %}·{{ c.label }}{% endif %}
+          </div>
+          {% if c.src_url %}
+          <button type="button" class="recut-btn"
+                  onclick="openRecut({{ c.index }}, '{{ c.src_url }}', {{ c.y0 }}, {{ c.y1 }})"
+                  style="all:unset;cursor:pointer;display:block;width:100%;text-align:center;
+                         font-size:10px;color:#2b6cb0;border:1px solid #cdd7e3;border-radius:4px;
+                         margin-top:2px;padding:1px 0;">범위 고치기</button>
+          {% endif %}
+        </div>
+        {% endfor %}
+      </div>
+
+      {# 컷이 잘못 잘렸을 때 — 원본에서 위아래를 끌어 범위를 다시 잡는다 #}
+      <div id="recutPane" hidden style="margin-top:12px;border-top:1px solid var(--line);padding-top:10px;">
+        <div class="row" style="align-items:center;gap:8px;margin-bottom:6px;flex-wrap:wrap;">
+          <b style="font-size:12.5px;">컷 <span id="recutIdx"></span> 범위 고치기</b>
+          <span class="muted" style="font-size:11.5px;">파란 선을 위아래로 끌어 원하는 만큼 잡으세요</span>
+          <span style="flex:1;"></span>
+          <button type="button" class="btn-sm secondary" onclick="recutNudge(-300)">위로 더</button>
+          <button type="button" class="btn-sm secondary" onclick="recutNudge(300)">아래로 더</button>
+          <button type="button" class="btn-sm" onclick="applyRecut()">이 범위로 자르기</button>
+          <button type="button" class="btn-sm secondary" onclick="closeRecut()">취소</button>
+        </div>
+        <div id="recutView" style="position:relative;overflow:hidden;background:#222;
+             border:1px solid var(--line);border-radius:5px;max-width:420px;">
+          <img id="recutImg" src="" alt="" style="width:100%;display:block;position:relative;">
+          <div id="recutShadeTop" style="position:absolute;left:0;right:0;top:0;background:rgba(0,0,0,.62);"></div>
+          <div id="recutShadeBot" style="position:absolute;left:0;right:0;bottom:0;background:rgba(0,0,0,.62);"></div>
+          <div id="recutHandleTop" style="position:absolute;left:0;right:0;height:14px;cursor:ns-resize;
+               background:#2b6cb0;opacity:.85;"></div>
+          <div id="recutHandleBot" style="position:absolute;left:0;right:0;height:14px;cursor:ns-resize;
+               background:#2b6cb0;opacity:.85;"></div>
+        </div>
+        <div class="muted" style="font-size:11.5px;margin-top:4px;">
+          원본 <span id="recutRange"></span>
+        </div>
+      </div>
+    </div>
+    {% if edit_facts %}
+    <p class="muted" style="font-size:12px;margin:8px 0 0;">
+      사진에서 읽어낸 사실: {{ edit_facts|join(' · ') }} — 이 범위 안에서 쓰면 허위 표시 걱정이 없습니다.
+    </p>
     {% endif %}
   </div>
-  <p class="muted" style="font-size:12px;margin:-2px 0 10px;">
-    "내용 다시 만들기"는 원본 설명에 있는 사실만 뽑아 다른 배치로 새로 짭니다 — 없는 특징을 지어내지 않습니다.
-    {% if has_gemini_key %}"AI로 새 대표이미지 만들기"는 원본 사진을 참고해 새 이미지를 생성합니다(구도·색감만 참고, 상품 자체는 바꾸지 않음).
-    {% else %}대표이미지를 새로 그리려면 위 링크에서 <a href="{{ raw_image_url }}" target="_blank" rel="noopener">원본 이미지</a>를 내려받아 업로드하고 생성한 뒤, 결과 이미지를 대표이미지로 등록하고 싶으면 알려주세요. 자동 연결하려면 .env에 GEMINI_API_KEY 추가가 필요합니다.{% endif %}
-  </p>
-  {% if generated_image_url %}
-  <div class="row" style="align-items:center;margin-bottom:10px;">
-    <img src="{{ generated_image_url }}" style="width:120px;height:120px;object-fit:cover;border-radius:8px;border:1px solid var(--line);">
-    <span class="badge-ok">이 이미지로 대표이미지 교체 예정</span>
-  </div>
-  <input type="hidden" form="register-form" name="representative_image_override" value="{{ generated_image_url }}">
   {% endif %}
-  {% endif %}
-  <div class="row" style="gap:6px;margin-bottom:6px;">
-    <button type="button" id="detailTabWysiwyg" class="btn-sm" onclick="showDetailTab('wysiwyg')">위지윅 편집</button>
-    <button type="button" id="detailTabHtml" class="btn-sm secondary" onclick="showDetailTab('html')">HTML 직접 편집</button>
-  </div>
-  <p class="muted" style="font-size:12px;margin:0 0 10px;">
-    위지윅 화면에서 저장한 내용은 일부 레이아웃 스타일(이미지 폭 지정, 배경색 배너 등)이 단순화될 수 있습니다 — 그대로 유지하려면 "HTML 직접 편집"에서 확인·수정하세요.
-  </p>
 
-  <style>
-    /* "상품명 최적화" 패널 전체 높이(약 218px) × 3 = 654px를 기본값으로 — 입력칸 한
-       줄(39px) 기준이 아니라 그 위 패널 전체를 기준으로 잡은 값이다. 상세페이지가
-       그대로 펼쳐지면 모달이 수천 px로 늘어나 아래 패널들이 다 밀려버린다(2026-09).
-       하단 모서리를 끌어서 원하는 만큼 늘리고 줄일 수 있다(브라우저 기본 리사이즈 핸들). */
-    #detailWysiwygWrap .ck-editor__editable {
-      height: 654px;
-      min-height: 200px;
-      overflow-y: auto;
-      resize: vertical;
-    }
-  </style>
-  <div id="detailWysiwygWrap">
-    <div id="ckeditorMount">{{ detail_content|safe }}</div>
+  {# 기본 — 지금까지 나가던 형태. 비교용이라 읽기만 한다 #}
+  <div id="vBasic" {% if detail_ai %}hidden{% endif %}>
+    <iframe srcdoc="{{ detail_basic }}"
+            style="width:100%;height:654px;border:1px solid var(--line);border-radius:6px;background:#fff;"></iframe>
+    <p class="muted" style="font-size:12px;margin:6px 0 0;">
+      도매 원본을 그대로 붙인 형태입니다. 고치려면 AI 구성으로 바꾸세요.
+    </p>
   </div>
-  <div id="detailHtmlWrap" hidden>
-    <div style="display:flex;gap:12px;flex-wrap:wrap;">
-      <textarea id="detailEditor" form="register-form" name="detail_override" spellcheck="false"
-                oninput="document.getElementById('detailPreviewFrame').srcdoc = this.value"
-                style="flex:1 1 320px;min-width:280px;height:400px;font-family:var(--mono);font-size:12px;
-                       border:1px solid var(--line);border-radius:6px;padding:10px;resize:vertical;">{{ detail_content }}</textarea>
-      <iframe id="detailPreviewFrame" srcdoc="{{ detail_content }}"
-              style="flex:1 1 320px;min-width:280px;height:400px;border:1px solid var(--line);border-radius:6px;background:#fff;"></iframe>
+
+  <input type="hidden" form="register-form" name="detail_generated" value="{{ detail_ai or detail_basic }}">
+  <input type="hidden" form="register-form" name="use_basic" id="useBasic" value="">
+  {% if regenerated %}<input type="hidden" form="register-form" name="regen" value="1">{% endif %}
+
+  {# 내 사진·메모 — 같은 도매 상품을 파는 셀러가 전부 같은 사진을 쓰기 때문에, 직접 찍은
+     사진 한 장이 경쟁자와 겹치지 않는 유일한 자산이 된다. 그래서 첫 화면에 먼저 쓴다. #}
+  <details style="border:1px solid var(--line);border-radius:8px;padding:10px 12px;margin-top:16px;">
+    <summary style="cursor:pointer;font-size:13px;font-weight:700;">
+      내 사진·메모 넣기{% if seller_photos %} <span class="badge-ok">{{ seller_photos|length }}장 넣음</span>{% endif %}
+    </summary>
+    <form method="post" action="{{ url_for('upload_candidate_images') }}" enctype="multipart/form-data"
+          style="margin-top:10px;">
+      <input type="hidden" name="keyword" value="{{ keyword }}">
+      <input type="hidden" name="track" value="{{ track }}">
+      <input type="hidden" name="goods_no" value="{{ goods_no }}">
+      {% if regenerated %}<input type="hidden" name="regen" value="1">{% endif %}
+      <p class="muted" style="font-size:12px;margin:0 0 8px;">
+        직접 찍은 사진은 상세페이지 첫 화면에 먼저 들어갑니다. 메모에 적은 내용은 문구를 쓸 때
+        사실로 쓰고, 적은 범위 밖으로 지어내지 않습니다.
+      </p>
+      <input type="file" name="photos" accept="image/*" multiple style="font-size:13px;">
+      <textarea name="seller_note" rows="2" placeholder="예: 실물 받아보니 손잡이가 짧습니다. 색은 사진보다 진합니다."
+                style="width:100%;margin-top:8px;font-size:13px;padding:8px;border:1px solid var(--line);
+                       border-radius:6px;font-family:inherit;">{{ seller_note }}</textarea>
+      <button type="submit" class="btn-sm" style="margin-top:8px;">올리고 다시 만들기</button>
+    </form>
+    {% if seller_photos %}
+    <div class="row" style="flex-wrap:wrap;gap:10px;margin-top:12px;align-items:flex-start;">
+      {% for ph in seller_photos %}
+      <div style="position:relative;line-height:0;">
+        <img src="{{ ph.url }}" style="width:72px;height:72px;object-fit:cover;border-radius:6px;
+                                       border:1px solid var(--line);">
+        <form method="post" action="{{ url_for('drop_candidate_image') }}"
+              style="position:absolute;top:-7px;right:-7px;">
+          <input type="hidden" name="keyword" value="{{ keyword }}">
+          <input type="hidden" name="track" value="{{ track }}">
+          <input type="hidden" name="goods_no" value="{{ goods_no }}">
+          <input type="hidden" name="filename" value="{{ ph.filename }}">
+          {% if regenerated %}<input type="hidden" name="regen" value="1">{% endif %}
+          <button type="submit" title="이 사진 빼기"
+                  style="width:20px;height:20px;border-radius:50%;border:1px solid var(--line);
+                         background:#fff;cursor:pointer;font-size:12px;line-height:1;padding:0;">×</button>
+        </form>
+      </div>
+      {% endfor %}
     </div>
-  </div>
-  <input type="hidden" form="register-form" name="detail_generated" value="{{ detail_content }}">
+    {% endif %}
+  </details>
+
 </div>
 
-<script src="https://cdn.jsdelivr.net/npm/@ckeditor/ckeditor5-build-classic@44.3.0/build/ckeditor.js"></script>
 <script>
 (function () {
-  var ckInstance = null;
-  var mount = document.getElementById('ckeditorMount');
-  ClassicEditor.create(mount, { licenseKey: 'GPL' }).then(function (editor) {
-    ckInstance = editor;
-    // 실제 등록에 쓰이는 값은 항상 textarea(#detailEditor) — 위지윅에서 실제로 뭔가
-    // 바뀔 때만(초기 로드는 change:data가 안 뜬다) 그 값을 그대로 밀어넣는다. 무조건
-    // 동기화하면 위지윅 탭을 열어보기만 해도(편집 안 해도) CKEditor가 원본 HTML의
-    // 레이아웃 스타일을 자기 모델에 없는 걸로 보고 조용히 지워버릴 수 있다(2026-09).
-    editor.model.document.on('change:data', function () {
-      var html = editor.getData();
-      document.getElementById('detailEditor').value = html;
-      var frame = document.getElementById('detailPreviewFrame');
-      if (frame) frame.srcdoc = html;
-    });
-  }).catch(function (err) { console.error('위지윅 에디터 로드 실패:', err); });
+  // ── 페이지 위 편집 ─────────────────────────────────────────
+  // 상세페이지를 그대로 보여주면서 그 위에서 고친다. 위지윅 편집기는 이 종류의
+  // HTML(인라인 스타일·flex 배치)을 자기 모델에 없는 것으로 보고 열자마자 지워버려서
+  // 쓸 수 없었다(2026-09). 그래서 블록 단위로 직접 다룬다.
+  var KIND_LABEL = {{ block_kinds|tojson }};
+  var NEEDS_CUT = ['hero', 'point', 'image', 'spec'];
+  var NEEDS_TONE = ['keys', 'point', 'title', 'highlight', 'spec'];
+  var picking = null;   // 사진을 고르는 중인 블록
 
-  window.showDetailTab = function (which) {
-    var wysiwygBtn = document.getElementById('detailTabWysiwyg');
-    var htmlBtn = document.getElementById('detailTabHtml');
-    var wysiwygWrap = document.getElementById('detailWysiwygWrap');
-    var htmlWrap = document.getElementById('detailHtmlWrap');
-    if (which === 'html') {
-      wysiwygWrap.hidden = true; htmlWrap.hidden = false;
-      wysiwygBtn.className = 'btn-sm secondary'; htmlBtn.className = 'btn-sm';
-    } else {
-      // HTML 탭에서 직접 고친 내용이 있으면 그걸 위지윅에 다시 반영 — textarea가 항상
-      // 최신 진실이므로 여기서 불러오기만 하면 된다.
-      if (ckInstance) ckInstance.setData(document.getElementById('detailEditor').value);
-      wysiwygWrap.hidden = false; htmlWrap.hidden = true;
-      wysiwygBtn.className = 'btn-sm'; htmlBtn.className = 'btn-sm secondary';
+  // 블록들은 상세페이지 최상위 div 안에 들어 있다 — 새 블록을 붙이거나 순서를 바꿀 때
+  // #pageEdit이 아니라 그 div를 부모로 잡아야 한다.
+  function blocksRoot() {
+    var root = document.getElementById('pageEdit');
+    if (!root) return null;
+    var first = root.querySelector('[data-blk]');
+    return first ? first.parentNode : root;
+  }
+
+  function setupBlock(el) {
+    if (el.dataset.ready) return;
+    el.dataset.ready = '1';
+    var kind = el.dataset.kind;
+    var bar = document.createElement('div');
+    bar.className = 'blk-bar';
+    var html = '<span class="h" draggable="true" title="끌어서 순서 바꾸기">≡</span>'
+             + '<span class="name">' + (KIND_LABEL[kind] || kind) + '</span>'
+             + '<button type="button" data-a="up" title="위로">↑</button>'
+             + '<button type="button" data-a="down" title="아래로">↓</button>';
+    if (NEEDS_CUT.indexOf(kind) !== -1) html += '<button type="button" data-a="pic" title="사진 바꾸기">사진</button>';
+    if (NEEDS_TONE.indexOf(kind) !== -1) html += '<button type="button" data-a="tone" title="배경 바꾸기">배경</button>';
+    html += '<button type="button" data-a="del" title="이 블록 빼기">✕</button>';
+    bar.innerHTML = html;
+    el.appendChild(bar);
+
+    el.querySelectorAll('[data-f]').forEach(function (f) {
+      f.contentEditable = 'true';
+      f.spellcheck = false;
+    });
+
+    var handle = bar.querySelector('.h');
+    handle.addEventListener('dragstart', function (e) {
+      dragging = el; el.classList.add('drag');
+      e.dataTransfer.effectAllowed = 'move';
+      e.dataTransfer.setData('text/plain', el.dataset.idx || '');
+    });
+    handle.addEventListener('dragend', function () {
+      if (dragging) dragging.classList.remove('drag');
+      dragging = null;
+    });
+
+    bar.addEventListener('click', function (e) {
+      var btn = e.target.closest('button');
+      if (!btn) return;
+      e.preventDefault();
+      e.stopPropagation();
+      var a = btn.dataset.a;
+      if (a === 'up' || a === 'down') {
+        var sib = (a === 'up') ? el.previousElementSibling : el.nextElementSibling;
+        while (sib && !sib.hasAttribute('data-blk')) sib = (a === 'up') ? sib.previousElementSibling : sib.nextElementSibling;
+        if (!sib) return;
+        if (a === 'up') el.parentNode.insertBefore(el, sib);
+        else el.parentNode.insertBefore(sib, el);
+        redrawInserts();
+      } else if (a === 'del') {
+        if (blocksRoot().querySelectorAll('[data-blk]').length <= 1) { alert('블록이 하나는 남아야 합니다.'); return; }
+        el.remove(); redrawInserts();
+      } else if (a === 'pic') {
+        picking = el;
+        blocksRoot().querySelectorAll('[data-blk]').forEach(function (n) { n.classList.remove('sel'); });
+        el.classList.add('sel');
+        document.getElementById('cutPicker').classList.add('on');
+      } else if (a === 'tone') {
+        var order = ['light', 'dark', 'deep'];
+        var now = order.indexOf(el.dataset.tone || 'light');
+        el.dataset.tone = order[(now + 1) % order.length];
+        btn.textContent = ({light: '밝게', dark: '상품색', deep: '진하게'})[el.dataset.tone];
+        btn.style.background = 'rgba(255,255,255,.28)';
+      }
+    });
+  }
+
+  var dragging = null;
+
+  function setupDrop() {
+    var root = document.getElementById('pageEdit');
+    root.addEventListener('dragover', function (e) {
+      if (!dragging) return;
+      e.preventDefault();
+      var over = e.target.closest('[data-blk]');
+      if (!over || over === dragging) return;
+      var r = over.getBoundingClientRect();
+      var after = (e.clientY - r.top) > r.height / 2;
+      over.parentNode.insertBefore(dragging, after ? over.nextSibling : over);
+    });
+    root.addEventListener('drop', function (e) { e.preventDefault(); redrawInserts(); });
+  }
+
+  // 블록 사이 삽입 버튼 — 원하는 자리에 제목·강조·사진을 끼워 넣는다
+  function redrawInserts() {
+    var root = blocksRoot();
+    root.querySelectorAll('.blk-ins').forEach(function (n) { n.remove(); });
+    var blks = [].slice.call(root.querySelectorAll('[data-blk]'));
+    blks.forEach(function (b) {
+      var ins = document.createElement('div');
+      ins.className = 'blk-ins';
+      ins.innerHTML = '<button type="button">+ 여기에 넣기</button>';
+      ins.querySelector('button').addEventListener('click', function () { blkInsert(b); });
+      b.parentNode.insertBefore(ins, b);
+    });
+  }
+
+  function makeBlock(kind) {
+    var el = document.createElement('div');
+    el.setAttribute('data-blk', '');
+    el.dataset.kind = kind;
+    el.dataset.tone = (kind === 'keys' || kind === 'spec') ? 'deep' : 'light';
+    el.dataset.cut = '-1';
+    el.dataset.items = '';
+    el.style.position = 'relative';
+    el.style.padding = '26px 22px';
+    el.style.background = '#f3f4f6';
+    el.style.textAlign = 'center';
+    var needsText = ['hero', 'lead', 'title', 'highlight', 'point', 'image', 'usecase', 'choice'];
+    var inner = '<div style="font-size:11px;color:#8b9099;letter-spacing:.18em;font-weight:800;">'
+              + (KIND_LABEL[kind] || kind) + '</div>';
+    if (needsText.indexOf(kind) !== -1) {
+      inner += '<div style="font-size:19px;font-weight:800;margin-top:8px;"><span data-f="title">'
+             + '여기에 제목을 쓰세요</span></div>';
     }
+    if (['hero', 'lead', 'highlight', 'point'].indexOf(kind) !== -1) {
+      inner += '<div style="font-size:14px;color:#555;margin-top:6px;"><span data-f="body">'
+             + '설명을 쓰세요</span></div>';
+    }
+    if (['keys', 'usecase', 'choice'].indexOf(kind) !== -1) {
+      inner += '<div style="font-size:13px;color:#555;margin-top:6px;">'
+             + '<span data-f="item:0:0">첫 항목</span> · <span data-f="item:0:1">설명</span></div>'
+             + '<div style="font-size:13px;color:#555;"><span data-f="item:1:0">둘째 항목</span>'
+             + ' · <span data-f="item:1:1">설명</span></div>';
+    }
+    inner += '<div style="font-size:11.5px;color:#9aa0a6;margin-top:8px;">저장하면 이 자리에 실제 모양으로 나옵니다</div>';
+    el.innerHTML = inner;
+    setupBlock(el);
+    return el;
+  }
+
+  function blkInsert(before) {
+    var kind = document.getElementById('newBlockKind').value;
+    before.parentNode.insertBefore(makeBlock(kind), before);
+    redrawInserts();
+  }
+
+  window.blkAppend = function () {
+    var kind = document.getElementById('newBlockKind').value;
+    blocksRoot().appendChild(makeBlock(kind));
+    redrawInserts();
+  };
+
+  window.pickCut = function (idx) {
+    if (!picking) return;
+    picking.dataset.cut = String(idx);
+    var img = picking.querySelector('img');
+    if (idx < 0) {
+      if (img) img.style.display = 'none';
+    } else {
+      var src = null;
+      document.querySelectorAll('#cutPicker .pick').forEach(function (p) {
+        if (p.getAttribute('onclick').indexOf('(' + idx + ')') !== -1) src = p.querySelector('img').src;
+      });
+      if (img && src) { img.src = src; img.style.display = 'block'; }
+      else if (src) { picking.dataset.needRedraw = '1'; }
+    }
+    closePicker();
+  };
+
+  window.closePicker = function () {
+    document.getElementById('cutPicker').classList.remove('on');
+    if (picking) picking.classList.remove('sel');
+    picking = null;
+  };
+
+  function collectBlocks() {
+    return [].slice.call(blocksRoot().querySelectorAll('[data-blk]')).map(function (el) {
+      var b = {kind: el.dataset.kind, title: '', body: '', items: [],
+               cut: parseInt(el.dataset.cut || '-1', 10), tone: el.dataset.tone || 'light'};
+      if (isNaN(b.cut)) b.cut = -1;
+      var rows = {};
+      el.querySelectorAll('[data-f]').forEach(function (f) {
+        var key = f.dataset.f, val = (f.innerText || '').replace(/ /g, ' ').trim();
+        if (key === 'title') b.title = val;
+        else if (key === 'body') b.body = val;
+        else if (key.indexOf('item:') === 0) {
+          var parts = key.split(':');
+          var r = parseInt(parts[1], 10), c = parseInt(parts[2], 10);
+          rows[r] = rows[r] || [];
+          rows[r][c] = val;
+        }
+      });
+      // 편집 칸으로 안 드러낸 목록(색상 그리드 등)은 원래 값을 그대로 지킨다
+      var keys = Object.keys(rows);
+      if (keys.length) {
+        keys.sort(function (x, y) { return x - y; }).forEach(function (k) {
+          var row = (rows[k] || []).map(function (v) { return v || ''; });
+          if (row.some(function (v) { return v.trim(); })) b.items.push(row);
+        });
+      } else if (el.dataset.items) {
+        el.dataset.items.split('\n').forEach(function (line) {
+          if (line.trim()) b.items.push(line.split('|').map(function (v) { return v.trim(); }));
+        });
+      }
+      return b;
+    });
+  }
+
+  window.blkSave = function () {
+    document.getElementById('blocksJson').value = JSON.stringify(collectBlocks());
+    document.getElementById('blockSaveForm').submit();
+  };
+
+  if (document.getElementById('pageEdit')) {
+    document.getElementById('pageEdit').querySelectorAll('[data-blk]').forEach(setupBlock);
+    setupDrop();
+    redrawInserts();
+  }
+
+  // ── 컷 범위 고치기 ────────────────────────────────────────
+  // 여백 기준 분할이 아이콘 묶음 한가운데를 자르는 일이 있다(실측: 우산 기능 아이콘
+  // 6개 중 3개에서 끊김). 원본에서 위아래를 끌어 범위를 다시 잡는다.
+  var RC = null;   // {index, y0, y1, natH, pad, scale}
+
+  window.openRecut = function (index, srcUrl, y0, y1) {
+    var pane = document.getElementById('recutPane');
+    var img = document.getElementById('recutImg');
+    RC = {index: index, y0: y0, y1: y1, pad: 500, natH: 0, scale: 1};
+    document.getElementById('recutIdx').textContent = index;
+    pane.hidden = false;
+    document.getElementById('cutPicker').classList.add('recutting');
+    img.onload = function () {
+      RC.natH = img.naturalHeight;
+      drawRecut();
+    };
+    img.src = srcUrl;
+    if (img.complete && img.naturalHeight) { RC.natH = img.naturalHeight; drawRecut(); }
+    pane.scrollIntoView({block: 'nearest'});
+  };
+
+  function drawRecut() {
+    if (!RC || !RC.natH) return;
+    var view = document.getElementById('recutView');
+    // 패널을 막 펼친 직후에는 아직 폭이 잡히지 않아 0으로 읽힌다 — 한 프레임 기다린다.
+    if (!view.clientWidth) { requestAnimationFrame(drawRecut); return; }
+    var img = document.getElementById('recutImg');
+    var top = Math.max(0, RC.y0 - RC.pad);
+    var bot = Math.min(RC.natH, RC.y1 + RC.pad);
+    RC.scale = view.clientWidth / img.naturalWidth;
+    // 보여줄 구간이 너무 길면 화면에 안 들어오므로 세로로 한 번 더 줄인다
+    var wantH = (bot - top) * RC.scale;
+    var maxH = 460;
+    var zoom = wantH > maxH ? maxH / wantH : 1;
+    var eff = RC.scale * zoom;
+    RC.eff = eff; RC.top = top;
+    img.style.width = (100 * zoom) + '%';
+    img.style.marginTop = (-top * eff) + 'px';
+    view.style.height = ((bot - top) * eff) + 'px';
+    var t = (RC.y0 - top) * eff, b = (bot - RC.y1) * eff;
+    document.getElementById('recutShadeTop').style.height = t + 'px';
+    document.getElementById('recutShadeBot').style.height = b + 'px';
+    document.getElementById('recutHandleTop').style.top = Math.max(0, t - 7) + 'px';
+    document.getElementById('recutHandleBot').style.bottom = Math.max(0, b - 7) + 'px';
+    document.getElementById('recutRange').textContent =
+      Math.round(RC.y0) + ' ~ ' + Math.round(RC.y1) + 'px (높이 ' + Math.round(RC.y1 - RC.y0) + ')';
+  }
+
+  window.recutNudge = function (dy) {
+    if (!RC) return;
+    if (dy < 0) RC.y0 = Math.max(0, RC.y0 + dy);
+    else RC.y1 = Math.min(RC.natH, RC.y1 + dy);
+    drawRecut();
+  };
+
+  function bindHandle(id, which) {
+    var el = document.getElementById(id);
+    if (!el) return;
+    el.addEventListener('mousedown', function (e) {
+      e.preventDefault();
+      var startY = e.clientY;
+      var base = (which === 'top') ? RC.y0 : RC.y1;
+      function move(ev) {
+        var d = (ev.clientY - startY) / (RC.eff || 1);
+        if (which === 'top') RC.y0 = Math.max(0, Math.min(RC.y1 - 20, base + d));
+        else RC.y1 = Math.min(RC.natH, Math.max(RC.y0 + 20, base + d));
+        drawRecut();
+      }
+      function up() {
+        document.removeEventListener('mousemove', move);
+        document.removeEventListener('mouseup', up);
+      }
+      document.addEventListener('mousemove', move);
+      document.addEventListener('mouseup', up);
+    });
+  }
+
+  window.applyRecut = function () {
+    if (!RC) return;
+    var body = new URLSearchParams({
+      goods_no: '{{ goods_no }}', index: String(RC.index),
+      y0: String(Math.round(RC.y0)), y1: String(Math.round(RC.y1))
+    });
+    fetch('{{ url_for("recut_candidate_cut") }}', {
+      method: 'POST', headers: {'Content-Type': 'application/x-www-form-urlencoded'}, body: body
+    }).then(function (r) { return r.json(); }).then(function (d) {
+      if (!d.ok) { alert('범위를 고치지 못했습니다: ' + (d.error || '')); return; }
+      var bust = d.url + '?v=' + Date.now();
+      // 컷 고르기 썸네일과 페이지 안의 사진을 새 범위로 갈아 끼운다
+      document.querySelectorAll('#cutPicker .pick').forEach(function (p) {
+        var b = p.querySelector('img');
+        if (b && b.getAttribute('onclick') && b.getAttribute('onclick').indexOf('(' + d.index + ')') !== -1) b.src = bust;
+      });
+      document.querySelectorAll('#pageEdit [data-blk]').forEach(function (el) {
+        if (String(el.dataset.cut) === String(d.index)) {
+          var im = el.querySelector('img');
+          if (im) im.src = bust;
+        }
+      });
+      closeRecut();
+    }).catch(function (e) { alert('범위 고치기 실패: ' + e); });
+  };
+
+  window.closeRecut = function () {
+    document.getElementById('recutPane').hidden = true;
+    document.getElementById('cutPicker').classList.remove('recutting');
+    RC = null;
+  };
+
+  bindHandle('recutHandleTop', 'top');
+  bindHandle('recutHandleBot', 'bot');
+
+  window.showVersion = function (v) {
+    var ai = document.getElementById('vAi');
+    var basic = document.getElementById('vBasic');
+    if (ai) ai.hidden = (v !== 'ai');
+    if (basic) basic.hidden = (v !== 'basic');
+    document.getElementById('useBasic').value = (v === 'basic') ? '1' : '';
+    var a = document.getElementById('vTabAi'), b = document.getElementById('vTabBasic');
+    if (a) a.className = (v === 'ai') ? 'btn-sm' : 'btn-sm secondary';
+    if (b) b.className = (v === 'basic') ? 'btn-sm' : 'btn-sm secondary';
   };
 })();
 </script>

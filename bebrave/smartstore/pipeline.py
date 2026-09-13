@@ -38,6 +38,106 @@ _MIN_MARGIN = float(os.environ.get("MIN_MARGIN", "0.15"))
 from ..config import MAX_LISTING_STOCK, MIN_ABS_PROFIT
 
 
+def _build_cut_detail(product, token: str, dry_run: bool, seller_note: str = "",
+                      cut_url=None, regen: bool = False):
+    """도매가 준 초장문 상세 이미지를 컷으로 쪼개 상세페이지를 다시 짠다(2026-09).
+
+    반환 (html, 이미지URL목록) 또는 None. None이면 호출부가 기존 방식으로 떨어진다.
+
+    이미지 목록의 맨 앞이 대표이미지가 된다 — 페이지 첫 화면에 쓰는 컷과 같은 것이라
+    목록 화면과 상세페이지가 어긋나지 않는다.
+
+    등록(dry_run=False)에서는 쓸 컷만 네이버로 올리고 그 주소로 HTML을 짠다. 로컬 파일
+    주소가 detailContent에 그대로 들어가면 라이브 페이지의 사진이 전부 깨지므로,
+    업로드에 실패한 컷은 plan에서 빼고 그 구간을 비운다.
+    """
+    from .cuts import build_cuts
+    from .cut_reader import read_cuts
+    from .layout import (blocks_used_cuts, draft_blocks, load_blocks, render_blocks,
+                         save_blocks, write_copy)
+
+    try:
+        cs = build_cuts(product.goods_no, [u for u in product.images if u])
+        if not cs.cuts:
+            return None
+        reading = read_cuts(cs, product.name, product.category)
+        # regen=True면 저장된 문구·블록을 버리고 새로 짠다 — 안 그러면 "다시 만들기"를
+        # 눌러도, 메모를 고쳐도 같은 페이지가 계속 나온다(2026-09 발견).
+        copy = write_copy(product, reading.facts, seller_note, force=regen, reading=reading)
+        blocks = None if regen else load_blocks(product.goods_no)
+        if not blocks:
+            blocks = draft_blocks(cs, reading, copy)
+            save_blocks(product.goods_no, blocks)   # 사람이 손볼 대상이 되는 초안
+        needed = blocks_used_cuts(blocks)
+        if not needed:
+            return None
+        by_index = {c.index: c for c in cs.cuts}
+
+        if dry_run:
+            # 미리보기 — 로컬에서만 보이는 주소. 등록(dry_run=False)은 이 분기를 타지 않는다.
+            # cut_url이 없는 CLI dry-run에서는 파일 경로를 넣어 어떤 컷이 쓰였는지 보이게 한다.
+            url_of = ((lambda i: cut_url(product.goods_no, by_index[i].filename)) if cut_url
+                      else (lambda i: str(cs.path_of(by_index[i]))))
+            return render_blocks(product, cs, blocks, url_of), []
+
+        from .images import upload_images
+        uploaded = upload_images([str(cs.path_of(by_index[i])) for i in needed if i in by_index], token)
+        ok = {i: u for i, u in zip([i for i in needed if i in by_index], uploaded) if u}
+        if not ok:
+            return None
+        if len(ok) < len(needed):
+            print(f"  [경고] 컷 {len(needed) - len(ok)}장을 못 올려 그 자리를 비웁니다")
+        # 못 올린 컷은 블록에서 사진만 뺀다 — 글은 그대로 남는다.
+        blocks = [b for b in blocks
+                  if not (b.kind == "image" and b.cut not in ok)]
+        for b in blocks:
+            if b.kind != "choice" and b.cut is not None and b.cut >= 0 and b.cut not in ok:
+                b.cut = -1
+            if b.kind == "choice":
+                b.items = [r for r in b.items if str(r[0]).isdigit() and int(r[0]) in ok]
+        html = render_blocks(product, cs, blocks, lambda i: ok.get(i, ""))
+        return html, [ok[i] for i in needed if i in ok]
+    except Exception as e:
+        print(f"  [경고] 컷 기반 상세페이지 생성 실패 — 기존 방식으로 대체합니다 ({e})")
+        return None
+
+
+_CUT_URL_RE = re.compile(r'["\']([^"\']*/cut/([^/"\']+)/([^/"\']+\.(?:jpg|jpeg|png)))["\']', re.I)
+
+
+def _swap_cut_urls(html: str, token: str):
+    """미리보기에서 만든 로컬 컷 주소를 네이버 주소로 바꾼다. 반환 (html, 올라간URL목록).
+
+    이걸 안 하면 상세페이지에 `/cut/...` 같은 우리 컴퓨터 주소가 그대로 들어가 라이브
+    페이지의 사진이 전부 깨진다. 사람이 미리보기에서 한 글자라도 고치면 그 HTML이
+    통째로 등록에 실려가기 때문에 반드시 여기를 거쳐야 한다(2026-09).
+
+    올리지 못한 컷은 주소를 남기지 않고 <img> 태그째 뺀다 — 깨진 사진 자리를 남기는
+    것보다 낫고, 우리 로컬 주소가 구매자 화면에 노출되지도 않는다.
+    """
+    from .cuts import CUTS_DIR
+
+    found = []
+    for m in _CUT_URL_RE.finditer(html):
+        if all(m.group(1) != f[0] for f in found):
+            found.append((m.group(1), m.group(2), m.group(3)))
+    if not found:
+        return html, []
+
+    from .images import upload_images
+    uploaded = upload_images([str(CUTS_DIR / g / f) for _, g, f in found], token)
+    ok = []
+    for (orig, _g, _f), up in zip(found, uploaded):
+        if up:
+            html = html.replace(orig, up)
+            ok.append(up)
+        else:
+            html = re.sub(r'<img[^>]+src=["\']' + re.escape(orig) + r'["\'][^>]*/?>', "", html)
+    if len(ok) < len(found):
+        print(f"  [경고] 컷 {len(found) - len(ok)}장을 못 올려 상세페이지에서 뺐습니다")
+    return html, ok
+
+
 def run(
     keyword: str = "",
     supply_id: str = "",
@@ -54,6 +154,9 @@ def run(
     representative_image_override: str = "",
     field_overrides: Optional[dict] = None,
     force: bool = False,
+    seller_note: str = "",
+    cut_url=None,
+    skip_cuts: bool = False,
 ) -> List[StoreProduct]:
     """
     전체 자동 등록 파이프라인.
@@ -315,8 +418,19 @@ def run(
                 u for u in domemae_p.images if u != representative_image_override
             ]
 
+        # 컷 기반 상세페이지를 먼저 시도한다 — 도매가 준 초장문 이미지를 통째로 붙이는 대신
+        # 컷으로 쪼개 쓸 것만 고른다. 성공하면 그 컷들만 네이버로 올라가므로 아래의 원본
+        # 일괄 업로드 경로를 타지 않는다(공급사 자료·B2B 안내가 걸러지는 것도 여기서).
+        cut_detail, cut_images = "", []
+        if not detail_override and not skip_cuts:
+            built = _build_cut_detail(domemae_p, token, dry_run, seller_note, cut_url)
+            if built:
+                cut_detail, cut_images = built
+                if cut_images:
+                    print(f"\n[3.5] 컷 {len(cut_images)}장으로 상세페이지 재구성")
+
         url_map = {}
-        if not dry_run:
+        if not dry_run and not cut_images:
             from .images import upload_images
             originals = [u for u in domemae_p.images if u][:10]
             # upload_images()는 원본과 같은 길이로 반환하고 실패분을 None으로 채운다
@@ -357,7 +471,18 @@ def run(
             # 해줘야, 편집한 내용에 남아있는 도매매 주소도 네이버 주소로 바뀐다(2026-09).
             for old_url, new_url in url_map.items():
                 detail_override = detail_override.replace(old_url, new_url)
+            # 미리보기에서 만든 컷 주소는 우리 컴퓨터에서만 열린다 — 네이버로 올리고
+            # 주소를 바꿔 끼우지 않으면 라이브 상세페이지 사진이 전부 깨진다.
+            if not dry_run:
+                detail_override, swapped = _swap_cut_urls(detail_override, token)
+                if swapped and not cut_images:
+                    # 상세페이지에 쓴 컷을 대표·추가 이미지로도 쓴다. (Step 3.5에서 올린
+                    # 도매 원본은 이 경우 안 쓰이지만, 컷이 하나도 안 올라갔을 때를 위한
+                    # 보험이라 그대로 둔다.)
+                    cut_images = swapped
             content["detail_content"] = detail_override
+        elif cut_detail:
+            content["detail_content"] = cut_detail
         print(f"  상품명: {content['name']}")
 
         # ── Step 5: StoreProduct 구성 ─────────────────────────────────────
@@ -367,10 +492,11 @@ def run(
             sale_price=sale_price,
             stock_quantity=min(domemae_p.stock, MAX_LISTING_STOCK),
             detail_content=content["detail_content"],
-            representative_image=domemae_p.main_image,
-            # 네이버는 대표 1장 + 추가 9장까지 받는데 3장만 올리고 있었다(2026-09) —
-            # upload_images()도 이미 최대 10장(images[:10])을 처리하도록 돼 있어 그대로 씀.
-            optional_images=domemae_p.images[1:10],
+            # 컷으로 재구성했으면 상세페이지 첫 화면에 쓴 컷이 그대로 대표이미지가 된다 —
+            # 목록에서 본 사진과 페이지 첫 장면이 어긋나지 않는다.
+            representative_image=(cut_images[0] if cut_images else domemae_p.main_image),
+            # 네이버는 대표 1장 + 추가 9장까지 받는데 3장만 올리고 있었다(2026-09).
+            optional_images=(cut_images[1:10] if cut_images else domemae_p.images[1:10]),
             supply_price=domemae_p.supply_price,
             margin_rate=margin.margin_rate,
             domemae_goods_no=domemae_p.goods_no,

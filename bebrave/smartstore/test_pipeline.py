@@ -63,10 +63,41 @@ def test_falls_back_when_live_api_fails():
         product_status.fetch_product_statuses = real
 
 
+def test_cut_urls_never_reach_naver():
+    """미리보기에서 만든 로컬 컷 주소가 상세페이지에 남아 나가면 구매자 화면의 사진이
+    전부 깨진다 — 사람이 미리보기를 한 글자만 고쳐도 그 HTML이 통째로 등록에 실리므로
+    반드시 치환을 거쳐야 한다(2026-09)."""
+    from . import images as images_mod
+
+    html = ('<div><img src="/cut/11013443/000.jpg"/>'
+            '<img src="http://127.0.0.1:5050/cut/11013443/001.jpg"/>'
+            '<img src="/cut/11013443/002.jpg"/></div>')
+
+    real = images_mod.upload_images
+    # 가운데 한 장은 업로드 실패 — 그 자리는 <img>째 빠져야 한다
+    images_mod.upload_images = lambda paths, token, square_first=True: [
+        "https://shop-phinf.pstatic.net/a.jpg", None, "https://shop-phinf.pstatic.net/c.jpg"]
+    try:
+        out, ok = pipeline._swap_cut_urls(html, token="fake")
+    finally:
+        images_mod.upload_images = real
+
+    assert "/cut/" not in out, f"로컬 컷 주소가 상세페이지에 남음: {out}"
+    assert "127.0.0.1" not in out, "로컬 서버 주소가 상세페이지에 남음"
+    assert out.count("<img") == 2, f"업로드 못 한 컷의 빈 사진 자리가 남음: {out}"
+    assert ok == ["https://shop-phinf.pstatic.net/a.jpg", "https://shop-phinf.pstatic.net/c.jpg"]
+
+    # 컷 주소가 없는 상세페이지는 건드리지 않는다
+    plain = '<div><img src="https://shop-phinf.pstatic.net/x.jpg"/></div>'
+    same, none = pipeline._swap_cut_urls(plain, token="fake")
+    assert same == plain and none == []
+
+
 def test():
     test_merges_live_and_local()
     test_falls_back_when_local_file_missing()
     test_falls_back_when_live_api_fails()
+    test_cut_urls_never_reach_naver()
     print("ok")
 
 

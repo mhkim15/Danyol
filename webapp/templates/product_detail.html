@@ -139,7 +139,7 @@
       <span class="fa-label">{{ item.label }}</span>
       <span class="fa-value">
         {{ item.value }}
-        <span class="{{ 'badge-err' if item.verdict == '더미 의심' else ('badge-warn' if item.verdict in ('비어 있음', '기본값') else 'badge-ok') }}" style="margin-left:6px;">{{ item.verdict }}</span>
+        <span class="{{ 'badge-err' if item.verdict == '더미 의심' else ('badge-warn' if item.verdict in ('비어 있음', '기본값', '확인 필요') else 'badge-ok') }}" style="margin-left:6px;">{{ item.verdict }}</span>
         {% if item.note %}<span class="fa-note">{{ item.note }}</span>{% endif %}
       </span>
     </div>

@@ -30,6 +30,11 @@ _ORIGIN_URL = "https://api.commerce.naver.com/external/v1/product-origin-areas"
 _CACHE_PATH = Path(__file__).resolve().parent.parent.parent / "data" / "naver_origin_areas_cache.json"
 _CACHE_TTL_SECONDS = 30 * 24 * 3600  # 30일 — 국가/행정구역 목록이라 카테고리보다 덜 바뀜
 
+# 네이버 코드표의 "상세설명에 표시"(2026-08-10 코드표 조회로 확인). 도매매가 원산지를 상세설명에
+# 적어뒀다고 표시한 상품에 쓴다.
+SEE_DETAIL_CODE = "03"
+_SEE_DETAIL_NAMES = {"상세정보별도표기", "상세설명참조", "상세페이지참조", "상세정보참조", "상세설명에표시"}
+
 
 def _load_origin_areas(access_token: str) -> List[dict]:
     """캐시가 있고 신선하면 재사용, 아니면 API로 코드표를 가져와 캐시."""
@@ -82,6 +87,12 @@ def resolve_origin_code(domemae_country: str, access_token: str) -> str:
 
     areas = _load_origin_areas(access_token)
     by_name = {a.get("name", ""): a.get("code", "") for a in areas}
+
+    # 도매매가 "상세정보별도표기"로 주는 상품 — 원산지를 상세설명에 적어뒀다는 뜻이라 네이버의
+    # "상세설명에 표시"(03)와 같은 의미다. 예전엔 코드표에서 못 찾아 등록 자체가 막혔다(2026-09,
+    # 샘플 10건 중 1건). 단 AI 버전이 원산지 컷을 빼면 표시가 사라지므로 등록 항목 점검이 경고한다.
+    if name.replace(" ", "") in _SEE_DETAIL_NAMES:
+        return by_name.get("상세설명에 표시", "") or SEE_DETAIL_CODE
 
     if name in by_name:
         return by_name[name]

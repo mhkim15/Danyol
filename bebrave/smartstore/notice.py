@@ -43,6 +43,8 @@ if CS_PHONE_NUMBER == DUMMY_CS_PHONE_NUMBER:
 # 카테고리 경로에 이 단어가 들어가면 해당 고시유형으로 본다. 위에서부터 먼저 맞는 것을 쓰므로
 # 구체적인 것이 앞에 와야 한다. 확신이 없는 카테고리는 일부러 비워두고 ETC로 떨어뜨린다 —
 # 틀린 유형을 쓰면 엉뚱한 고시 항목이 소비자에게 표시되기 때문.
+# 침구는 가구보다 앞 — 베개가 "가구/인테리어>침구단품" 아래라 가구로 먼저 걸렸다(2026-09).
+# "헤어"는 뺐다 — 헤어브러시·헤어케어까지 패션잡화로 걸렸다. 머리 장식만 패션잡화다.
 _TYPE_KEYWORDS = (
     ("KITCHEN_UTENSILS", ("주방", "조리", "식기", "냄비", "프라이팬", "주걱", "도마",
                           "수저", "컵", "텀블러", "밀폐용기", "보관용기", "커트러리")),
@@ -51,11 +53,11 @@ _TYPE_KEYWORDS = (
     ("WEAR",             ("의류", "티셔츠", "셔츠", "바지", "원피스", "아우터", "코트",
                           "양말", "레깅스", "속옷", "잠옷", "니트")),
     ("FASHION_ITEMS",    ("패션잡화", "패션소품", "모자", "벨트", "장갑", "머플러",
-                          "스카프", "우산", "양산", "헤어")),
+                          "스카프", "우산", "양산", "헤어액세서리", "헤어핀", "머리띠", "헤어밴드")),
     ("JEWELLERY",        ("주얼리", "귀금속", "반지", "목걸이", "귀걸이", "팔찌")),
     ("COSMETIC",         ("화장품", "스킨", "로션", "에센스", "세럼", "마스크팩", "클렌징")),
-    ("FURNITURE",        ("가구", "책상", "의자", "선반", "수납장", "옷장", "서랍")),
     ("SLEEPING_GEAR",    ("침구", "이불", "베개", "매트리스", "패드")),
+    ("FURNITURE",        ("가구", "책상", "의자", "선반", "수납장", "옷장", "서랍")),
     ("SPORTS_EQUIPMENT", ("스포츠", "운동기구", "헬스", "요가", "등산", "캠핑")),
     ("KIDS",             ("유아", "아동", "완구", "장난감", "출산")),
     ("BOOKS",            ("도서", "책", "서적")),
@@ -84,14 +86,20 @@ def _load_notice_specs(access_token: str) -> List[dict]:
     return specs
 
 
-def resolve_notice_type(category_path: str, product_name: str = "") -> str:
+def resolve_notice_type(category_path: str) -> str:
     """
-    카테고리 경로(+상품명)로 고시유형을 결정. 확실한 매치가 없으면 "ETC".
+    카테고리 경로로 고시유형을 결정. 확실한 매치가 없으면 "ETC".
+
+    맨 앞 대분류는 보지 않는다 — "취미/도서>정원/원예용품>화분"이 '도서'로, "가구/인테리어>
+    침구단품>베개"가 '가구'로 걸렸다(2026-09 샘플 10건 중 3건 오분류). 대분류는 여러 품목을
+    한데 묶은 이름이라 유형 판단 근거가 못 된다. 상품명도 보지 않는다 — "욕실 주방 현관
+    발매트"처럼 쓰임새를 나열한 이름 때문에 발매트가 주방용품이 됐다.
 
     ETC로 떨어지는 건 실패가 아니라 "기타 재화"라는 유효한 유형이지만, 의류를 ETC로
     올리면 소재·치수·세탁방법 같은 고시 항목이 빠지므로 호출부에서 로그로 알려줄 것.
     """
-    haystack = f"{category_path} {product_name}"
+    parts = [p for p in str(category_path or "").split(">") if p.strip()]
+    haystack = ">".join(parts[1:] if len(parts) > 1 else parts)
     for notice_type, keywords in _TYPE_KEYWORDS:
         if any(k in haystack for k in keywords):
             return notice_type
@@ -100,7 +108,7 @@ def resolve_notice_type(category_path: str, product_name: str = "") -> str:
 
 def _field_value(field_name: str, product) -> Optional[str]:
     """항목 이름 → 도매매/상품 데이터에서 찾은 값. 못 찾으면 None(호출부가 폴백 처리)."""
-    from .register import _clean  # 도매매의 "해당없음" 류 자리표시자 제거
+    from .register import clean_manufacturer, clean_model, importer_from
 
     if field_name == "itemName":
         return product.name
@@ -108,15 +116,22 @@ def _field_value(field_name: str, product) -> Optional[str]:
         # 도매매 상품번호로 폴백하지 않는다 — 공급사 내부 관리번호가 고시에 그대로
         # 노출돼 위탁 소싱 구조가 드러났다(2026-09 발견). 못 찾으면 다른 항목처럼
         # 호출부의 일반 폴백("상세페이지 참조")을 그대로 쓴다.
-        return _clean(getattr(product, "model", "")) or None
+        return clean_model(getattr(product, "model", ""), product.name) or None
     if field_name == "manufacturer":
-        return _clean(getattr(product, "manufacturer", "")) or None
+        return clean_manufacturer(getattr(product, "manufacturer", "")) or None
+    if field_name == "importer":
+        return importer_from(getattr(product, "manufacturer", "")) or None
     if field_name == "producer":
-        # 제조국 — 도매매 원산지 표기("수입산_아시아_중국")의 마지막 조각을 쓴다
+        # 제조국 — 도매매 원산지 표기("수입산_아시아_중국")의 마지막 조각을 쓴다.
+        # "상세정보별도표기"처럼 나라가 아닌 값은 제조국으로 쓰지 않는다.
         raw = getattr(product, "origin_country", "") or ""
-        return raw.split("_")[-1] if raw else None
+        if not raw.startswith(("국산", "수입산", "원양산")):
+            return None
+        return raw.split("_")[-1]
     if field_name in ("afterServiceDirector", "customerServicePhoneNumber"):
         return CS_PHONE_NUMBER
+    # 소재·크기 등 나머지는 "상세페이지 참조" — 상세 이미지에서 AI가 읽은 문구로 채워봤지만(2026-09)
+    # 오독·광고 문구가 법정 표시 칸에 들어갈 위험이 더 커서 되돌렸다. 도매매가 주는 확실한 값만 쓴다.
     return None
 
 
@@ -128,10 +143,7 @@ def build_provided_notice(product, access_token: str, notice_type: str = "") -> 
     (제조연월·유통기한·수입신고 여부 등 — 도매매가 주지 않는 정보). 등록이 거부되면
     그때 해당 항목이 필수임이 확인되는 것이니 그 시점에 대응할 것.
     """
-    ntype = notice_type or resolve_notice_type(
-        getattr(product, "domemae_category", "") or getattr(product, "keyword", ""),
-        product.name,
-    )
+    ntype = notice_type or resolve_notice_type(_category_path(product, access_token))
 
     specs = _load_notice_specs(access_token)
     spec = next((s for s in specs if s.get("productInfoProvidedNoticeType") == ntype), None)
@@ -153,6 +165,21 @@ def build_provided_notice(product, access_token: str, notice_type: str = "") -> 
     # (예: KITCHEN_UTENSILS → kitchenUtensils). ETC는 etc.
     node = _node_name(ntype)
     return {"productInfoProvidedNoticeType": ntype, node: fields}
+
+
+def _category_path(product, access_token: str) -> str:
+    """고시유형 판단에 쓸 카테고리 경로. 실제로 등록되는 네이버 카테고리가 우선이다 — 도매매
+    분류는 공급사가 붙인 것이라 네이버와 어긋날 수 있다. 네이버 경로를 못 구하면 도매매 분류."""
+    leaf_id = getattr(product, "leaf_category_id", "") or ""
+    if leaf_id and access_token:
+        try:
+            from .category import describe_category
+            path = describe_category(leaf_id, access_token)
+            if path:
+                return path
+        except Exception:
+            pass
+    return getattr(product, "domemae_category", "") or getattr(product, "keyword", "")
 
 
 def _node_name(notice_type: str) -> str:

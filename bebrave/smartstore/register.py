@@ -8,6 +8,7 @@ API: POST https://api.commerce.naver.com/external/v2/products
 (2026-07-12 실전 테스트로 확인 — 최초 구현은 필드를 최상위에 둬서 400 오류 발생했음).
 """
 import os
+import re
 from typing import Optional
 
 try:
@@ -169,10 +170,11 @@ def build_request_body(
     # 제조사/모델 — 값은 이미 갖고 있는데(도매매 detail.manufacturer/.model) 지금까지
     # 고시 블록에만 쓰고 정작 가격비교 매칭에 쓰이는 전용 필드엔 안 넣고 있었다(2026-09).
     # 브랜드는 도매매가 별도로 주지 않아 지어내지 않고 비워둔다.
-    manufacturer = _clean(product.manufacturer)
+    # 도매매 값은 "~협력사"·"중국(OEM)"·상품명 복사본이 많아 정제한 값만 쓴다(2026-09).
+    manufacturer = clean_manufacturer(product.manufacturer)
     if manufacturer:
         detail_attribute["manufacturerName"] = manufacturer
-    model = _clean(product.model)
+    model = clean_model(product.model, product.name)
     if model:
         detail_attribute["modelName"] = model
     # 속성(색상/소재/사이즈 등) — 네이버쇼핑 SEO 가이드가 "필터 결과 최상단 노출"의
@@ -313,9 +315,10 @@ def _build_origin_area_info(product: StoreProduct, strict: bool = True) -> dict:
             "잘못된 원산지 표시를 막기 위해 등록 금지"
         )
     info = {"originAreaCode": product.origin_code, "content": ""}
-    # 수입산(02 계열)에만 수입사를 채운다 — 도매매가 주는 제조사를 수입사로 갈음
-    if product.origin_code.startswith("02") and _clean(product.manufacturer):
-        info["importer"] = _clean(product.manufacturer)
+    # 수입산(02 계열)에만 수입사를 채운다 — 도매매 제조사 칸이 스스로 수입자라고 밝힌 경우만
+    importer = importer_from(product.manufacturer) if product.origin_code.startswith("02") else ""
+    if importer:
+        info["importer"] = importer
     return info
 
 
@@ -327,6 +330,65 @@ def _clean(value: str) -> str:
     """도매매 필드에서 '해당없음' 같은 자리표시자를 걸러낸 실제 값. 없으면 빈 문자열."""
     v = str(value or "").strip()
     return "" if v.lower() in _PLACEHOLDER_VALUES else v
+
+
+# 도매매 제조사 칸은 실제 제조사명이 아닌 경우가 대부분이었다 — 샘플 10건 중 7건이
+# "ablecompany협력사", "업체협력사", "중국(OEM)" 같은 값(2026-09-30 조회). 이게 제조사·
+# 고시 제조자·수입자 칸에 그대로 나가 "수입자: 중국(OEM)"처럼 표시되고 위탁 구조까지 드러났다.
+# 틀린 값보다 빈 값이 낫다 — 비우면 고시는 "상세페이지 참조", 제조사 칸은 생략된다.
+_MAKER_JUNK = ("협력사", "협력업체", "업체협력", "공급사", "위탁")
+_IMPORTER_PREFIXES = ("수입판매원", "수입원", "수입사", "수입자")
+_MAKER_PREFIXES = _IMPORTER_PREFIXES + ("제조판매원", "제조원", "제조사", "판매원")
+_COUNTRY_ONLY = {"중국", "한국", "국산", "국내", "베트남", "일본", "대만", "인도", "태국", "파키스탄",
+                 "인도네시아", "미국", "수입산", "해외"}
+
+
+def _strip_maker_prefix(value: str) -> tuple:
+    """(접두어 뗀 값, 수입자 표기였는지). "수입판매원 (주)미래" → ("(주)미래", True)"""
+    v = value.strip()
+    for pre in _MAKER_PREFIXES:
+        if v.startswith(pre):
+            return v[len(pre):].lstrip(" :：-").strip(), pre in _IMPORTER_PREFIXES
+    return v, False
+
+
+def clean_manufacturer(value: str) -> str:
+    """제조사로 써도 되는 값만 남긴다. "셀링온(OEM)" → "셀링온", "중국(OEM)"·"~협력사" → ""."""
+    v, _ = _strip_maker_prefix(_clean(value))
+    if not v or any(j in v for j in _MAKER_JUNK):
+        return ""
+    v = re.sub(r"\s*[\(\[]\s*OEM\s*[\)\]]\s*", "", v, flags=re.I).strip()
+    v = re.sub(r"\bOEM\b", "", v, flags=re.I).strip()
+    return "" if not v or v in _COUNTRY_ONLY else v
+
+
+def importer_from(value: str) -> str:
+    """도매매 제조사 칸이 수입자라고 스스로 밝힌 경우("수입판매원 ~")에만 수입자로 쓴다.
+    예전엔 수입산이면 제조사 칸을 무조건 수입자로 넣어 "수입자: 셀링온(OEM)"이 나갔다 —
+    제조사를 수입자로 갈음할 근거가 없다. 못 찾으면 빈 값(판매자 상호를 넣는 건 사람이 정할 일)."""
+    _, is_importer = _strip_maker_prefix(_clean(value))
+    return clean_manufacturer(value) if is_importer else ""
+
+
+def clean_model(value: str, product_name: str = "") -> str:
+    """모델명으로 써도 되는 값만 남긴다. 도매매 모델명 칸에 상품명을 그대로 베끼거나("큐티클 니퍼
+    니퍼 큐티클관리니퍼") 일반명사("샴푸 브러쉬", "요가링(하드타입)")를 넣은 경우가 샘플 10건 중
+    5건이었다(2026-09-30). 모델명은 가격비교에서 같은 상품을 묶는 기준이라 엉뚱한 값이 해롭다.
+    실제 모델명은 거의 항상 영문·숫자를 포함하므로, 한글뿐인 값과 상품명의 조각은 버린다."""
+    v = _clean(value)
+    if not v or not re.search(r"[A-Za-z0-9]", v):
+        return ""
+    tokens = [t for t in re.split(r"[\s\(\)\[\]/,·]+", v) if t]
+    name = str(product_name or "")
+    if name and tokens and all(t in name for t in tokens):
+        return ""
+    return v
+
+
+def looks_like_supplier_code(model: str) -> bool:
+    """"dwa1168", "HJ5169-366"처럼 영문+숫자 코드만으로 된 모델명 — 진짜 모델명일 수도 있어
+    지우진 않지만, 공급사 관리코드면 소싱처가 추적되므로 등록 항목 점검에서 확인을 요청한다."""
+    return bool(re.fullmatch(r"[A-Za-z]{1,5}[-_]?\d{3,}([-_]\d+)*", str(model or "").strip()))
 
 
 def fetch_registered_product(product_id: str, access_token: str) -> dict:

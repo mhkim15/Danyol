@@ -13,6 +13,8 @@ from dataclasses import dataclass
 from typing import Optional
 
 from ..config import SHIPPING_FEE, FREE_SHIPPING_THRESHOLD, RETURN_DELIVERY_FEE, EXCHANGE_DELIVERY_FEE
+from .origin import SEE_DETAIL_CODE
+from .register import looks_like_supplier_code
 
 # register.py의 하드코딩과 정확히 같은 값이어야 "기본값"으로 판정할 수 있다 — 여기서
 # 값이 바뀌면 register.py도 같이 바뀐 것인지 확인할 것.
@@ -32,6 +34,7 @@ VERDICT_OK = "정상"
 VERDICT_EMPTY = "비어 있음"
 VERDICT_DEFAULT = "기본값"
 VERDICT_DUMMY = "더미 의심"
+VERDICT_CHECK = "확인 필요"   # 값은 정상일 수 있지만 사람이 한 번 봐야 하는 경우
 
 
 @dataclass
@@ -174,7 +177,23 @@ def audit_fields(origin_product: dict, domemae_goods_no: str = "") -> list:
     g = "원산지·제조"
     origin = detail.get("originAreaInfo", {}) or {}
     origin_code = origin.get("originAreaCode", "")
-    items.append(_judge_present(g, "원산지 코드", origin_code, field_path="detailAttribute.originAreaInfo.originAreaCode"))
+    if origin_code == SEE_DETAIL_CODE:
+        # "상세설명에 표시" — 상세페이지에 원산지 문구가 실제로 있어야 표시 의무를 지킨 것이 된다.
+        # AI 버전은 컷을 골라 다시 짜므로 원산지가 적힌 컷이 빠질 수 있다(2026-09).
+        items.append(_item(
+            g, "원산지 코드", f"{origin_code} (상세설명에 표시)", VERDICT_CHECK,
+            "상세페이지에 원산지 문구가 보이는지 확인하세요 — AI 버전이면 원산지가 적힌 사진이 빠졌을 수 있습니다.",
+            field_path="detailAttribute.originAreaInfo.originAreaCode",
+        ))
+    else:
+        items.append(_judge_present(g, "원산지 코드", origin_code, field_path="detailAttribute.originAreaInfo.originAreaCode"))
+    if str(origin_code).startswith("02"):
+        # 수입산 — 도매매가 수입자를 밝힌 경우만 자동으로 채운다. 비어 있으면 판매자 상호를 넣을지 사람이 정한다.
+        items.append(_judge_present(
+            g, "수입자(importer)", origin.get("importer"),
+            "수입산인데 수입자가 비어 있습니다 — 도매매가 수입자를 밝히지 않았습니다. 판매자 상호를 넣을지 확인하세요.",
+            field_path="detailAttribute.originAreaInfo.importer",
+        ))
     items.append(_judge_present(
         g, "제조사(manufacturerName)", detail.get("manufacturerName"),
         "값이 없으면 네이버쇼핑 가격비교 매칭에 불리합니다.",
@@ -183,10 +202,13 @@ def audit_fields(origin_product: dict, domemae_goods_no: str = "") -> list:
     items.append(_judge_present(g, "브랜드(brandName)", detail.get("brandName"), field_path="detailAttribute.brandName"))
     model_name = detail.get("modelName", "")
     is_goods_no_leak = bool(domemae_goods_no) and model_name == domemae_goods_no
+    is_code = not is_goods_no_leak and looks_like_supplier_code(model_name)
     items.append(_item(
         g, "모델명(modelName)", model_name,
-        VERDICT_DUMMY if is_goods_no_leak else (VERDICT_OK if model_name else VERDICT_EMPTY),
-        "도매매 상품번호가 그대로 모델명에 들어가 공급사 내부번호가 노출됩니다." if is_goods_no_leak else "",
+        VERDICT_DUMMY if is_goods_no_leak else (VERDICT_CHECK if is_code else (VERDICT_OK if model_name else VERDICT_EMPTY)),
+        "도매매 상품번호가 그대로 모델명에 들어가 공급사 내부번호가 노출됩니다." if is_goods_no_leak else
+        ("공급사 관리코드일 수 있습니다 — 제품 포장·설명서의 모델명과 같은지 확인하고, 아니면 지우세요." if is_code else
+         ("비어 있으면 괜찮습니다 — 도매매 값이 상품명 복사본이거나 일반명사라 뺐습니다." if not model_name else "")),
         field_path="detailAttribute.modelName",
     ))
 
@@ -242,6 +264,9 @@ def audit_fields(origin_product: dict, domemae_goods_no: str = "") -> list:
             g, "고시 항목 요약", f"{len(notice_fields) - problem_count}/{len(notice_fields)}개 항목에 실제 값",
             VERDICT_OK if problem_count == 0 else VERDICT_DUMMY,
         ))
+    spec_item = _spec_coverage_item(domemae_goods_no)
+    if spec_item:
+        items.append(spec_item)
 
     # ── 검색·노출 ─────────────────────────────────────────────────────
     g = "검색·노출"
@@ -263,6 +288,41 @@ def audit_fields(origin_product: dict, domemae_goods_no: str = "") -> list:
     items.append(_judge_present(g, "즉시할인", "설정됨" if benefit else "", "즉시할인이 없으면 목록에서 할인 뱃지가 안 붙습니다." if not benefit else ""))
 
     return items
+
+
+def _spec_coverage_item(goods_no: str) -> Optional[FieldAuditItem]:
+    """AI 버전 상세페이지가 사이즈·사양 정보를 담고 있는지 — 고시 항목 대부분이 "상세페이지 참조"라
+    페이지에 그 정보가 실제로 있어야 표시 의무를 지킨 것이 된다. AI 버전은 컷을 골라 다시 짜므로
+    사양표 사진이 빠질 수 있다(2026-09). 값을 만들지 않고 빠졌다는 사실만 알린다.
+    AI 버전이 없으면(도매 원본 그대로 등록) 원본 페이지에 전부 있으므로 판정하지 않는다.
+    판독의 "사양 컷" 분류도 AI가 한 것이라 경고가 빠지거나 잘못 뜰 수는 있다."""
+    if not goods_no:
+        return None
+    try:
+        from .cut_reader import load_reading
+        from .layout import blocks_used_cuts, load_blocks
+        blocks = load_blocks(goods_no)
+        reading = load_reading(goods_no)
+    except Exception:
+        return None
+    if not blocks or not reading:
+        return None
+    spec_cuts = [c.index for c in reading.reads if c.kind == "spec" and c.use]
+    if not spec_cuts:
+        return None   # 도매 원본에 사양표 사진이 없던 상품 — 빠질 것도 없다
+    used = set(blocks_used_cuts(blocks))
+    kept = [i for i in spec_cuts if i in used]
+    has_spec_text = any(b.kind == "spec" and (b.items or b.body) for b in blocks)
+    g, label = "상품정보제공고시", "상세페이지 사양 정보 (AI 버전)"
+    if kept:
+        return _item(g, label, f"사양표 사진 {len(kept)}/{len(spec_cuts)}장 포함", VERDICT_OK)
+    if has_spec_text:
+        return _item(g, label, "사양표 사진 없이 옮겨 적은 표만 있음", VERDICT_CHECK,
+                     "도매 원본의 사양표 사진을 빼고 AI가 옮겨 적은 '크기와 사양' 표만 남았습니다 — "
+                     "원본 사진과 숫자가 같은지 확인하거나, 사양표 사진을 페이지에 다시 넣으세요.")
+    return _item(g, label, f"사양표 사진 {len(spec_cuts)}장 모두 빠짐", VERDICT_CHECK,
+                 "고시 항목이 '상세페이지 참조'인데 사이즈·소재 정보가 페이지에 없습니다 — "
+                 "사양표 사진을 페이지에 다시 넣으세요.")
 
 
 def _demo() -> None:
@@ -317,6 +377,26 @@ def _demo() -> None:
     assert by_label["제조사(manufacturerName)"].editable
     assert by_label["A/S 전화번호"].field_path == "detailAttribute.afterServiceInfo.afterServiceTelephoneNumber"
     assert not by_label["옵션 구성"].editable, "구조가 동적인 옵션 항목에 수정칸이 생김"
+
+    # 사양 정보 — AI 버전이 사양표 사진(판독상 spec 컷)을 뺐는지. 파일 대신 가짜 판독·배치로 검증
+    from types import SimpleNamespace as NS
+    from . import cut_reader, layout
+    real = (cut_reader.load_reading, layout.load_blocks)
+    reading = NS(reads=[NS(index=0, kind="product", use=True), NS(index=3, kind="spec", use=True)])
+    try:
+        cut_reader.load_reading = lambda g: reading
+        layout.load_blocks = lambda g: [layout.Block(kind="hero", cut=0), layout.Block(kind="image", cut=3)]
+        assert _spec_coverage_item("1").verdict == VERDICT_OK                     # 사양표 사진 포함
+        layout.load_blocks = lambda g: [layout.Block(kind="hero", cut=0),
+                                        layout.Block(kind="spec", items=[["크기", "60x40cm"]])]
+        assert _spec_coverage_item("1").verdict == VERDICT_CHECK                  # 옮겨 적은 표만
+        layout.load_blocks = lambda g: [layout.Block(kind="hero", cut=0)]
+        miss = _spec_coverage_item("1")
+        assert miss.verdict == VERDICT_CHECK and "모두 빠짐" in miss.value        # 사양 정보 없음
+        layout.load_blocks = lambda g: None
+        assert _spec_coverage_item("1") is None                                   # AI 버전 없음 — 판정 안 함
+    finally:
+        cut_reader.load_reading, layout.load_blocks = real
 
     print("field_audit._demo self-check OK")
 

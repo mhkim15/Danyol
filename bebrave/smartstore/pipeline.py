@@ -38,6 +38,21 @@ _MIN_MARGIN = float(os.environ.get("MIN_MARGIN", "0.15"))
 from ..config import MAX_LISTING_STOCK, MIN_ABS_PROFIT
 
 
+def _has_saved_cut_detail(goods_no: str) -> bool:
+    """사람이 "AI로 만들기"로 만든 상세페이지가 저장돼 있는가 — _build_cut_detail이 쓸 수 있는 상태와
+    같은 조건(배치 + 컷 + 배치에 쓰인 컷)이다. 업로드 없이 파일만 본다."""
+    if not goods_no:
+        return False
+    try:
+        from .cuts import load_cuts
+        from .layout import blocks_used_cuts, load_blocks
+        blocks = load_blocks(goods_no)
+        cs = load_cuts(goods_no)
+        return bool(blocks and cs and cs.cuts and blocks_used_cuts(blocks))
+    except Exception:
+        return False
+
+
 def _build_cut_detail(product, token: str, dry_run: bool, cut_url=None):
     """저장된 AI 버전 상세페이지(컷 기반)를 그린다. 반환 (html, 이미지URL목록) 또는 None.
 
@@ -370,7 +385,11 @@ def run(
         quality_issues = []
         if len(domemae_p.images) <= 1:
             quality_issues.append(f"이미지가 {len(domemae_p.images)}장뿐")
-        if len(domemae_p.description) < 200:
+        # 설명 길이는 "실제로 올라갈 상세페이지"로 판단한다 — 사람이 만든 AI 버전이 있거나
+        # 미리보기에서 고친 HTML을 넘겼으면 도매매 원본 설명은 쓰이지 않는다. 예전엔 원본이
+        # 200자 미만이면(사진 위주 상품 — 샘플 10건 중 3건) AI 버전을 만들어도 등록이 막혔다(2026-09).
+        uses_own_detail = bool(detail_override) or (not skip_cuts and _has_saved_cut_detail(domemae_p.goods_no))
+        if len(domemae_p.description) < 200 and not uses_own_detail:
             quality_issues.append(f"상세설명이 {len(domemae_p.description)}자로 짧음")
         if domemae_p.images:
             from .images import MIN_SOURCE_PX, check_min_resolution

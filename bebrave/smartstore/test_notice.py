@@ -49,6 +49,37 @@ def demo() -> None:
     assert rt("주방용품>조리도구>주걱") == "KITCHEN_UTENSILS"
     assert rt("패션잡화>패션소품>우산>자동우산") == "FASHION_ITEMS"
     assert rt("생활용품>정리수납>알수없음") == "ETC"          # 확신 없으면 ETC
+    # 2026-09-30 샘플 10건에서 오분류됐던 실제 도매매 분류들 — 대분류 이름에 걸리면 안 된다
+    assert rt("취미/도서>정원/원예용품>화분") == "ETC"                      # 예전: 도서
+    assert rt("가구/인테리어>침구단품>베개>메모리폼베개") == "SLEEPING_GEAR"  # 예전: 가구
+    assert rt("생활용품>욕실용품>욕실발판/욕실매트>욕실발판/매트") == "ETC"  # 예전: 주방(상품명 때문)
+    assert rt("화장품>뷰티소품>헤어소품>헤어브러시") == "ETC"               # 예전: 패션잡화
+    assert rt("스포츠/레저>요가/필라테스>기타요가용품") == "SPORTS_EQUIPMENT"
+    assert rt("주방용품") == "KITCHEN_UTENSILS"   # 한 단계뿐이면 그 이름으로 판단
+
+    from .register import clean_manufacturer, clean_model, importer_from, looks_like_supplier_code
+    # 제조사 — 샘플 실제 값
+    assert clean_manufacturer("ablecompany협력사") == ""
+    assert clean_manufacturer("업체협력사") == ""
+    assert clean_manufacturer("올뎃홈 협력업체") == ""
+    assert clean_manufacturer("중국(OEM)") == ""
+    assert clean_manufacturer("셀링온(OEM)") == "셀링온"
+    assert clean_manufacturer("칠성산업") == "칠성산업"
+    assert clean_manufacturer("수입판매원 (주)미래종합아울렛물류") == "(주)미래종합아울렛물류"
+    assert clean_manufacturer("해당없음") == ""
+    # 수입자 — 스스로 수입자라고 밝힌 값만
+    assert importer_from("수입판매원 (주)미래종합아울렛물류") == "(주)미래종합아울렛물류"
+    assert importer_from("셀링온(OEM)") == ""
+    # 모델명 — 상품명 복사본·한글 일반명사는 버리고, 영문·숫자 모델명은 남긴다
+    assert clean_model("큐티클 니퍼 니퍼 큐티클관리니퍼 풋케어 네일", "큐티클 니퍼 니퍼 큐티클관리니퍼 풋케어 네일") == ""
+    assert clean_model("요가링(하드타입)", "종아리 요가링 마사지링 필라테스 스트레칭 하드타입 2P") == ""
+    assert clean_model("샴푸 브러쉬", "샴푸 브러쉬 헤어 두피 마사지 브러시") == ""
+    assert clean_model("해당없음") == ""
+    assert clean_model("POIPOI프리미엄규조토", "규조토발매트") == "POIPOI프리미엄규조토"
+    assert clean_model("HJ5169-366", "송풍구 브러시") == "HJ5169-366"
+    assert clean_model("2P", "요가링 2P") == ""                      # 상품명 조각
+    assert looks_like_supplier_code("dwa1168") and looks_like_supplier_code("HJ5169-366")
+    assert not looks_like_supplier_code("POIPOI프리미엄규조토")
     assert notice._node_name("KITCHEN_UTENSILS") == "kitchenUtensils"
     assert notice._node_name("ETC") == "etc"
     assert notice._node_name("WEAR") == "wear"
@@ -89,6 +120,13 @@ def demo() -> None:
         # 알 수 없는 유형이 들어와도 ETC로 안전하게 떨어져야 함
         u = notice.build_provided_notice(_product(), "fake-token", notice_type="NOT_A_TYPE")
         assert u["productInfoProvidedNoticeType"] == "ETC"
+
+        # 제조사 칸의 "협력사" 값은 고시에 나가지 않고 폴백
+        j = notice.build_provided_notice(_product(manufacturer="ablecompany협력사", domemae_category="패션잡화>양말"), "fake-token")
+        assert j["wear"]["manufacturer"] == "상세페이지 참조"
+
+        # 원산지가 나라가 아니면 제조국으로 쓰지 않는다
+        assert notice._field_value("producer", _product(origin_country="상세정보별도표기")) is None
     finally:
         notice._load_notice_specs = real
 

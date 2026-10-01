@@ -1,13 +1,68 @@
 {% extends "base.html" %}
 {% block title %}홈{% endblock %}
 {% block content %}
+<style>
+  /* 홈 전용 — 헬스체크도 .stat-card를 쓰므로 공용 스타일은 건드리지 않는다. */
+  .kpi-col { flex: 1; padding: 0 20px; min-width: 0; text-decoration: none; color: inherit; display: block; }
+  .kpi-col:first-child { padding-left: 0; }
+  .kpi-col:not(:first-child) { border-left: 1px solid var(--line); }
+  /* 한 줄 = '오늘 할 일'의 발주·n건 줄과 같은 글자 크기/굵기. 값 색만 기본 잉크색 유지. */
+  .kpi-col .todo-line { border-bottom: none; }
+  .kpi-col .todo-line span { display: inline-flex; align-items: center; gap: 6px; }
+  .kpi-col .todo-line b { color: var(--ink); font-variant-numeric: tabular-nums; }
+  a.kpi-col:hover .todo-line span:first-child { color: var(--accent); }
+  div.kpi-col .todo-line:hover span:first-child { color: inherit; }
+  /* 지난달 같은 기간 대비 — 한국식: 색은 방향만 뜻한다(빨강 ▲ 상승, 파랑 ▼ 하락).
+     좋고 나쁨은 항목 이름으로 판단한다 — 반품이 늘면 그냥 빨강 ▲. */
+  .kpi-right { gap: 8px !important; }
+  .dl { font-style: normal; font-size: 12px; font-weight: 600; font-variant-numeric: tabular-nums; }
+  .dl.up { color: #f23f43; } .dl.down { color: #2f6ff5; } .dl.flat { color: var(--ink-muted); font-weight: 500; }
+
+  /* 매출 차트 — 네이버 증권 차트 톤 */
+  /* 등락이 있는 값이 아니므로 증권의 빨강/파랑(상승/하락) 대신 브랜드 색을 쓴다 —
+     Shopify·Stripe처럼 선만 브랜드 색, 금액은 중립 잉크색(어느 선인지는 색 점으로).
+     파랑은 한국식 '하락'으로 읽히므로 선에 쓰지 않는다 — 순수익은 청록. */
+  .sc { --rev: #7c5cfc; --pro: #12a594; --prev: #b4b7bf; --axis: #dcdde1; --grid: #f1f2f4; --tick: #8b8d93; }
+  .sc-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; padding-bottom: 14px; border-bottom: 1px solid var(--grid); }
+  .sc-title { font-size: 18px; font-weight: 800; margin: 0; }
+  .sc-tools { display: flex; align-items: center; gap: 14px; }
+  .sc-seg { display: inline-flex; align-items: center; background: #f2f3f5; border-radius: 8px; padding: 3px; }
+  .sc-seg a, .sc-seg span.sc-btn { display: inline-flex; align-items: center; justify-content: center; width: 30px; height: 28px; border-radius: 6px; color: #4e5058; text-decoration: none; font-size: 15px; }
+  .sc-seg a:hover { background: #fff; }
+  .sc-seg span.sc-btn.disabled { color: #c4c6cc; }
+  .sc-seg .sc-month { background: #fff; border-radius: 6px; height: 28px; padding: 0 12px; display: inline-flex; align-items: center; font-size: 13.5px; font-weight: 700; box-shadow: 0 1px 2px rgba(0,0,0,0.08); }
+  .sc-legend { display: flex; gap: 4px; }
+  .sc-legend .legend-toggle { font-size: 13px; font-weight: 600; color: #333; display: inline-flex; align-items: center; gap: 6px; }
+  .sc-legend .sw { width: 12px; height: 0; border-top: 2px solid; display: inline-block; }
+  .sc-summary { display: flex; flex-wrap: wrap; gap: 4px 14px; font-size: 13px; color: #6b6d73; margin: 14px 0 6px; font-variant-numeric: tabular-nums; }
+  .sc-summary span { display: inline-flex; align-items: center; }
+  .sc-summary b { font-weight: 600; margin-left: 4px; color: #222; }
+  .sc-summary i { width: 7px; height: 7px; border-radius: 50%; display: inline-block; margin-right: 6px; }
+  .sc-tip i { width: 7px; height: 7px; border-radius: 50%; display: inline-block; margin-right: 6px; }
+  .sc-wrap { position: relative; }
+  .sc-wrap svg { display: block; width: 100%; font-family: var(--sans); }
+  .sc-tip {
+    position: absolute; top: 0; pointer-events: none; opacity: 0; z-index: 2;
+    /* 날짜를 옮겨 다닐 때 툴팁이 순간이동하지 않고 미끄러진다 */
+    transition: opacity .12s ease, left .18s cubic-bezier(.16,1,.3,1);
+    background: #fff; border: 1px solid #e3e4e8; border-radius: 8px; padding: 8px 11px; min-width: 150px;
+    box-shadow: 0 4px 14px rgba(0,0,0,0.10); font-size: 12.5px; color: #333; font-variant-numeric: tabular-nums;
+  }
+  .sc-tip .d { color: #8b8d93; font-size: 11.5px; margin-bottom: 4px; }
+  .sc-tip .r { display: flex; justify-content: space-between; gap: 14px; line-height: 1.6; }
+  .sc-tip .r b { font-weight: 700; color: #222; }
+  .sc-tip .r span { display: inline-flex; align-items: center; }
+</style>
+
 <div class="row" style="justify-content:space-between;align-items:center;margin-bottom:18px;">
   {% set unknown_n = todo_groups | map(attribute='rows') | sum(start=[]) | selectattr('unknown') | list | length %}
   <h1 style="margin:0;">오늘 할 일
     <span class="badge{{ '-ok' if todo_total == 0 and not unknown_n else '-err' }}">{{ todo_total }}건</span>
     {% if unknown_n %}<span class="badge-warn" title="조회에 실패해 건수를 모르는 항목입니다">확인 필요 {{ unknown_n }}</span>{% endif %}
   </h1>
-  {% if not demo %}
+  {% if demo %}
+  <a class="btn secondary btn-sm" href="{{ url_for('index') }}">실데이터 보기</a>
+  {% else %}
   <a class="btn secondary btn-sm" href="{{ url_for('index_demo') }}">샘플 데이터</a>
   {% endif %}
 </div>
@@ -50,52 +105,73 @@
   {% endif %}
 </div>
 
+{% macro delta(key, value_text) %}
+  {%- set d = compare.delta[key] -%}
+  {%- set tip = "지난달 1~" ~ compare.days ~ "일: " ~ value_text -%}
+  {%- if d is none -%}
+    {%- if compare.last[key] == 0 and (this_month_returns if key == 'returns' else this_month[key]) -%}<em class="dl flat" title="{{ tip }}">지난달 0</em>{%- endif -%}
+  {%- else -%}
+    {%- set pct = (d * 100) | round | int -%}
+    {%- if pct == 0 -%}<em class="dl flat" title="{{ tip }}">0%</em>
+    {%- else -%}<em class="dl {{ 'up' if pct > 0 else 'down' }}" title="{{ tip }}">{{ '▲' if pct > 0 else '▼' }}{{ '{:,}'.format(pct | abs) }}%</em>
+    {%- endif -%}
+  {%- endif -%}
+{% endmacro %}
+
 <div class="section">
-  {# 아래 4개 카드는 항상 이번 달 기준이다 — 차트에서 지난달로 넘겨도 카드는 안 바뀐다.
-     그 사실이 안 적혀 있어서 카드가 차트를 따라가는 줄 알기 쉬웠다. #}
-  <h1 style="margin-bottom:12px;">이번 달 현황 <span class="muted" style="font-size:13px;font-weight:400;">· {{ checked_at }} 기준</span></h1>
-  <div class="stat-grid">
-    {# 매출·순수익은 주간리포트가 아니라 추세를 볼 수 있는 헬스체크로 보낸다 —
-       주간리포트에는 이 수치가 없어 클릭해도 확인이 안 됐다. #}
-    <a href="{{ url_for('health_view') }}" class="stat-card link">
-      <p class="stat-num">{{ "{:,}".format(this_month.revenue) }}원</p>
-      <p class="stat-label">매출</p>
+  {# 아래 4칸은 항상 이번 달 기준이다 — 차트에서 지난달로 넘겨도 바뀌지 않는다.
+     각 칸은 '오늘 할 일'의 항목 줄처럼 '항목명 … 값' 한 줄. #}
+  <h1 style="margin-bottom:12px;">이번 달 현황 <span class="muted" style="font-size:13px;font-weight:400;">· {{ checked_at }} 기준 · 증감은 지난달 1~{{ compare.days }}일 대비</span></h1>
+  <div class="panel todo-cols">
+    {# 매출·순수익은 아래 차트가 곧 상세라 이동하지 않는다. 주문·반품은 목록으로 간다. #}
+    <div class="kpi-col">
+      <span class="todo-line">
+        <span><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 3v18h18"/><path d="m19 9-5 5-4-4-3 3"/></svg>매출</span><span class="kpi-right"><b>{{ "{:,}".format(this_month.revenue) }}원</b>{{ delta('revenue', "{:,}원".format(compare.last.revenue)) }}</span>
+      </span>
+    </div>
+    <div class="kpi-col">
+      <span class="todo-line">
+        <span><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 7V4a1 1 0 0 0-1-1H5a2 2 0 0 0 0 4h15a1 1 0 0 1 1 1v4h-3a2 2 0 0 0 0 4h3a1 1 0 0 0 1-1v-2a1 1 0 0 0-1-1"/><path d="M3 5v14a2 2 0 0 0 2 2h15a1 1 0 0 0 1-1v-4"/></svg>순수익</span><span class="kpi-right"><b>{{ "{:,}".format(this_month.profit) }}원</b>{{ delta('profit', "{:,}원".format(compare.last.profit)) }}</span>
+      </span>
+    </div>
+    <a href="{{ url_for('orders', tab='history') }}" class="kpi-col">
+      <span class="todo-line">
+        <span><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 2 3 6v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V6l-3-4Z"/><path d="M3 6h18"/><path d="M16 10a4 4 0 0 1-8 0"/></svg>주문</span><span class="kpi-right"><b>{{ this_month.order_count }}건</b>{{ delta('order_count', compare.last.order_count ~ "건") }}</span>
+      </span>
     </a>
-    <a href="{{ url_for('health_view') }}" class="stat-card link">
-      <p class="stat-num money">{{ "{:,}".format(this_month.profit) }}원</p>
-      <p class="stat-label">순수익{% if this_month.uncertain_count %} <span class="badge-warn" title="등록 상품과 매칭 안 된 주문 — 순수익 미포함">원가미상 {{ this_month.uncertain_count }}건 제외</span>{% endif %}</p>
-    </a>
-    <a href="{{ url_for('orders', tab='history') }}" class="stat-card link">
-      <p class="stat-num">{{ this_month.order_count }}건</p>
-      <p class="stat-label">주문</p>
-    </a>
-    <a href="{{ url_for('cs') }}" class="stat-card link">
-      <p class="stat-num">{{ this_month_returns }}건</p>
-      <p class="stat-label">반품·취소</p>
+    <a href="{{ url_for('cs') }}" class="kpi-col">
+      <span class="todo-line">
+        <span><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/></svg>반품·취소</span><span class="kpi-right"><b>{{ this_month_returns }}건</b>{{ delta('returns', compare.last.returns ~ "건") }}</span>
+      </span>
     </a>
   </div>
 
-  <div class="panel" style="margin-top:16px;">
-    <div class="chart-toolbar">
-      <div class="month-nav">
-        <a href="{{ url_for('index', year=prev_year, month=prev_month) }}"><button type="button" aria-label="이전 달">‹</button></a>
-        <span class="month-label">{{ selected_year }}년 {{ selected_month }}월</span>
-        {% if next_disabled %}
-        <button type="button" disabled aria-label="다음 달">›</button>
-        {% else %}
-        <a href="{{ url_for('index', year=next_year, month=next_month) }}"><button type="button" aria-label="다음 달">›</button></a>
-        {% endif %}
+  <div class="panel sc">
+    <div class="sc-head">
+      <p class="sc-title">매출 추이</p>
+      <div class="sc-tools">
+        <div class="sc-legend">
+          <span class="legend-toggle" data-series="revenue"><i class="sw" style="border-color:var(--rev);"></i>매출</span>
+          <span class="legend-toggle" data-series="profit"><i class="sw" style="border-color:var(--pro);"></i>순수익</span>
+          <span class="legend-toggle" data-series="prev"><i class="sw" style="border-color:var(--prev);border-top-style:dashed;"></i>지난달 매출</span>
+        </div>
+        <div class="sc-seg">
+          <a href="{{ url_for('index', year=prev_year, month=prev_month) }}" aria-label="이전 달">‹</a>
+          <span class="sc-month">{{ selected_year }}년 {{ selected_month }}월</span>
+          {% if next_disabled %}
+          <span class="sc-btn disabled" aria-label="다음 달">›</span>
+          {% else %}
+          <a href="{{ url_for('index', year=next_year, month=next_month) }}" aria-label="다음 달">›</a>
+          {% endif %}
+        </div>
       </div>
     </div>
-    <div class="chart-legend">
-      <span class="legend-toggle" data-series="revenue"><i class="sw" style="border-color:var(--money);"></i>매출</span>
-      <span class="legend-toggle" data-series="profit"><i class="sw" style="border-color:var(--money-2);border-top-style:dashed;"></i>순수익</span>
+    <div class="sc-summary" id="scSummary"></div>
+    <div class="sc-wrap" id="scWrap">
+      <svg id="salesChart"></svg>
+      <div id="scTip" class="sc-tip"></div>
     </div>
-    <div class="chart-wrap">
-      <svg id="salesChart" width="100%" viewBox="0 0 680 220" style="overflow:visible;"></svg>
-      <div id="chartTooltip" class="chart-tooltip"></div>
-    </div>
-    <p id="chartEmpty" class="muted" style="display:none;">집계된 매출 없음</p>
+    <p id="chartEmpty" class="muted" style="display:none;margin:30px 0;text-align:center;">집계된 매출 없음</p>
   </div>
 </div>
 
@@ -111,173 +187,262 @@
 
 <script>
 (function () {
-  var series = {{ chart_series|tojson }};
+  var all = {{ chart_series|tojson }};
+  var prevAll = {{ chart_prev_series|tojson }};  // 보고 있는 달의 직전 달 — 회색 점선
   var svg = document.getElementById("salesChart");
-  var tooltip = document.getElementById("chartTooltip");
-  var emptyEl = document.getElementById("chartEmpty");
-  var wrap = svg.parentElement;
+  var wrap = document.getElementById("scWrap");
+  var tip = document.getElementById("scTip");
+  var root = document.querySelector(".sc");
+  var css = getComputedStyle(root);
+  var C = {
+    rev: css.getPropertyValue("--rev").trim(), pro: css.getPropertyValue("--pro").trim(),
+    prev: css.getPropertyValue("--prev").trim(),
+    axis: css.getPropertyValue("--axis").trim(), grid: css.getPropertyValue("--grid").trim(),
+    tick: css.getPropertyValue("--tick").trim(),
+  };
 
-  var hasData = series.some(function (p) { return p.revenue > 0 || p.profit > 0; });
-  if (!hasData) {
+  // 이번 달이면 오늘까지만 그린다 — 아직 안 온 날을 0원으로 그리면 매출이 꺾인 것처럼 보인다.
+  var todayIso = new Date(Date.now() - new Date().getTimezoneOffset() * 60000).toISOString().slice(0, 10);
+  var n = all.length;
+  var last = n - 1;
+  while (last > 0 && all[last].date > todayIso) last--;
+  var shown = all.slice(0, last + 1);
+
+  var sum = function (k) { return shown.reduce(function (a, p) { return a + (p[k] || 0); }, 0); };
+  document.getElementById("scSummary").innerHTML =
+    '<span><i style="background:' + C.rev + '"></i>매출<b>' + sum("revenue").toLocaleString() + '원</b></span>' +
+    '<span><i style="background:' + C.pro + '"></i>순수익<b>' + sum("profit").toLocaleString() + '원</b></span>' +
+    '<span>주문<b>' + sum("order_count").toLocaleString() + '건</b></span>';
+
+  if (!shown.some(function (p) { return p.revenue > 0 || p.profit > 0; })) {
     wrap.style.display = "none";
-    document.querySelector(".chart-legend").style.display = "none";
-    emptyEl.style.display = "block";
+    document.querySelector(".sc-legend").style.display = "none";
+    document.getElementById("chartEmpty").style.display = "block";
     return;
   }
 
-  var W = 680, H = 220, padL = 56, padR = 12, padT = 12, padB = 24;
-  var plotW = W - padL - padR, plotH = H - padT - padB;
-  var n = series.length;
+  // 지난달 선은 이번 달 날짜 칸 수만큼만 — 31일짜리 달을 30일짜리 달 위에 겹치면 칸이 어긋난다.
+  var prevShown = prevAll.slice(0, n);
+  var hasPrev = prevShown.some(function (p) { return p.revenue > 0; });
+  if (!hasPrev) document.querySelector('.legend-toggle[data-series="prev"]').style.display = "none";
+  var active = { revenue: true, profit: true, prev: hasPrev };
+  // 마우스로 짚을 수 있는 마지막 칸 — 이번 달은 오늘까지지만, 지난달 선은 그 뒤로도 이어진다.
+  var hoverLast = active.prev ? Math.max(last, prevShown.length - 1) : last;
+  var hoverIdx = null;
+  var G = {};  // 매 렌더마다 다시 계산되는 좌표 함수들
 
+  var NS = "http://www.w3.org/2000/svg";
+  function el(tag, attrs, parent) {
+    var e = document.createElementNS(NS, tag);
+    for (var k in attrs) e.setAttribute(k, attrs[k]);
+    (parent || svg).appendChild(e);
+    return e;
+  }
   function niceMax(v) {
     if (v <= 0) return 10;
     var mag = Math.pow(10, Math.floor(Math.log10(v)));
     var norm = v / mag;
-    var nice = norm <= 1 ? 1 : norm <= 2 ? 2 : norm <= 5 ? 5 : 10;
-    return nice * mag;
+    return (norm <= 1 ? 1 : norm <= 2 ? 2 : norm <= 5 ? 5 : 10) * mag;
   }
-  var maxVal = Math.max.apply(null, series.map(function (p) { return Math.max(p.revenue, p.profit); }));
-  var top = niceMax(maxVal);
-
-  function x(i) { return padL + (n > 1 ? (i / (n - 1)) * plotW : 0); }
-  function y(v) { return padT + plotH - (v / top) * plotH; }
-  function fmt(v) { return v >= 10000 ? Math.round(v / 1000) + "k" : v.toLocaleString(); }
-
-  var svgns = "http://www.w3.org/2000/svg";
-  function el(tag, attrs) {
-    var e = document.createElementNS(svgns, tag);
-    for (var k in attrs) e.setAttribute(k, attrs[k]);
-    return e;
+  function fmtAxis(v) {
+    if (v >= 10000) return (v / 10000).toLocaleString() + "만";
+    return v.toLocaleString();
   }
 
-  function scale() {
-    var svgRect = svg.getBoundingClientRect();
-    return svgRect.width > 0 ? svgRect.width / W : 1;
+  // 단조 3차 보간(Fritsch–Carlson) — 부드럽지만 0 아래로 튀거나 봉우리를 넘어서지 않는다.
+  function smoothPath(pts) {
+    if (pts.length < 2) return "M" + pts[0][0] + "," + pts[0][1];
+    var m = [], d = [], i;
+    for (i = 0; i < pts.length - 1; i++) d.push((pts[i + 1][1] - pts[i][1]) / (pts[i + 1][0] - pts[i][0]));
+    m[0] = d[0]; m[pts.length - 1] = d[d.length - 1];
+    for (i = 1; i < pts.length - 1; i++) m[i] = d[i - 1] * d[i] <= 0 ? 0 : (d[i - 1] + d[i]) / 2;
+    for (i = 0; i < d.length; i++) {
+      if (d[i] === 0) { m[i] = 0; m[i + 1] = 0; continue; }
+      var a = m[i] / d[i], b = m[i + 1] / d[i], s = a * a + b * b;
+      if (s > 9) { var t = 3 / Math.sqrt(s); m[i] = t * a * d[i]; m[i + 1] = t * b * d[i]; }
+    }
+    var out = "M" + pts[0][0] + "," + pts[0][1];
+    for (i = 0; i < pts.length - 1; i++) {
+      var h = (pts[i + 1][0] - pts[i][0]) / 3;
+      out += " C" + (pts[i][0] + h) + "," + (pts[i][1] + m[i] * h) + " " +
+        (pts[i + 1][0] - h) + "," + (pts[i + 1][1] - m[i + 1] * h) + " " + pts[i + 1][0] + "," + pts[i + 1][1];
+    }
+    return out;
   }
 
-  function drawAxes() {
-    [0, 0.25, 0.5, 0.75, 1].forEach(function (f) {
-      var val = Math.round(top * f);
-      var yy = y(val);
-      svg.appendChild(el("line", { x1: padL, y1: yy, x2: W - padR, y2: yy, stroke: "var(--line)", "stroke-width": 1 }));
-      var t = el("text", { x: padL - 8, y: yy + 4, "text-anchor": "end", "font-size": 14 / scale(), fill: "var(--ink-muted)" });
-      t.textContent = fmt(val);
-      svg.appendChild(t);
+  // mode: 'intro' = 첫 진입(선이 그려지며 등장), 'soft' = 범례 토글(축이 바뀌니 짧게 페이드), 없음 = 리사이즈(즉시)
+  function render(mode) {
+    while (svg.firstChild) svg.removeChild(svg.firstChild);
+    var W = wrap.clientWidth;
+    var axisW = 64;                 // 오른쪽 가격축 폭
+    var mainT = 12, mainH = 280;    // 그래프 영역
+    var plotB = mainT + mainH;
+    var H = plotB + 26;             // 아래 날짜 눈금 자리
+    var plotR = W - axisW;
+    svg.setAttribute("viewBox", "0 0 " + W + " " + H);
+    svg.setAttribute("height", H);
+
+    var keys = ["revenue", "profit"].filter(function (k) { return active[k]; });
+    var peak = Math.max.apply(null, shown.map(function (p) {
+      return Math.max.apply(null, keys.map(function (k) { return p[k]; }).concat([0]));
+    }));
+    if (active.prev) peak = Math.max(peak, Math.max.apply(null, prevShown.map(function (p) { return p.revenue; })));
+    var top = niceMax(peak * 1.12);
+    hoverLast = active.prev ? Math.max(last, prevShown.length - 1) : last;
+
+    var step = plotR / n;  // 한 달 전체를 가로축으로 — 하루 한 칸
+    var x = function (i) { return step * (i + 0.5); };
+    var y = function (v) { return mainT + mainH - (v / top) * mainH; };
+    G = { x: x, y: y, step: step, plotR: plotR, mainT: mainT };
+
+    var defs = el("defs", {});
+    var grad = el("linearGradient", { id: "scArea", x1: 0, y1: 0, x2: 0, y2: 1 }, defs);
+    el("stop", { offset: "0%", "stop-color": C.rev, "stop-opacity": 0.28 }, grad);
+    el("stop", { offset: "100%", "stop-color": C.rev, "stop-opacity": 0.02 }, grad);
+
+    // 세로 그리드(날짜) — 네이버처럼 가로 그리드 없이 세로선만
+    all.forEach(function (p, i) {
+      if (p.day !== 1 && p.day % 5 !== 0) return;
+      el("line", { x1: x(i), x2: x(i), y1: mainT, y2: plotB, stroke: C.grid, "stroke-width": 1 });
+      var t = el("text", { x: x(i), y: H - 6, "text-anchor": "middle", "font-size": 12, fill: C.tick });
+      t.textContent = p.day + "일";
     });
 
-    series.forEach(function (p, i) {
-      if (p.day % 5 !== 0 && p.day !== 1) return;
-      var t = el("text", { x: x(i), y: H - 6, "text-anchor": "middle", "font-size": 14 / scale(), fill: "var(--ink-muted)" });
-      t.textContent = p.day;
-      svg.appendChild(t);
+    // 오른쪽 축선 + 눈금
+    el("line", { x1: plotR, x2: plotR, y1: mainT, y2: plotB, stroke: C.axis, "stroke-width": 1 });
+    [0, 0.5, 1].forEach(function (f) {
+      var v = top * f;
+      var t = el("text", { x: plotR + 10, y: y(v) + 4, "font-size": 12, fill: C.tick });
+      t.textContent = fmtAxis(v);
     });
+
+    // 0원 기준 점선
+    el("line", { x1: 0, x2: plotR, y1: y(0), y2: y(0), stroke: "#b8bac0", "stroke-width": 1, "stroke-dasharray": "2 3" });
+
+    function pts(k) { return shown.map(function (p, i) { return [x(i), y(p[k])]; }); }
+    if (active.prev) {  // 비교선은 맨 뒤에 깔고 가늘게 — 주인공은 이번 달 매출
+      var pv = el("path", { d: smoothPath(prevShown.map(function (p, i) { return [x(i), y(p.revenue)]; })),
+        fill: "none", stroke: C.prev, "stroke-width": 1.5, "stroke-dasharray": "4 4", "stroke-linejoin": "round" });
+    }
+    if (active.revenue) {
+      var rp = smoothPath(pts("revenue"));
+      var ap = el("path", { d: rp + " L" + x(last) + "," + y(0) + " L" + x(0) + "," + y(0) + " Z", fill: "url(#scArea)" });
+      var rl = el("path", { d: rp, fill: "none", stroke: C.rev, "stroke-width": 2, "stroke-linejoin": "round" });
+    }
+    if (active.profit) {
+      var pl = el("path", { d: smoothPath(pts("profit")), fill: "none", stroke: C.pro, "stroke-width": 1.6, "stroke-linejoin": "round" });
+    }
+
+    // 마지막 값 태그 — 네이버의 현재가 표시
+    var tagKey = active.revenue ? "revenue" : active.profit ? "profit" : null;
+    if (tagKey) {
+      var lv = shown[last][tagKey], ty = y(lv);
+      var col = tagKey === "revenue" ? C.rev : C.pro;
+      var tg = el("path", { d: "M" + plotR + "," + ty + " l6,-10 h" + (axisW - 6) + " v20 h-" + (axisW - 6) + " Z", fill: col });
+      var tt = el("text", { x: plotR + 8, y: ty + 4, "font-size": 11.5, "font-weight": 700, fill: "#fff" });
+      tt.textContent = lv.toLocaleString();
+    }
+
+    if (mode && !REDUCE_MOTION) {
+      var EASE = "cubic-bezier(.16,1,.3,1)", DRAW = "cubic-bezier(.65,0,.35,1)";
+      var fade = function (node, delay, dur) {
+        if (node) node.animate([{ opacity: 0 }, { opacity: 1 }], { duration: dur || 500, delay: delay || 0, easing: EASE, fill: "backwards" });
+      };
+      if (mode === "intro") {
+        // 선은 왼쪽(1일)에서 오른쪽(오늘)으로 그려지고, 면적은 뒤따라 차오르고, 마지막 값 태그가 끝에 붙는다.
+        var draw = function (node, delay) {
+          if (!node) return;
+          var L = node.getTotalLength();
+          node.style.strokeDasharray = L + " " + L;
+          node.animate([{ strokeDashoffset: L }, { strokeDashoffset: 0 }], { duration: 1100, delay: delay, easing: DRAW, fill: "backwards" })
+            .onfinish = function () { node.style.strokeDasharray = ""; };
+        };
+        fade(pv, 0, 700);
+        draw(rl, 80);
+        draw(pl, 220);
+        fade(ap, 520, 800);
+        [tg, tt].forEach(function (node) {
+          if (node) node.animate([{ opacity: 0, transform: "translateX(-6px)" }, { opacity: 1, transform: "none" }],
+            { duration: 360, delay: 1050, easing: EASE, fill: "backwards" });
+        });
+      } else {
+        [pv, ap, rl, pl, tg, tt].forEach(function (node) { fade(node, 0, 260); });
+      }
+    }
+
+    // 호버 요소 — 십자선, 점, 가로축 값 태그
+    G.cross = el("line", { y1: mainT, y2: plotB, stroke: "#9a9ca3", "stroke-width": 1, "stroke-dasharray": "3 3", style: "display:none" });
+    G.dots = {};
+    keys.forEach(function (k) {
+      G.dots[k] = el("circle", { r: 4.5, fill: "#fff", stroke: k === "revenue" ? C.rev : C.pro, "stroke-width": 2.5, style: "display:none" });
+    });
+    if (active.prev) G.dots.prev = el("circle", { r: 3.5, fill: "#fff", stroke: C.prev, "stroke-width": 2, style: "display:none" });
+    G.hit = el("rect", { x: 0, y: 0, width: plotR, height: H, fill: "transparent", style: "cursor:crosshair" });
+    G.hit.addEventListener("mousemove", onMove);
+    G.hit.addEventListener("mouseleave", hideHover);
+    if (hoverIdx !== null) showHover(hoverIdx);
   }
-  drawAxes();
-  window.addEventListener("resize", function () {
-    Array.prototype.slice.call(svg.querySelectorAll("text")).forEach(function (t) { t.setAttribute("font-size", 14 / scale()); });
-  });
 
-  function pointsFor(key) {
-    return series.map(function (p, i) { return x(i) + "," + y(p[key]); }).join(" ");
+  function onMove(e) {
+    var r = svg.getBoundingClientRect();
+    var i = Math.floor((e.clientX - r.left) / G.step);
+    showHover(Math.max(0, Math.min(hoverLast, i)));
   }
-
-  // 호버 시 해당 날짜 열을 은은하게 강조하는 배경 밴드 (선/점보다 먼저 그려서 뒤에 깔림)
-  var colW = n > 1 ? plotW / (n - 1) : plotW;
-  var hoverBand = el("rect", {
-    y: padT, width: colW, height: plotH, fill: "var(--accent-soft)", opacity: 0.5, style: "display:none",
-  });
-  svg.appendChild(hoverBand);
-
-  // 매출 라인 아래 옅은 영역 채우기
-  var areaPoints = "M" + x(0) + "," + (padT + plotH) + " L" + pointsFor("revenue").replace(/ /g, " L") + " L" + x(n - 1) + "," + (padT + plotH) + " Z";
-  var area = el("path", { d: areaPoints, fill: "var(--money)", opacity: 0.08 });
-  svg.appendChild(area);
-
-  var lineRev = el("polyline", { points: pointsFor("revenue"), fill: "none", stroke: "var(--money)", "stroke-width": 2 });
-  var lineProfit = el("polyline", { points: pointsFor("profit"), fill: "none", stroke: "var(--money-2)", "stroke-width": 2, "stroke-dasharray": "4 3" });
-  svg.appendChild(lineRev);
-  svg.appendChild(lineProfit);
-
-  // 로드 시 선이 왼쪽에서 그려지는 애니메이션
-  [lineRev, lineProfit].forEach(function (line) {
-    var len = line.getTotalLength ? line.getTotalLength() : 1000;
-    line.style.strokeDasharray = String(len);
-    line.style.strokeDashoffset = String(len);
-    line.style.transition = "stroke-dashoffset 0.7s ease";
-    requestAnimationFrame(function () {
-      requestAnimationFrame(function () {
-        line.style.strokeDashoffset = "0";
-        if (line === lineProfit) {
-          setTimeout(function () { line.setAttribute("stroke-dasharray", "4 3"); }, 700);
-        }
-      });
-    });
-  });
-
-  var dotRev = el("circle", { r: 4, fill: "var(--money)", style: "display:none" });
-  var dotProfit = el("circle", { r: 4, fill: "var(--money-2)", style: "display:none" });
-  var hoverLine = el("line", { y1: padT, y2: padT + plotH, stroke: "var(--line)", "stroke-width": 1, style: "display:none" });
-  svg.appendChild(hoverLine);
-  svg.appendChild(dotRev);
-  svg.appendChild(dotProfit);
-
-  var activeSeries = { revenue: true, profit: true };
-
-  series.forEach(function (p, i) {
-    var rect = el("rect", {
-      x: x(i) - colW / 2, y: padT, width: colW, height: plotH, fill: "transparent", style: "cursor:pointer",
-    });
-    rect.addEventListener("mouseenter", function () { showHover(i); });
-    rect.addEventListener("mousemove", function () { showHover(i); });
-    svg.appendChild(rect);
-  });
 
   function showHover(i) {
-    var p = series[i];
-    var px = x(i);
-    hoverBand.setAttribute("x", px - colW / 2);
-    hoverBand.style.display = "block";
-    hoverLine.setAttribute("x1", px); hoverLine.setAttribute("x2", px);
-    hoverLine.style.display = "block";
-    if (activeSeries.revenue) { dotRev.setAttribute("cx", px); dotRev.setAttribute("cy", y(p.revenue)); dotRev.style.display = "block"; }
-    if (activeSeries.profit) { dotProfit.setAttribute("cx", px); dotProfit.setAttribute("cy", y(p.profit)); dotProfit.style.display = "block"; }
+    hoverIdx = i;
+    var p = shown[i], pp = active.prev ? prevShown[i] : null, px = G.x(i);  // p는 오늘 이후면 없다
+    G.cross.setAttribute("x1", px); G.cross.setAttribute("x2", px); G.cross.style.display = "";
+    Object.keys(G.dots).forEach(function (k) {
+      var v = k === "prev" ? (pp && pp.revenue) : (p && p[k]);
+      if (v === undefined || v === null || (k === "prev" && !pp)) { G.dots[k].style.display = "none"; return; }
+      G.dots[k].setAttribute("cx", px); G.dots[k].setAttribute("cy", G.y(v)); G.dots[k].style.display = "";
+    });
 
-    var lines = [];
-    if (activeSeries.revenue) lines.push("매출 " + p.revenue.toLocaleString() + "원");
-    if (activeSeries.profit) lines.push("순수익 " + p.profit.toLocaleString() + "원");
-    tooltip.innerHTML = '<div class="tt-date">' + p.date + '</div>' + lines.join(" · ");
-    var svgRect = svg.getBoundingClientRect();
-    var wrapRect = wrap.getBoundingClientRect();
-    var s = scale();
-    tooltip.style.left = (svgRect.left - wrapRect.left + px * s) + "px";
-    tooltip.style.top = (svgRect.top - wrapRect.top + y(Math.max(p.revenue, p.profit)) * s - 8) + "px";
-    tooltip.style.opacity = 1;
+    var d = new Date(all[i].date + "T00:00:00");
+    var wd = "일월화수목금토"[d.getDay()];
+    var rows = "";
+    if (p) {
+      if (active.revenue) rows += '<div class="r"><span><i style="background:' + C.rev + '"></i>매출</span><b>' + p.revenue.toLocaleString() + '원</b></div>';
+      if (active.profit) rows += '<div class="r"><span><i style="background:' + C.pro + '"></i>순수익</span><b>' + p.profit.toLocaleString() + '원</b></div>';
+      rows += '<div class="r"><span>주문</span><b>' + p.order_count + '건</b></div>';
+      if (p.uncertain_count) rows += '<div class="r" style="color:var(--warn)"><span>원가미상</span><b>' + p.uncertain_count + '건</b></div>';
+    }
+    if (pp) rows += '<div class="r" style="color:#8b8d93"><span><i style="background:' + C.prev + '"></i>지난달 ' + pp.day + '일 매출</span><b style="color:#8b8d93">' + pp.revenue.toLocaleString() + '원</b></div>';
+    tip.innerHTML = '<div class="d">' + all[i].date.replace(/-/g, ".") + " (" + wd + ")</div>" + rows;
+
+    // 커서 오른쪽에 붙이되, 오른쪽 끝에 가까우면 왼쪽으로 뒤집는다
+    // 숨어 있다 처음 뜰 땐 미끄러지지 말고 그 자리에서 바로 — 왼쪽 끝에서 날아오면 어색하다.
+    var wasHidden = tip.style.opacity !== "1";
+    if (wasHidden) tip.style.transition = "opacity .12s ease";
+    var tw = tip.offsetWidth, gap = 14;
+    var left = px + gap + tw > G.plotR ? px - gap - tw : px + gap;
+    tip.style.left = Math.max(0, left) + "px";
+    tip.style.top = (G.mainT + 6) + "px";
+    tip.style.opacity = 1;
+    if (wasHidden) requestAnimationFrame(function () { tip.style.transition = ""; });
   }
 
-  // 범례 클릭 시 해당 라인 on/off
-  var seriesEls = {
-    revenue: { line: lineRev, dot: dotRev, area: area },
-    profit: { line: lineProfit, dot: dotProfit, area: null },
-  };
-  Array.prototype.forEach.call(document.querySelectorAll(".legend-toggle"), function (toggle) {
+  function hideHover() {
+    hoverIdx = null;
+    G.cross.style.display = "none";
+    Object.keys(G.dots).forEach(function (k) { G.dots[k].style.display = "none"; });
+    tip.style.opacity = 0;
+  }
+
+  // 범례 클릭 시 해당 라인 on/off — 켜진 선 기준으로 세로축을 다시 잡는다
+  Array.prototype.forEach.call(document.querySelectorAll(".sc .legend-toggle"), function (toggle) {
     toggle.addEventListener("click", function () {
-      var key = toggle.dataset.series;
-      activeSeries[key] = !activeSeries[key];
-      toggle.classList.toggle("off", !activeSeries[key]);
-      var els = seriesEls[key];
-      els.line.style.display = activeSeries[key] ? "" : "none";
-      if (els.area) els.area.style.display = activeSeries[key] ? "" : "none";
-      if (!activeSeries[key]) { els.dot.style.display = "none"; }
+      var k = toggle.dataset.series;
+      active[k] = !active[k];
+      toggle.classList.toggle("off", !active[k]);
+      render("soft");
     });
   });
 
-  svg.addEventListener("mouseleave", function () {
-    hoverBand.style.display = "none";
-    hoverLine.style.display = "none";
-    dotRev.style.display = "none";
-    dotProfit.style.display = "none";
-    tooltip.style.opacity = 0;
-  });
+  render("intro");
+  var rt;
+  window.addEventListener("resize", function () { clearTimeout(rt); rt = setTimeout(render, 80); });
 })();
 </script>
 {% endblock %}

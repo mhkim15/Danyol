@@ -10,6 +10,7 @@ Claude 앱 대화 대신 실제 브라우저 화면으로 발굴 후보 확인/�
   python3 webapp/app.py
   브라우저에서 http://127.0.0.1:5050 접속
 """
+import calendar
 import io
 import json
 import os
@@ -156,39 +157,58 @@ def _env_status() -> dict:
 
 @app.route("/health")
 def health_view():
-    """기본은 로컬 파일만 읽는 빠른 진단(deep=False). ?deep=1이면 검색량 계절성까지
-    확인한다(데이터랩 API 호출 있음) — 방문마다 자동으로 돌리지 않는다."""
-    from bebrave.report import check_store_health_macro
-    deep = request.args.get("deep") == "1"
-    result = check_store_health_macro(deep=deep)
-    return render_template("health.html", env_status=_env_status(), **result)
+    """스토어 점검 — 성장·운영·돈 세 축을 판정하고 이번 달 전략과 할 일을 낸다(옛 주간리포트 흡수).
+    전부 로컬 원장만 읽는다(네트워크 없음)."""
+    from bebrave.report.strategy import (collect_metrics, diagnose, load_manual, load_history,
+                                         record_prescription, last_result)
+    metrics = collect_metrics()
+    manual = load_manual()
+    result = diagnose(metrics, manual)
+    record_prescription(result, metrics)
+    return render_template("health.html", r=result, m=metrics, manual=manual,
+                           prev=last_result(load_history(), metrics), env_status=_env_status(),
+                           checked_at=datetime.now().strftime("%Y-%m-%d %H:%M"))
 
 
 @app.route("/health/demo")
 def health_demo():
-    demo_result = {
-        "checked_at": datetime.now().isoformat(timespec="minutes"),
-        "verdict": {"level": "주의", "message": "등록 상품 2개가 모두 판매중지 상태입니다 — 지금 스토어에서 살 수 있는 상품이 없습니다."},
-        "trend": {
-            "enough_sample": True, "window_days": 28,
-            "this": {"revenue": 82000, "profit": 16200, "order_count": 9, "uncertain_count": 0},
-            "prev": {"revenue": 104000, "profit": 21400, "order_count": 12, "uncertain_count": 0},
-            "revenue_delta": -0.21, "profit_delta": -0.24, "order_delta": -0.25,
-            "aov_this": 9111, "aov_prev": 8667, "aov_delta": 0.05,
-        },
-        "causes": [
-            {"label": "판매 가능 상품 부족(추정)", "detail": "등록 2개 중 2개가 판매중지 — 매출 부재의 직접 원인일 수 있음", "link": "/products?tab=action"},
-            {"label": "반품률", "detail": "최근 30일 28% (7건/25건) — 빠른정산 기준(20%) 기준 초과", "link": "/cs"},
-            {"label": "실측 수수료율(추정)", "detail": "실측 11.2% vs 가정 9.5% (차이 +1.7%p, 표본 8건)", "link": "/settlement?tab=reconcile"},
-        ],
-        "opportunities": {"niche_count": 4, "remake_count": 3, "unclassified_count": 287,
-                           "concentration": {"naver_product_id": "13599502225", "share": 0.68}},
-        "vitals": {"fast_settlement_ok": False, "dispatch_delay_count": 1, "avg_margin_rate": 0.204,
-                    "below_min_profit_count": 2, "cash_balance": -4600},
-        "deep": False,
-    }
-    flash("샘플 데이터입니다 — 실제 진단이 아닙니다.", "success")
-    return render_template("health.html", demo=True, env_status=_env_status(), **demo_result)
+    """샘플 — 실데이터와 같은 판정 규칙을 탄다. ?s=시나리오로 전략 유형별 화면을 볼 수 있다."""
+    from bebrave.report.strategy import demo_metrics, diagnose, last_result, DEMO_SCENARIOS
+    scenario = request.args.get("s", "cleanup")
+    if scenario not in DEMO_SCENARIOS:
+        scenario = "cleanup"
+    metrics, manual, history = demo_metrics(scenario)
+    result = diagnose(metrics, manual)
+    return render_template("health.html", demo=True, scenario=scenario, scenarios=DEMO_SCENARIOS,
+                           r=result, m=metrics, manual=manual, prev=last_result(history, metrics),
+                           env_status=_env_status(), checked_at=datetime.now().strftime("%Y-%m-%d %H:%M"))
+
+
+@app.route("/health/manual", methods=["POST"])
+def health_manual():
+    """API로 못 받는 값(굿서비스 점수)과 월 순수익 목표를 직접 입력."""
+    from bebrave.report.strategy import save_manual
+
+    def num(name, cast):
+        v = (request.form.get(name) or "").replace(",", "").strip()
+        try:
+            return cast(v) if v else None
+        except ValueError:
+            return None
+    gs, goal = num("good_service", float), num("profit_goal", int)
+    if gs is not None and not (0 <= gs <= 5):
+        flash("굿서비스 점수는 0~5 사이로 입력하세요.", "error")
+        return redirect(url_for("health_view"))
+    save_manual(good_service=gs, profit_goal=goal)
+    flash("저장했습니다 — 판정에 반영됐습니다.", "success")
+    return redirect(url_for("health_view"))
+
+
+@app.route("/health/history/<month>", methods=["POST"])
+def health_history_done(month):
+    from bebrave.report.strategy import mark_done
+    mark_done(month, request.form.get("done") == "1")
+    return redirect(url_for("health_view"))
 
 
 # ── 홈 = 오늘 할 일 (거시 진단은 /health로 분리됨, 4단계) ───────────────────────
@@ -286,6 +306,30 @@ def _todo_groups(registered: list, pending_orders, returns_count, inquiry_count)
     return groups
 
 
+def _prev_month_compare(month_series_fn, sales_records, claims, today: date) -> dict:
+    """이번 달 1일~오늘 vs 지난달 1일~같은 날짜. 지난달 전체와 비교하면 월초엔 늘 '급감'으로
+    보여서 쓸모가 없다 — 같은 경과일수끼리 비교한다. 지난달이 더 짧으면 말일까지만."""
+    py, pm = (today.year - 1, 12) if today.month == 1 else (today.year, today.month - 1)
+    days = min(today.day, calendar.monthrange(py, pm)[1])
+    cur = month_series_fn(sales_records, today.year, today.month)[:today.day]
+    prev = month_series_fn(sales_records, py, pm)[:days]
+
+    def totals(series, ym, last_day):
+        return {
+            "revenue": sum(p["revenue"] for p in series),
+            "profit": sum(p["profit"] for p in series),
+            "order_count": sum(p["order_count"] for p in series),
+            "returns": len([c for c in claims
+                            if c.get("claimed_at", "")[:7] == ym and int(c["claimed_at"][8:10] or 0) <= last_day]),
+        }
+
+    this = totals(cur, f"{today.year:04d}-{today.month:02d}", today.day)
+    last = totals(prev, f"{py:04d}-{pm:02d}", days)
+    # 지난달이 0이면 %가 정의되지 않는다 — 0을 넣으면 "변화 없음"으로 읽히므로 None으로 둔다.
+    delta = {k: (None if not last[k] else (this[k] - last[k]) / abs(last[k])) for k in this}
+    return {"days": days, "prev_month": pm, "last": last, "delta": delta}
+
+
 @app.route("/")
 def index():
     from bebrave.report import load_sales_orders, sales_month_series
@@ -351,16 +395,21 @@ def index():
         "uncertain_count": sum(p.get("uncertain_count", 0) for p in current_series),
     }
     month_prefix = today.strftime("%Y-%m")
-    this_month_returns = len([c for c in load_claims() if c.get("claimed_at", "").startswith(month_prefix)])
+    claims = load_claims()
+    this_month_returns = len([c for c in claims if c.get("claimed_at", "").startswith(month_prefix)])
+    compare = _prev_month_compare(sales_month_series, sales_records, claims, today)
 
     prev_month, prev_year = (12, selected_year - 1) if selected_month == 1 else (selected_month - 1, selected_year)
     next_month, next_year = (1, selected_year + 1) if selected_month == 12 else (selected_month + 1, selected_year)
     next_disabled = (next_year, next_month) > (today.year, today.month)
+    # 차트의 회색 점선 — 보고 있는 달의 직전 달
+    chart_prev_series = sales_month_series(sales_records, prev_year, prev_month)
 
     return render_template(
         "index.html",
         todo_groups=todo_groups, todo_total=todo_total, checked_at=checked_at,
         this_month=this_month, this_month_returns=this_month_returns, chart_series=chart_series,
+        compare=compare, chart_prev_series=chart_prev_series,
         selected_year=selected_year, selected_month=selected_month,
         prev_year=prev_year, prev_month=prev_month, next_year=next_year, next_month=next_month,
         next_disabled=next_disabled,
@@ -381,7 +430,16 @@ def index_demo():
         {"date": (today.replace(day=min(today.day, 5))).isoformat(), "revenue": 4600, "profit": 944},
         {"date": (today.replace(day=min(today.day, 10))).isoformat(), "revenue": 13000, "profit": None},
     ]
+    pm_first = (today.replace(day=1) - timedelta(days=1)).replace(day=1)
+    demo_sales_records += [
+        {"date": pm_first.replace(day=d).isoformat(), "revenue": r, "profit": pr}
+        for d, r, pr in [(2, 5200, 1100), (8, 9800, 2000), (15, 4600, 900), (21, 7400, 1500)]
+    ]
+    demo_claims = [{"claimed_at": today.replace(day=1).isoformat()}, {"claimed_at": pm_first.replace(day=3).isoformat()},
+                   {"claimed_at": pm_first.replace(day=9).isoformat()}]
     chart_series = month_series(demo_sales_records, today.year, today.month)
+    chart_prev_series = month_series(demo_sales_records, pm_first.year, pm_first.month)
+    compare = _prev_month_compare(month_series, demo_sales_records, demo_claims, today)
     this_month = {
         "revenue": sum(p["revenue"] for p in chart_series),
         "profit": sum(p["profit"] for p in chart_series),
@@ -406,11 +464,12 @@ def index_demo():
         {"name": "정산", "count": 0, "rows": []},
     ]
 
-    flash("샘플 데이터입니다 — 오늘 할 일·주문·매출·반품 수치는 실제가 아닙니다.", "success")
+    # 상단 초록 안내 배너는 뺐다(2026-09) — 샘플 여부는 제목 옆 "실데이터 보기" 버튼으로 드러난다.
     return render_template(
         "index.html",
         todo_groups=demo_groups, todo_total=6, checked_at=datetime.now().strftime("%H:%M"),
         this_month=this_month, this_month_returns=1, chart_series=chart_series,
+        compare=compare, chart_prev_series=chart_prev_series,
         selected_year=today.year, selected_month=today.month,
         prev_year=today.year, prev_month=today.month, next_year=today.year, next_month=today.month,
         next_disabled=True,
@@ -444,11 +503,45 @@ def _candidate_bucket(c: dict) -> str:
 
 @app.route("/candidates")
 def candidates():
+    return _candidates_page(_load_json(SOURCING_LOG))
+
+
+# 발굴 후보 샘플 — 스캔 결과가 비어 있어도 화면 구조를 볼 수 있게. 점수·월검색수는 지어낸 값이지만
+# 도매매 상품은 실제 상품번호다(2026-09-30 조회: 상세 이미지 사용 허용 + 재고 있음) — 그래야
+# 상품명을 눌러 상세 미리보기(상세페이지·이미지 최적화 등)까지 실제로 열어볼 수 있다.
+# 도매매에서 내려가면 그 행의 미리보기만 "조회 실패"로 뜬다 — 그때 번호만 바꿔 넣으면 된다.
+_DEMO_CANDIDATES = [
+    # (카테고리, 키워드, 트랙, 점수, 월검색수, 도매매 상품번호, 상품명, 판매가, 도매가, 계절성)
+    ("수납/정리용품", "냉장고 정리 트레이", "A", 68, 8200, "44286595", "칸막이 정리함 다용도 수납 냉장고정리 트레이", 11100, 4900, False),
+    ("욕실용품", "규조토 발매트", "A", 61, 12400, "49637264", "발매트 빨아쓰는 프리미엄 규조토발매트 욕실 주방 현관 논슬립", 10300, 4200, False),
+    ("네일케어", "큐티클 니퍼", "A", 57, 5300, "68084192", "큐티클 니퍼 큐티클관리니퍼 풋케어 네일", 13600, 7200, False),
+    ("원예/식물", "행잉 플랜터", "A", 49, 3900, "64725330", "걸이용 미니 화분 행잉플랜터 다육이화분 식물걸이화분", 8700, 2800, True),
+    ("청소용품", "틈새 청소 브러시", "A", 44, 6100, "68127749", "자동차 송풍구 틈새 청소 브러시 2in1 2개입", 13100, 6700, False),
+    # 개당 이익이 작은 예 — 판매가가 낮으면 수수료·배송비를 빼고 남는 게 적다는 걸 보이게
+    ("세탁용품", "세탁망", "A", 42, 4800, "60066783", "셀링온 건조기세탁망", 6700, 1000, False),
+    ("침구단품", "메모리폼 베개커버", "B", 52, 21000, "34722296", "피그먼트 메모리폼베개 경추굴곡형 목베개 순면 커버", 15100, 8500, False),
+    ("요가/필라테스", "필라테스 링", "B", 47, 16500, "32111778", "종아리 요가링 마사지링 필라테스 스트레칭 하드타입 2P", 8200, 2300, False),
+    ("헤어케어", "두피 마사지 브러시", "B", 45, 27800, "51115298", "샴푸 브러쉬 헤어 두피 마사지 브러시", 6300, 650, False),
+    ("욕실용품", "욕실 선반", "B", 41, 45000, "62879746", "360도 회전 욕실선반 2개세트", 19700, 12700, False),
+]
+
+
+@app.route("/candidates/demo")
+def candidates_demo():
+    items = [{"category": cat, "keyword": kw, "track": tr, "score": sc, "monthly_search": ms,
+              "supply_name": name, "supply_goods_no": goods_no, "est_sale_price": sale,
+              "est_cost_price": cost, "margin_rate": round((sale - cost) / sale, 2) if sale else None,
+              "is_seasonal": seas, "image_usable": True, "recommendation": ""}
+             for cat, kw, tr, sc, ms, goods_no, name, sale, cost, seas in _DEMO_CANDIDATES]
+    return _candidates_page(items, demo=True)
+
+
+def _candidates_page(items: list, demo: bool = False):
+    from collections import Counter
     from bebrave.config import TARGET_CATEGORIES
     from bebrave.margin.calculator import calculate as calc_margin
     from bebrave.sourcing.discover import _recommendation
 
-    items = _load_json(SOURCING_LOG)
     items.sort(key=lambda c: c.get("score", 0), reverse=True)
 
     # 이미 등록한 도매매 상품은 목록에서 뺀다 — 예전엔 "✓ 등록됨" 배지만 달고 그대로
@@ -491,8 +584,13 @@ def candidates():
     return render_template("candidates.html", candidates=filtered, target_categories=TARGET_CATEGORIES,
                             category_groups=_category_groups(TARGET_CATEGORIES),
                             tab=tab, counts=counts, unconfirmed_only=unconfirmed_only,
-                            list_categories=sorted({c.get("category", "") for c in filtered if c.get("category")}),
-                            scan_last=_SCAN["last"])
+                            # 결과 목록의 카테고리 필터 — 스캔 필터와 같은 1단계 묶음으로, 지금 탭에 있는 것만
+                            list_groups=_category_groups(sorted({c.get("category", "") for c in filtered if c.get("category")})),
+                            cat_counts=Counter(c.get("category", "") for c in filtered),
+                            cat_group={cat: g for g, cats in _category_groups(sorted({c.get("category", "") for c in filtered if c.get("category")})) for cat in cats},
+                            verdicts=[v for v in ("진입 권장", "진입 가능") if any(c["verdict"] == v for c in filtered)],
+                            scan_last=None if demo else _SCAN["last"], demo=demo,
+                            page_ep="candidates_demo" if demo else "candidates")
 
 
 @app.route("/candidates/confirm_match_bulk", methods=["POST"])
@@ -658,13 +756,15 @@ def candidates_preview():
     is_modal = request.args.get("modal") == "1"
     track = request.args.get("track", "")
     goods_no_hint = request.args.get("goods_no", "")
-    ctx = {"keyword": keyword, "modal": is_modal, "track": track}
+    # 샘플 목록에서 연 미리보기 — 상품은 실제 도매매 상품이라 나머지는 그대로 보여주고 등록만 막는다
+    demo = request.args.get("demo") == "1"
+    ctx = {"keyword": keyword, "modal": is_modal, "track": track, "demo": demo}
 
     def _fail(message):
         if is_modal:
             return f'<div class="flash flash-error">{message}</div>', 200
         flash(message, "error")
-        return redirect(url_for("candidates"))
+        return redirect(url_for("candidates_demo" if demo else "candidates"))
 
     try:
         from bebrave.sourcing.domemae import search_products, fetch_product_detail, find_matching_product
@@ -918,6 +1018,10 @@ def candidates_preview():
 
 @app.route("/candidates/register", methods=["POST"])
 def register_candidate():
+    if request.form.get("demo") == "1":
+        # 샘플 화면에서 연 미리보기 — 버튼은 막아뒀지만 폼을 직접 보내도 등록되지 않게 한 번 더
+        flash("샘플 화면에서는 등록하지 않습니다.", "error")
+        return redirect(url_for("candidates_demo"))
     keyword = request.form.get("keyword", "")
     track = request.form.get("track", "")
     goods_no = request.form.get("goods_no", "")
@@ -2675,23 +2779,8 @@ def tracker_sync():
 
 @app.route("/report")
 def report():
-    """주간 체크리스트. 주문 실조회는 30일치 API 호출이라 방문마다 돌리면 가장 느린
-    화면이 된다 — ?live=1(새로고침 버튼)일 때만 태우고, 평소엔 로컬 데이터로 그린다."""
-    from bebrave.report import weekly_checklist, load_sales_orders, sales_month_series
-
-    live = request.args.get("live") == "1"
-    rows = weekly_checklist(live_orders=live)
-
-    # 홈 매출 카드가 여기로 오던 시절 정작 매출 수치가 없었다 — 이번 달 요약을 같이 낸다.
-    today = date.today()
-    series = sales_month_series(load_sales_orders(), today.year, today.month)
-    this_month = {
-        "revenue": sum(p["revenue"] for p in series),
-        "profit": sum(p["profit"] for p in series),
-        "order_count": sum(p["order_count"] for p in series),
-        "uncertain_count": sum(p.get("uncertain_count", 0) for p in series),
-    }
-    return render_template("report.html", rows=rows, live=live, this_month=this_month, today=today)
+    """주간리포트는 헬스체크로 합쳤다 — 옛 링크·즐겨찾기가 깨지지 않게 넘겨준다."""
+    return redirect(url_for("health_view"))
 
 
 # ── 마진 계산기 ────────────────────────────────────────────────────────────

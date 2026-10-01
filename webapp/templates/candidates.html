@@ -1,70 +1,85 @@
 {% extends "base.html" %}
 {% block title %}발굴 후보{% endblock %}
 {% block content %}
-<h1>발굴 후보</h1>
+<div class="row" style="justify-content:space-between;align-items:center;margin-bottom:18px;">
+  <h1 style="margin:0;">발굴 후보</h1>
+  {% if demo %}
+  <a class="btn secondary btn-sm" href="{{ url_for('candidates') }}">실데이터 보기</a>
+  {% else %}
+  <a class="btn secondary btn-sm" href="{{ url_for('candidates_demo') }}">샘플 데이터</a>
+  {% endif %}
+</div>
 
 {# 스캔 — 한 번 스캔하면 같은 키워드 묶음에서 틈새·리메이크가 동시에 나온다. 그래서 탭 안이 아니라
-   탭 위 공통 영역에 항상 펼쳐 둔다(탭 안에 두니 "리메이크만 스캔"하는 것처럼 보였다, 2026-09).
-   기본은 전체 카테고리, 태그의 ×로 빼고 "카테고리 추가"로 다시 넣는다. #}
+   탭 위 공통 영역에 항상 펼쳐 둔다(탭 안에 두니 "리메이크만 스캔"하는 것처럼 보였다, 2026-09). #}
 <div class="panel" id="scanPanel">
-  <h2 style="margin-bottom:10px;">새로 스캔하기
-  </h2>
-  {# 카테고리 선택 — 태그+드롭다운은 하나씩 골라야 해서 번거로웠다(2026-09). 18개를 한 화면에
-     태그 모양 체크박스로 펼친다. #}
+  <h2 style="margin-bottom:10px;">새로 스캔하기</h2>
+  {# 카테고리 선택(2026-09 개편) — 체크박스 목록형 필터를 가로로 눕혔다. 접힌 상태는 몇 개 골랐는지만,
+     펼치면 네이버 1단계 묶음이 한 줄로 나오고 묶음의 +를 누르면 그 아래 세부 카테고리가 열린다.
+     "전체" 버튼은 없앴다 — 기본이 전체 선택이고, 묶음 체크박스로 한꺼번에 켜고 끈다. #}
   <form method="post" action="{{ url_for('discover_scan') }}" id="scanForm">
     <input type="hidden" name="tab" value="{{ tab }}">
-    {# 태그 모양 체크박스 — 네모 칸은 감추고 테두리 두른 글자를 눌러 켜고 끈다. "카테고리" 제목 오른쪽의
-       음영 박스 안에 모아, 패널 전체를 태그가 차지하지 않게 한다(2026-09) #}
     <style>
       .scan-grid { display:grid; grid-template-columns:auto 1fr; gap:10px 16px; align-items:start; }
-      /* "카테고리" 제목은 접힌 상태의 오른쪽 박스 높이 한가운데에 둔다 — 박스 높이 53px = 태그 줄 31px
-         (글자 줄 18 + 위아래 여백 10 + 테두리 3) + 박스 안쪽 여백 20 + 테두리 2. 펼쳐도 첫 줄 가운데에 남는다.
-         메인 제목은 "새로 스캔하기"라 여기는 굵기를 뺀다 */
-      .scan-label { height:53px; display:flex; align-items:center; font-size:13px; font-weight:400;
-                    color:var(--ink); white-space:nowrap; }
-      .scan-box { background:var(--paper); border:1px solid var(--line); border-radius:12px; padding:10px; }
-      .scan-top { display:flex; align-items:center; gap:10px; }
-      .scan-picked { flex:1; min-width:0; font-size:12px; color:var(--ink-soft);
-                     overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-      .scan-more { background:none; border:none; padding:4px 2px; font-size:12px; color:var(--accent);
-                   cursor:pointer; white-space:nowrap; }
-      .scan-detail { margin-top:10px; padding-top:10px; border-top:1px solid var(--line);
-                     display:flex; flex-direction:column; gap:8px; }
-      .scan-group { display:grid; grid-template-columns:120px 1fr; gap:8px; align-items:start; }
-      .scan-items { display:flex; flex-wrap:wrap; gap:6px; }
-      .scan-chip.grp span { font-weight:700; }
-      /* 사이트 공통 label 스타일의 위 여백을 받지 않게 한다 — 받으면 태그가 10px 내려가 제목과 어긋났다 */
-      .scan-chip { position:relative; display:inline-flex; margin:0; padding:0; }
-      .scan-chip input { position:absolute; opacity:0; width:1px; height:1px; pointer-events:none; }
-      .scan-chip span { display:inline-flex; align-items:center; padding:5px 12px; border:1.5px solid var(--line);
-                        border-radius:10px; font-size:12.5px; line-height:18px; color:var(--ink-soft); background:var(--panel);
-                        cursor:pointer; user-select:none; white-space:nowrap; }
-      .scan-chip span:hover { border-color:var(--accent); }
-      .scan-chip input:checked + span { border-color:var(--accent); color:var(--accent); font-weight:600; }
-      .scan-chip input:checked + span::before { content:"✓"; margin-right:6px; font-weight:700; }
-      .scan-chip input:indeterminate + span { border-color:var(--accent); border-style:dashed; color:var(--accent); }
-      .scan-chip input:indeterminate + span::before { content:"–"; margin-right:6px; font-weight:700; }
-      .scan-chip input:focus-visible + span { outline:2px solid var(--accent); outline-offset:2px; }
-      .scan-chip input:disabled + span { opacity:.55; cursor:not-allowed; }
-      .scan-chip.all span { font-weight:700; }
+      .scan-label { height:44px; display:flex; align-items:center; font-size:13px; color:var(--ink); white-space:nowrap; }
+      .scan-box { border:1px solid var(--line); border-radius:12px; background:var(--panel); }
+      .scan-top { display:flex; align-items:center; justify-content:space-between; gap:10px; height:42px; padding:0 14px; }
+      .scan-picked { font-size:13px; color:var(--ink); font-variant-numeric:tabular-nums; }
+      .scan-picked b { color:var(--accent); font-weight:700; }
+      /* 공용 버튼 스타일(파란 알약·호버 튀어오름)을 끊는다 — 안 끊으면 누른 뒤 글자가 안 보였다 */
+      .scan-box button.txt { background:none; border:none; box-shadow:none; transform:none; padding:4px 2px;
+                             border-radius:6px; font-size:12.5px; font-weight:500; color:var(--ink-soft); cursor:pointer;
+                             display:inline-flex; align-items:center; gap:4px; }
+      .scan-box button.txt:hover, .scan-box button.txt:active { background:none; color:var(--accent); transform:none; box-shadow:none; }
+      .scan-box button.txt svg { width:14px; height:14px; }
+      .scan-detail { border-top:1px solid var(--line); }
+      /* 1단계 묶음 = 한 행. +를 누르면 그 행 바로 아래에 세부 카테고리가 가로로 펼쳐진다(여러 행 동시에 열림) */
+      .cg-block { border-bottom:1px solid var(--line); }
+      .cg-block:last-child { border-bottom:none; }
+      .cg { display:flex; align-items:center; gap:6px; padding:6px 14px; }
+      .cg .cg-plus { margin-left:auto; }
+      .cg.open .ck-text { color:var(--accent); font-weight:600; }
+      .cg-count { font-size:11.5px; color:var(--ink-muted); font-variant-numeric:tabular-nums; }
+      .cg-sub { background:var(--paper); padding:8px 14px 10px 38px; display:flex; flex-wrap:wrap; gap:2px 22px; }
+      .cg-block:last-child .cg-sub { border-radius:0 0 12px 12px; }
+      .cg-sub[hidden] { display:none; }
+      /* 네모 체크박스 + 글자. 사이트 공통 label 여백(10px 위)을 받지 않게 한다 */
+      .ck { display:inline-flex; align-items:center; gap:8px; margin:0; padding:4px 0; cursor:pointer;
+            font-size:13px; color:var(--ink); user-select:none; }
+      .ck input { appearance:none; -webkit-appearance:none; margin:0; width:16px; height:16px; flex-shrink:0;
+                  border:1.5px solid #c6c9d1; border-radius:4px; background:#fff center/12px no-repeat; cursor:pointer;
+                  transition:background-color .1s ease, border-color .1s ease; }
+      .ck:hover input:not(:disabled) { border-color:var(--accent); }
+      .ck input:checked { background-color:var(--accent); border-color:var(--accent);
+        background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='white' stroke-width='3.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M20 6 9 17l-5-5'/%3E%3C/svg%3E"); }
+      .ck input:indeterminate { background-color:var(--accent); border-color:var(--accent);
+        background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='white' stroke-width='3.5' stroke-linecap='round'%3E%3Cpath d='M6 12h12'/%3E%3C/svg%3E"); }
+      .ck input:focus-visible { outline:2px solid var(--accent); outline-offset:2px; }
+      .ck input:disabled { opacity:.5; cursor:not-allowed; }
+      .scan-actions { display:flex; align-items:center; justify-content:flex-end; gap:12px; }
+      #scanHint { font-size:12px; }
     </style>
+    {% set plus = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>' %}
+    {% set minus = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M5 12h14"/></svg>' %}
     <div class="scan-grid">
       <div class="scan-label">카테고리</div>
       <div class="scan-box">
         <div class="scan-top">
-          <label class="scan-chip all"><input type="checkbox" id="scanAll" checked onchange="scanToggleAll(this.checked)"><span>전체</span></label>
           <span id="scanPicked" class="scan-picked"></span>
-          <button type="button" id="scanMore" class="scan-more" onclick="scanToggleDetail()" aria-expanded="false">세부 카테고리 ▾</button>
+          <button type="button" id="scanMore" class="txt" onclick="scanToggleDetail()" aria-expanded="false">세부 카테고리 {{ plus|safe }}</button>
         </div>
-        {# 세부 카테고리는 접어두고, 네이버 1단계 카테고리별로 한 줄씩 묶는다. 줄 맨 앞 태그로 묶음째 켜고 끈다 #}
         <div id="scanDetail" class="scan-detail" hidden>
           {% for group, cats in category_groups %}
           {% set gi = loop.index0 %}
-          <div class="scan-group">
-            <label class="scan-chip grp"><input type="checkbox" class="scan-grp" data-group="{{ gi }}" checked onchange="scanToggleGroup(this)"><span>{{ group }}</span></label>
-            <div class="scan-items">
+          <div class="cg-block">
+            <div class="cg" data-group="{{ gi }}">
+              <label class="ck"><input type="checkbox" class="scan-grp" data-group="{{ gi }}" checked onchange="scanToggleGroup(this)"><span class="ck-text">{{ group }}</span></label>
+              <span class="cg-count" data-count="{{ gi }}"></span>
+              <button type="button" class="txt cg-plus" data-group="{{ gi }}" onclick="scanOpenGroup({{ gi }})" aria-expanded="false" aria-label="{{ group }} 세부 카테고리">{{ plus|safe }}</button>
+            </div>
+            <div class="cg-sub" data-sub="{{ gi }}" hidden>
               {% for cat in cats %}
-              <label class="scan-chip"><input type="checkbox" name="categories" value="{{ cat }}" class="scan-cat" data-group="{{ gi }}" checked onchange="scanSync()"><span>{{ cat }}</span></label>
+              <label class="ck"><input type="checkbox" name="categories" value="{{ cat }}" class="scan-cat" data-group="{{ gi }}" checked onchange="scanSync()"><span>{{ cat }}</span></label>
               {% endfor %}
             </div>
           </div>
@@ -72,9 +87,10 @@
         </div>
       </div>
       <div></div>
-      <div class="row" style="align-items:center;gap:10px;">
+      {# 실행 버튼은 선택 영역 오른쪽 끝선에 맞춘다 #}
+      <div class="scan-actions">
+        <span id="scanHint" class="muted"></span>
         <button type="submit" id="scanBtn">스캔 실행</button>
-        <span id="scanHint" class="muted" style="font-size:12px;"></span>
       </div>
     </div>
   </form>
@@ -91,10 +107,12 @@
 </div>
 <script>
 (function () {
+  var DEMO = {{ 'true' if demo else 'false' }};
+  var PLUS = {{ plus|tojson }}, MINUS = {{ minus|tojson }};
   var scanning = false, wasRunning = false;
   function all(sel) { return [].slice.call(document.querySelectorAll(sel)); }
 
-  // 묶음 태그(전체·그룹)를 아래 카테고리 선택 상태에 맞춘다 — 일부만 고르면 반쯤 찬 표시
+  // 묶음 체크박스를 아래 세부 카테고리 선택 상태에 맞춘다 — 일부만 고르면 반쯤 찬 표시
   function setHead(head, items) {
     var n = items.filter(function (b) { return b.checked; }).length;
     head.checked = n > 0 && n === items.length;
@@ -105,20 +123,17 @@
   window.scanSync = function () {
     var cats = all('.scan-cat');
     all('.scan-grp').forEach(function (g) {
-      setHead(g, cats.filter(function (c) { return c.dataset.group === g.dataset.group; }));
+      var items = cats.filter(function (c) { return c.dataset.group === g.dataset.group; });
+      var k = setHead(g, items);
+      document.querySelector('[data-count="' + g.dataset.group + '"]').textContent = k + '/' + items.length;
     });
-    var n = setHead(document.getElementById('scanAll'), cats);
-    var picked = cats.filter(function (c) { return c.checked; }).map(function (c) { return c.value; });
-    document.getElementById('scanPicked').textContent =
-      n === cats.length ? cats.length + '개 전체 선택됨' : (n ? n + '개 선택 · ' + picked.join(', ') : '선택된 카테고리 없음');
-    document.getElementById('scanHint').textContent =
-      n ? (n === cats.length ? '전체 ' : '') + n + '개 카테고리 · 약 ' + n + '~' + (n * 2) + '분' : '카테고리를 하나 이상 고르세요';
-    document.getElementById('scanBtn').disabled = !n || scanning;
-  };
-
-  window.scanToggleAll = function (on) {
-    all('.scan-cat').forEach(function (b) { b.checked = on; });
-    scanSync();
+    var n = cats.filter(function (c) { return c.checked; }).length;
+    document.getElementById('scanPicked').innerHTML = n
+      ? '<b>' + n + '개</b> 선택됨 <span class="muted">/ 전체 ' + cats.length + '개</span>'
+      : '<span style="color:var(--err)">선택된 카테고리 없음</span>';
+    document.getElementById('scanHint').textContent = DEMO ? '샘플 화면에서는 스캔하지 않습니다'
+      : (n ? '약 ' + n + '~' + (n * 2) + '분 소요' : '카테고리를 하나 이상 고르세요');
+    document.getElementById('scanBtn').disabled = DEMO || !n || scanning;
   };
 
   window.scanToggleGroup = function (g) {
@@ -126,10 +141,20 @@
     scanSync();
   };
 
+  // 묶음마다 따로 여닫는다 — 세부 카테고리가 자기 묶음 행 바로 아래 열리므로 여러 개 열어도 헷갈리지 않는다
+  window.scanOpenGroup = function (gi) {
+    var sub = document.querySelector('[data-sub="' + gi + '"]');
+    var b = document.querySelector('.cg-plus[data-group="' + gi + '"]');
+    sub.hidden = !sub.hidden;
+    document.querySelector('.cg[data-group="' + gi + '"]').classList.toggle('open', !sub.hidden);
+    b.innerHTML = sub.hidden ? PLUS : MINUS;
+    b.setAttribute('aria-expanded', String(!sub.hidden));
+  };
+
   window.scanToggleDetail = function () {
     var d = document.getElementById('scanDetail'), btn = document.getElementById('scanMore');
     d.hidden = !d.hidden;
-    btn.textContent = d.hidden ? '세부 카테고리 ▾' : '세부 카테고리 접기 ▴';
+    btn.innerHTML = d.hidden ? '세부 카테고리 ' + PLUS : '접기 ' + MINUS;
     btn.setAttribute('aria-expanded', String(!d.hidden));
   };
 
@@ -142,7 +167,7 @@
         if (!wasRunning) {
           // 스캔 중에 화면을 다시 열면 기본값(전체)이 아니라 실제로 스캔 중인 카테고리를 보여준다
           all('.scan-cat').forEach(function (b) { b.checked = s.categories.indexOf(b.value) !== -1; b.disabled = true; });
-          all('.scan-grp, #scanAll').forEach(function (b) { b.disabled = true; });
+          all('.scan-grp').forEach(function (b) { b.disabled = true; });
           scanSync();
         }
         wasRunning = true;
@@ -161,14 +186,14 @@
   }
 
   scanSync();
-  poll();
+  if (!DEMO) poll();
 })();
 </script>
 
 <div class="tabs">
-  <a href="{{ url_for('candidates', tab='niche') }}" class="{{ 'active' if tab == 'niche' }}">틈새 — 바로 등록 <span class="tab-count">{{ counts.niche }}</span></a>
-  <a href="{{ url_for('candidates', tab='remake') }}" class="{{ 'active' if tab == 'remake' }}">리메이크 — 손봐서 등록 <span class="tab-count">{{ counts.remake }}</span></a>
-  {% if counts.unclassified %}<a href="{{ url_for('candidates', tab='unclassified') }}" class="{{ 'active' if tab == 'unclassified' }}">미분류 <span class="tab-count">{{ counts.unclassified }}</span></a>{% endif %}
+  <a href="{{ url_for(page_ep, tab='niche') }}" class="{{ 'active' if tab == 'niche' }}">틈새 — 바로 등록 <span class="tab-count">{{ counts.niche }}</span></a>
+  <a href="{{ url_for(page_ep, tab='remake') }}" class="{{ 'active' if tab == 'remake' }}">리메이크 — 손봐서 등록 <span class="tab-count">{{ counts.remake }}</span></a>
+  {% if counts.unclassified %}<a href="{{ url_for(page_ep, tab='unclassified') }}" class="{{ 'active' if tab == 'unclassified' }}">미분류 <span class="tab-count">{{ counts.unclassified }}</span></a>{% endif %}
 </div>
 
 {% if tab == 'unclassified' and candidates %}
@@ -185,14 +210,62 @@
 {% endif %}
 
 <div class="panel">
-  <div class="filterbar">
-    <input type="text" id="candSearch" placeholder="키워드·상품명 검색" oninput="filterCands()">
-    <select id="candCat" onchange="filterCands()">
-      <option value="">카테고리 전체</option>
-      {% for cat in list_categories %}<option value="{{ cat }}">{{ cat }}</option>{% endfor %}
-    </select>
-    <span id="candCount" class="muted" style="font-size:12px;">{{ candidates|length }}개</span>
+  {# 결과 필터 — 스캔 영역과 같은 모양(왼쪽 제목, 오른쪽 선택 영역)으로 카테고리·판정·검색 세 줄.
+     전부 화면에서만 거른다 — 점수 계산(추천 로직)은 건드리지 않는다.
+     스캔 쪽 스크립트와 속성 이름이 겹치지 않게 data-fg / .flt-* 를 쓴다. #}
+  <style>
+    .flt-grid { display:grid; grid-template-columns:auto minmax(0, 560px); justify-content:start; gap:10px 16px; align-items:start; margin-bottom:16px; }
+    .flt-grid .scan-label { min-width:48px; }
+    .flt-inline { display:flex; flex-wrap:wrap; align-items:center; gap:2px 22px; min-height:44px; }
+    .flt-search { display:flex; align-items:center; }
+    .flt-search input { flex:1; height:44px; border-radius:12px; }
+    .list-head { font-size:13px; color:var(--ink-soft); padding:14px 0 8px; border-top:1px solid var(--line); }
+    .list-head b { color:var(--ink); font-weight:700; font-variant-numeric:tabular-nums; }
+  </style>
+  <div class="flt-grid">
+    <div class="scan-label">카테고리</div>
+    <div class="scan-box">
+      <div class="scan-top">
+        <span id="fltPicked" class="scan-picked"></span>
+        <button type="button" id="fltMore" class="txt" onclick="fltToggleDetail()" aria-expanded="false">세부 카테고리 {{ plus|safe }}</button>
+      </div>
+      <div id="fltDetail" class="scan-detail" hidden>
+        {% for group, cats in list_groups %}
+        {% set gi = loop.index0 %}
+        {% set ns = namespace(n=0) %}{% for cat in cats %}{% set ns.n = ns.n + cat_counts[cat] %}{% endfor %}
+        <div class="cg-block">
+          <div class="cg" data-fg="{{ gi }}">
+            <label class="ck"><input type="checkbox" class="flt-grp" data-fg="{{ gi }}" checked onchange="fltToggleGroup(this)"><span class="ck-text">{{ group }}</span></label>
+            <span class="cg-count">{{ ns.n }}개</span>
+            <button type="button" class="txt cg-plus flt-plus" data-fg="{{ gi }}" onclick="fltOpenGroup({{ gi }})" aria-expanded="false" aria-label="{{ group }} 세부 카테고리">{{ plus|safe }}</button>
+          </div>
+          <div class="cg-sub" data-fsub="{{ gi }}" hidden>
+            {% for cat in cats %}
+            <label class="ck"><input type="checkbox" class="flt-cat" value="{{ cat }}" data-fg="{{ gi }}" checked onchange="filterCands()"><span>{{ cat }} <span class="cg-count">{{ cat_counts[cat] }}</span></span></label>
+            {% endfor %}
+          </div>
+        </div>
+        {% endfor %}
+      </div>
+    </div>
+
+    {# 판정 칸은 판정 컬럼이 있는 틈새 탭에만 — 리메이크 탭은 판정 대신 월검색수를 보여준다 #}
+    {% if tab == 'niche' and verdicts %}
+    <div class="scan-label">판정</div>
+    <div class="flt-inline">
+      {% for v in verdicts %}
+      <label class="ck"><input type="checkbox" class="flt-verdict" value="{{ v }}" checked onchange="filterCands()"><span>{{ v }}</span></label>
+      {% endfor %}
+    </div>
+    {% endif %}
+
+    <div class="scan-label">검색</div>
+    <div class="flt-search">
+      <input type="text" id="candSearch" placeholder="키워드·상품명 검색" oninput="filterCands()">
+    </div>
   </div>
+  {# 필터를 거친 뒤 표에 남은 후보 수 — 필터 칸이 아니라 결과 목록의 머리에 둔다 #}
+  <div class="list-head">결과 <b id="candCount">{{ candidates|length }}개</b></div>
   <div class="table-wrap">
   <table id="candTable">
     <thead>
@@ -224,12 +297,13 @@
           <p>등록 미리보기에서 도매매 소비자가가 추가로 확인되면 판매가가 이 값보다 높게 잡힐 수 있습니다.</p>
         </span></button>
       </th>
-      <th style="width:10%;">상품 확인</th>
+      <th style="width:10%;">도매매 원본</th>
     </tr>
     </thead>
     <tbody>
     {% for c in candidates %}
-    <tr data-name="{{ (c.keyword ~ ' ' ~ (c.supply_name or ''))|lower }}" data-cat="{{ c.category }}">
+    <tr data-name="{{ (c.keyword ~ ' ' ~ (c.supply_name or ''))|lower }}" data-cat="{{ c.category }}"
+        data-group="{{ cat_group.get(c.category, '') }}" data-verdict="{{ c.verdict }}">
       <td class="muted">{{ c.category }}</td>
       <td>
         {{ c.keyword }}
@@ -245,8 +319,9 @@
       {% endif %}
       <td>
         {% if c.supply_name %}
-          <a href="{{ url_for('candidates_preview', keyword=c.keyword, track=c.track, goods_no=c.supply_goods_no) }}"
-             style="font-size:12.5px;">{{ c.supply_name[:32] }}{{ "…" if c.supply_name|length > 32 }}</a>
+          <span style="font-size:12.5px;">{{ c.supply_name[:32] }}{{ "…" if c.supply_name|length > 32 }}</span>
+          <div style="margin-top:3px;"><a href="{{ url_for('candidates_preview', keyword=c.keyword, track=c.track, goods_no=c.supply_goods_no, demo=1 if demo else None) }}"
+             style="font-size:12px;">등록 미리보기 →</a></div>
         {% else %}
           <span class="muted" style="font-size:12px;">미조회</span>
         {% endif %}
@@ -264,7 +339,7 @@
       </td>
       <td>
         {% if c.supply_goods_no %}
-        <a href="{{ domemae_url(c.supply_goods_no) }}" target="_blank" rel="noopener" style="font-size:12.5px;white-space:nowrap;">상품 확인 ↗</a>
+        <a href="{{ domemae_url(c.supply_goods_no) }}" target="_blank" rel="noopener" style="font-size:12.5px;white-space:nowrap;">원본 보기 ↗</a>
         {% else %}
         <span class="muted" style="font-size:12px;">—</span>
         {% endif %}
@@ -279,16 +354,62 @@
 </div>
 
 <script>
-function filterCands() {
-  var q = document.getElementById('candSearch').value.trim().toLowerCase();
-  var cat = document.getElementById('candCat').value;
-  var n = 0;
-  document.querySelectorAll('#candTable tbody tr[data-name]').forEach(function (tr) {
-    var show = (!q || tr.dataset.name.indexOf(q) !== -1) && (!cat || tr.dataset.cat === cat);
-    tr.style.display = show ? '' : 'none';
-    if (show) n++;
-  });
-  document.getElementById('candCount').textContent = n + '개';
-}
+(function () {
+  var PLUS = {{ plus|tojson }}, MINUS = {{ minus|tojson }};
+  function all(sel) { return [].slice.call(document.querySelectorAll(sel)); }
+
+  window.filterCands = function () {
+    var q = document.getElementById('candSearch').value.trim().toLowerCase();
+    var cats = all('.flt-cat');
+    // 묶음 체크박스를 세부 선택 상태에 맞춘다 — 일부만 고르면 반쯤 찬 표시
+    all('.flt-grp').forEach(function (g) {
+      var items = cats.filter(function (c) { return c.dataset.fg === g.dataset.fg; });
+      var k = items.filter(function (c) { return c.checked; }).length;
+      g.checked = k > 0 && k === items.length;
+      g.indeterminate = k > 0 && k < items.length;
+    });
+    var picked = cats.filter(function (c) { return c.checked; }).map(function (c) { return c.value; });
+    document.getElementById('fltPicked').innerHTML = picked.length
+      ? '<b>' + picked.length + '개</b> 선택됨 <span class="muted">/ 전체 ' + cats.length + '개</span>'
+      : (cats.length ? '<span style="color:var(--err)">선택된 카테고리 없음</span>'
+                     : '<span class="muted">이 탭에 후보가 없습니다</span>');
+    document.getElementById('fltMore').style.display = cats.length ? '' : 'none';
+    var vBoxes = all('.flt-verdict');
+    var verdicts = vBoxes.filter(function (b) { return b.checked; }).map(function (b) { return b.value; });
+
+    var n = 0;
+    all('#candTable tbody tr[data-name]').forEach(function (tr) {
+      var show = picked.indexOf(tr.dataset.cat) !== -1
+        && (!vBoxes.length || verdicts.indexOf(tr.dataset.verdict) !== -1)
+        && (!q || tr.dataset.name.indexOf(q) !== -1);
+      tr.style.display = show ? '' : 'none';
+      if (show) n++;
+    });
+    document.getElementById('candCount').textContent = n + '개';
+  };
+
+  window.fltToggleGroup = function (g) {
+    all('.flt-cat[data-fg="' + g.dataset.fg + '"]').forEach(function (b) { b.checked = g.checked; });
+    filterCands();
+  };
+
+  window.fltOpenGroup = function (gi) {
+    var sub = document.querySelector('[data-fsub="' + gi + '"]');
+    var b = document.querySelector('.flt-plus[data-fg="' + gi + '"]');
+    sub.hidden = !sub.hidden;
+    document.querySelector('.cg[data-fg="' + gi + '"]').classList.toggle('open', !sub.hidden);
+    b.innerHTML = sub.hidden ? PLUS : MINUS;
+    b.setAttribute('aria-expanded', String(!sub.hidden));
+  };
+
+  window.fltToggleDetail = function () {
+    var d = document.getElementById('fltDetail'), btn = document.getElementById('fltMore');
+    d.hidden = !d.hidden;
+    btn.innerHTML = d.hidden ? '세부 카테고리 ' + PLUS : '접기 ' + MINUS;
+    btn.setAttribute('aria-expanded', String(!d.hidden));
+  };
+
+  filterCands();
+})();
 </script>
 {% endblock %}

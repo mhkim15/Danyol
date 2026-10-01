@@ -1,151 +1,545 @@
 {% extends "base.html" %}
 {% block title %}헬스체크{% endblock %}
 {% block content %}
-<div class="row" style="justify-content:space-between;align-items:center;margin-bottom:18px;">
-  <h1 style="margin:0;">헬스체크</h1>
-  <span class="row" style="gap:8px;">
-    <span class="muted" style="font-size:12px;">{{ checked_at.replace('T', ' ') }}</span>
-    {% if not demo %}
-    <a class="btn secondary btn-sm" href="{{ url_for('health_demo') }}">샘플 데이터</a>
-    <a class="btn secondary btn-sm" href="{{ url_for('health_view', deep=1) }}">정밀 진단</a>
-    {% endif %}
-  </span>
-</div>
+{#- 정보 위계
+    1단(3초)  이번 달 전략 · 할 일(무엇을/왜) · 목표 달성 예상
+    2단(10초) 축마다 문제 한 문장 + 숫자 칩(문제인 것만 색)
+    3단(궁금할 때) 펼치면 요약에 없는 "분해" 정보만 — 같은 숫자를 두 번 보여주지 않는다.
+    설명문은 "?" 말풍선으로 숨긴다. -#}
+{% macro won(v) %}{{ "—" if v is none or v is undefined else "{:,.0f}원".format(v) }}{% endmacro %}
+{% macro man(v) %}{{ "—" if v is none or v is undefined else ("{:,.1f}만".format(v / 10000) if v >= 10000 else "{:,.0f}원".format(v)) }}{% endmacro %}
+{% macro pct(v) %}{{ "—" if v is none or v is undefined else "{:.0%}".format(v) }}{% endmacro %}
+{% macro tip(text) %}<button type="button" class="tip-btn" data-tip-toggle aria-label="설명">?<span class="tip-bubble">{{ text }}</span></button>{% endmacro %}
+{% set AXIS_ICON = {
+  'growth': '<path d="M3 3v18h18"/><path d="m19 9-5 5-4-4-3 3"/>',
+  'ops': '<path d="M14 18V6a2 2 0 0 0-2-2H4a2 2 0 0 0-2 2v11a1 1 0 0 0 1 1h2"/><path d="M15 18H9"/><path d="M19 18h2a1 1 0 0 0 1-1v-3.65a1 1 0 0 0-.22-.62L18.3 9.38a1 1 0 0 0-.78-.38H14"/><circle cx="17" cy="18" r="2"/><circle cx="7" cy="18" r="2"/>',
+  'money': '<rect width="20" height="14" x="2" y="5" rx="2"/><line x1="2" x2="22" y1="10" y2="10"/>'
+} %}
+{% set AXIS_NAME = {'growth':'성장','ops':'운영','money':'돈'} %}
+{% set g = m.growth or {} %}{% set o = m.ops or {} %}{% set mo = m.money or {} %}
 
-<div class="panel" style="background:{{ 'var(--err-bg)' if verdict.level == '주의' else ('var(--ok-bg)' if verdict.level == '양호' else 'var(--paper)') }};color:{{ 'var(--err)' if verdict.level == '주의' else ('var(--ok)' if verdict.level == '양호' else 'var(--ink-soft)') }};">
-  <b>종합 판정 · {{ verdict.level }}</b><br>{{ verdict.message }}
-</div>
+<style>
+  .lv-risk { --lv:var(--err); --lv-bg:var(--err-bg); }
+  .lv-warn { --lv:var(--warn); --lv-bg:var(--warn-bg); }
+  .lv-ok   { --lv:var(--ok); --lv-bg:var(--ok-bg); }
+  .lv-hold { --lv:var(--ink-muted); --lv-bg:var(--chip-bg); }
 
-<div class="section">
-  {# 증감률만 있고 무엇 대비인지가 화면에 없었다 — 기간과 직전 실값을 같이 보여준다 #}
-  <h2>추세 <span class="muted" style="font-size:13px;font-weight:400;">
-    · 최근 {{ trend.window_days }}일 vs 직전 {{ trend.window_days }}일</span></h2>
-  {% if not trend.enough_sample %}
-  <div class="panel muted">판단 불가 — 표본 {{ trend.sample_count }}건. 주문이 더 쌓여야 비교할 수 있습니다.</div>
+  .hc-head { display:flex; justify-content:space-between; align-items:center; gap:12px; flex-wrap:wrap; margin-bottom:14px; }
+  .hc-head h1 { margin:0; }
+  .hc-head .when { font-size:12px; color:var(--ink-muted); font-weight:400; margin-left:8px; }
+  .hc-scen { display:flex; gap:6px; flex-wrap:wrap; align-items:center; margin:-2px 0 14px; font-size:12px; color:var(--ink-muted); }
+  .hc-scen a { text-decoration:none; color:var(--ink-soft); background:var(--panel); border:1px solid var(--line); border-radius:99px; padding:4px 11px; font-weight:600; }
+  .hc-scen a.on { background:var(--ink); border-color:var(--ink); color:#fff; }
+
+  /* ── 1단: 이번 달 전략 ── */
+  .hero { display:grid; grid-template-columns:minmax(0,1fr) 260px; gap:0; padding:0; border-left:5px solid var(--lv); }
+  .hero-main { padding:22px 24px 20px 24px; }
+  .hero-kicker { font-size:11.5px; font-weight:700; color:var(--ink-muted); letter-spacing:.04em; margin:0 0 4px; }
+  .hero-title { font-size:30px; font-weight:800; letter-spacing:-0.025em; color:var(--lv); margin:0; line-height:1.15; }
+  .hero-sum { font-size:16px; font-weight:600; color:var(--ink); margin:6px 0 0; }
+  .hero-why { display:inline-flex; align-items:center; gap:7px; margin:12px 0 0; font-size:13px; color:var(--ink-soft);
+    background:var(--lv-bg); padding:5px 11px; border-radius:99px; }
+  .hero-why b { color:var(--lv); font-weight:700; }
+  .acts { display:flex; flex-direction:column; gap:8px; margin-top:18px; }
+  .act { display:grid; grid-template-columns:28px minmax(0,1fr) auto; align-items:center; gap:12px; padding:12px 14px;
+    border:1px solid var(--line); border-radius:12px; background:var(--panel); text-decoration:none; color:inherit;
+    transition:border-color var(--d-fast) ease, transform var(--d-base) var(--ease-out), box-shadow var(--d-base) var(--ease-out); }
+  .act:hover { border-color:var(--accent); transform:translateX(2px); box-shadow:0 6px 16px rgba(59,111,246,0.10); }
+  .act .n { width:26px; height:26px; border-radius:50%; background:var(--accent); color:#fff; font-size:13px; font-weight:800;
+    display:flex; align-items:center; justify-content:center; }
+  .act .t { font-size:14.5px; font-weight:700; margin:0; line-height:1.35; }
+  .act .t .ax { font-size:10.5px; font-weight:700; color:var(--chip-ink); background:var(--chip-bg); border-radius:99px; padding:1px 7px; margin-left:6px; vertical-align:2px; }
+  .act .w { font-size:12.5px; color:var(--ink-soft); margin:2px 0 0; line-height:1.4; }
+  .act .go { font-size:12px; font-weight:700; color:var(--accent); white-space:nowrap; }
+  .acts-none { margin-top:16px; font-size:13.5px; color:var(--ink-soft); }
+
+  .goal { background:var(--paper); border-left:1px solid var(--line); border-radius:0 15px 15px 0; padding:22px 20px; display:flex; flex-direction:column; }
+  .goal .k { font-size:11.5px; font-weight:700; color:var(--ink-muted); letter-spacing:.04em; margin:0; }
+  .goal .big { font-size:34px; font-weight:800; letter-spacing:-0.03em; margin:6px 0 0; font-variant-numeric:tabular-nums; }
+  .goal .big small { font-size:13px; font-weight:600; color:var(--ink-soft); letter-spacing:0; margin-left:4px; }
+  .goal .bar { position:relative; height:8px; background:var(--line); border-radius:99px; margin:12px 0 6px; }
+  .goal .bar i { position:absolute; inset:0 auto 0 0; border-radius:99px; background:linear-gradient(90deg, var(--accent), var(--violet));
+    transform-origin:0 50%; animation:grow 1s var(--ease-out) .25s backwards; }
+  .goal .scale { display:flex; justify-content:space-between; font-size:11.5px; color:var(--ink-muted); font-variant-numeric:tabular-nums; }
+  .goal .need { padding-top:14px; margin-top:12px; border-top:1px dashed var(--line); font-size:12.5px; color:var(--ink-soft); line-height:1.5; }
+  .goal .need b { color:var(--ink); }
+  .goal .empty { font-size:12.5px; color:var(--ink-soft); line-height:1.5; margin-top:8px; }
+  @keyframes grow { from { transform:scaleX(0); } }
+
+  /* ── 2단: 세 축 ── */
+  .axes { display:flex; flex-direction:column; gap:8px; margin-bottom:16px; }
+  details.axis { background:var(--panel); border:1px solid var(--line); border-left:3px solid var(--lv); border-radius:14px; }
+  details.axis > summary { list-style:none; cursor:pointer; padding:14px 18px 14px 20px; display:flex; flex-direction:column; gap:10px; }
+  details.axis > summary::-webkit-details-marker { display:none; }
+  details.axis > summary { border-radius:13px; }
+  details.axis > summary:hover { background:var(--row-hover); }
+  .ax-top { display:flex; align-items:center; gap:10px; min-width:0; }
+  .ax-name { display:flex; align-items:center; gap:7px; font-weight:800; font-size:14px; flex-shrink:0; width:62px; }
+  .ax-pill { font-size:11px; font-weight:700; padding:2px 9px; border-radius:99px; background:var(--lv-bg); color:var(--lv); flex-shrink:0; }
+  .ax-head { font-size:14px; font-weight:600; flex:1; min-width:0; }
+  .ax-ref { font-size:12px; color:var(--ink-muted); white-space:nowrap; }
+  .ax-ref b { color:var(--accent); }
+  .chev { color:var(--ink-muted); flex-shrink:0; transition:transform var(--d-base) var(--ease-out); }
+  details.axis[open] .chev { transform:rotate(90deg); }
+  .chips { display:flex; gap:6px; flex-wrap:wrap; padding-left:72px; }
+  .chip { display:inline-flex; align-items:baseline; gap:6px; padding:5px 10px; border-radius:9px; background:var(--paper); font-size:12px; }
+  .chip .l { color:var(--ink-soft); }
+  .chip .v { font-weight:800; font-variant-numeric:tabular-nums; font-size:13px; }
+  .chip .s { color:var(--ink-muted); font-size:11px; }
+  .chip.c-warn { background:var(--warn-bg); } .chip.c-warn .v { color:var(--warn); }
+  .chip.c-risk { background:var(--err-bg); } .chip.c-risk .v { color:var(--err); }
+  .chip.c-hold .v { color:var(--ink-muted); }
+
+  /* ── 3단: 펼친 내용 — 요약에 없는 분해 정보만 ── */
+  .ax-body { padding:4px 20px 20px 92px; display:flex; flex-direction:column; gap:20px; }
+  details.axis[open] .ax-body { animation:rise var(--d-slow) var(--ease-out); }
+  .sec-t { font-size:12.5px; font-weight:700; margin:0 0 10px; display:flex; align-items:center; gap:4px; }
+  .sec-t .note { font-weight:400; color:var(--ink-muted); font-size:11.5px; margin-left:6px; }
+  .trend-badge { font-size:12px; font-weight:700; padding:2px 8px; border-radius:99px; margin-left:8px; }
+  .trend-badge.up { background:var(--ok-bg); color:var(--ok); } .trend-badge.down { background:var(--err-bg); color:var(--err); }
+  .trend-badge.flat { background:var(--chip-bg); color:var(--chip-ink); }
+  .wk svg { display:block; width:100%; height:140px; overflow:visible; }
+  .wk text { font-size:10px; fill:var(--ink-muted); font-family:var(--sans); }
+
+  .life { display:grid; grid-template-columns:repeat(4, 1fr); gap:8px; }
+  .life > div { border-radius:12px; padding:10px 12px; background:var(--paper); }
+  .life b { font-size:22px; font-variant-numeric:tabular-nums; margin-right:4px; }
+  .life span { font-size:12.5px; font-weight:600; }
+  .life p { margin:3px 0 0; font-size:11.5px; color:var(--ink-muted); }
+  .life .star b { color:var(--ok); } .life .falling b { color:var(--warn); }
+  .life .dead { background:var(--err-bg); } .life .dead b { color:var(--err); }
+  .sublist summary { cursor:pointer; font-size:12px; color:var(--accent); font-weight:600; margin-top:8px; }
+  .side-stats { display:flex; gap:18px; flex-wrap:wrap; font-size:12.5px; color:var(--ink-soft); padding-top:12px; border-top:1px dashed var(--line); }
+  .side-stats b { color:var(--ink); font-variant-numeric:tabular-nums; margin-left:4px; }
+  .side-stats em { font-style:normal; font-size:11.5px; margin-left:3px; }
+
+  .split { display:flex; height:22px; border-radius:7px; overflow:hidden; background:var(--line); }
+  .split i { display:flex; align-items:center; padding:0 8px; font-size:11px; font-weight:700; color:#fff; font-style:normal; white-space:nowrap;
+    transform-origin:0 50%; animation:grow .7s var(--ease-out) backwards; }
+  .split-legend { display:flex; gap:14px; font-size:11.5px; color:var(--ink-soft); margin-top:6px; }
+  .split-legend span::before { content:""; display:inline-block; width:8px; height:8px; border-radius:2px; margin-right:5px; background:var(--c); }
+  .scale-bar { position:relative; height:10px; border-radius:99px; background:linear-gradient(90deg, var(--err-bg) 0 66.7%, var(--ok-bg) 66.7%); margin:16px 0 4px; }
+  .scale-bar .mark { position:absolute; top:-5px; width:3px; height:20px; background:var(--ink); border-radius:2px; transform:translateX(-50%); }
+  .scale-bar .line { position:absolute; top:-3px; bottom:-3px; width:0; border-left:2px dashed var(--ok); }
+  .grid2 { display:grid; grid-template-columns:1fr 1fr; gap:24px; }
+
+  .wf { display:flex; flex-direction:column; gap:5px; }
+  .wf-row { display:grid; grid-template-columns:76px 1fr 84px; align-items:center; gap:10px; font-size:12.5px; }
+  .wf-track { position:relative; height:16px; }
+  .wf-bar { position:absolute; top:0; height:100%; border-radius:4px; transform-origin:0 50%; animation:grow .8s var(--ease-out) backwards; }
+  .wf-row .amt { text-align:right; font-variant-numeric:tabular-nums; font-family:var(--mono); font-size:12px; }
+  .wf-row.total { font-weight:800; }
+  .cmp { display:flex; flex-direction:column; gap:6px; font-size:12.5px; }
+  .cmp div { display:grid; grid-template-columns:56px 1fr 44px; gap:8px; align-items:center; }
+  .cmp i { height:12px; border-radius:4px; display:block; transform-origin:0 50%; animation:grow .7s var(--ease-out) backwards; }
+  .cmp b { text-align:right; font-variant-numeric:tabular-nums; }
+
+  /* 성장 — 이야기 3단계 */
+  .step { display:flex; flex-direction:column; gap:10px; }
+  .step + .step { padding-top:18px; border-top:1px solid var(--line); }
+  .step-h { display:flex; align-items:center; gap:8px; margin:0; font-size:13.5px; font-weight:800; }
+  .step-n { width:20px; height:20px; border-radius:50%; background:var(--ink); color:#fff; font-size:11px; display:inline-flex; align-items:center; justify-content:center; }
+  .step-q { font-weight:500; color:var(--ink-muted); font-size:12px; }
+  .step-say { margin:0; font-size:14px; font-weight:600; line-height:1.5; }
+  .line-chart { display:block; width:100%; height:auto; overflow:visible; }
+  .line-chart .tick { font-size:11px; fill:var(--ink-muted); font-family:var(--sans); }
+  .line-chart .draw { stroke-dasharray:2000; animation:draw 1.2s cubic-bezier(.65,0,.35,1) both; }
+  @keyframes draw { from { stroke-dashoffset:2000; } to { stroke-dashoffset:0; } }
+  .line-chart .pt circle:first-child { fill:#fff; stroke:var(--violet); stroke-width:2; }
+  .line-chart .pt.partial circle:first-child { stroke-dasharray:2 2; opacity:.6; }
+  .line-chart .pt:hover circle:first-child { r:5.5; }
+  .line-chart .band-prev line { stroke:var(--ink-muted); }
+  .line-chart .band-prev .band-label { fill:var(--ink-soft); }
+  .line-chart .band-recent.down line { stroke:var(--err); } .line-chart .band-recent.down .band-label { fill:var(--err); }
+  .line-chart .band-recent.up line { stroke:var(--ok); } .line-chart .band-recent.up .band-label { fill:var(--ok); }
+  .line-chart .band-label { font-size:12px; font-weight:700; font-family:var(--sans); paint-order:stroke; stroke:var(--panel); stroke-width:4px; }
+  .chart-note { margin:0; font-size:11.5px; color:var(--ink-muted); }
+
+  .movers { display:flex; flex-direction:column; gap:8px; }
+  .mv { display:grid; grid-template-columns:minmax(0,130px) 1fr auto; gap:10px; align-items:center; font-size:12.5px; }
+  .mv-name { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .mv-track { position:relative; height:12px; }
+  .mv-track i { position:absolute; left:0; top:0; height:100%; border-radius:4px; transform-origin:0 50%; }
+  .mv-track .ghost { background:var(--line); }
+  .mv-track .now { height:6px; top:3px; animation:grow .7s var(--ease-out) backwards; }
+  .mv-track .now.down { background:var(--err); } .mv-track .now.up { background:var(--ok); }
+  .mv-amt { font-variant-numeric:tabular-nums; color:var(--ink-muted); font-size:12px; white-space:nowrap; }
+  .mv-amt b.down { color:var(--err); } .mv-amt b.up { color:var(--ok); }
+  .cohort { display:flex; flex-direction:column; gap:10px; }
+  .ch-row { display:grid; grid-template-columns:96px 1fr 44px; gap:10px; align-items:center; font-size:12.5px; }
+  .ch-l { display:flex; flex-direction:column; font-weight:600; }
+  .ch-l small { font-weight:400; color:var(--ink-muted); font-size:11px; }
+  .ch-track { height:12px; background:var(--line); border-radius:99px; overflow:hidden; }
+  .ch-track i { display:block; height:100%; background:var(--ink-muted); border-radius:99px; transform-origin:0 50%; animation:grow .7s var(--ease-out) backwards; }
+  .ch-track i.bad { background:var(--err); }
+  .ch-row b { text-align:right; font-variant-numeric:tabular-nums; font-size:14px; }
+  .ch-row b.bad { color:var(--err); }
+
+  .swap { display:grid; grid-template-columns:1fr 28px 1fr; gap:12px; align-items:stretch; }
+  .swap.only-in { grid-template-columns:1fr; }
+  .swap-col { border:1px solid var(--line); border-radius:12px; padding:12px 14px; display:flex; flex-direction:column; gap:7px; }
+  .swap-h { margin:0 0 2px; font-size:13px; font-weight:800; }
+  .swap-h span { font-weight:400; color:var(--ink-muted); font-size:11.5px; margin-left:6px; }
+  .swap-h.out { color:var(--err); } .swap-h.in { color:var(--ok); }
+  .swap-item { margin:0; display:flex; flex-direction:column; font-size:13px; }
+  .swap-item small { color:var(--ink-muted); font-size:11.5px; }
+  .swap-item .sc { font-style:normal; font-size:11px; font-weight:700; color:var(--accent); background:var(--accent-soft); border-radius:99px; padding:1px 7px; margin-left:4px; }
+  .swap-arrow { display:flex; align-items:center; justify-content:center; font-size:20px; color:var(--ink-muted); }
+  .swap-more { margin-top:auto; padding-top:4px; font-size:12px; font-weight:700; text-decoration:none; }
+
+  /* ── 하단: 지난 처방 · 직접 입력 ── */
+  .prev { display:flex; align-items:center; gap:14px; flex-wrap:wrap; padding:14px 20px; }
+  .prev .lbl { font-size:11.5px; font-weight:700; color:var(--ink-muted); }
+  .prev .what { flex:1; min-width:200px; font-size:13.5px; }
+  .prev .res { font-size:15px; font-weight:800; font-variant-numeric:tabular-nums; }
+  .prev .res .better { color:var(--ok); } .prev .res .worse { color:var(--err); }
+  .prev .res small { font-size:11.5px; font-weight:500; color:var(--ink-muted); margin-right:6px; }
+  .manual-form { display:flex; gap:12px; align-items:flex-end; flex-wrap:wrap; }
+  .manual-form label { margin:0 0 4px; }
+  .manual-form input { width:150px; }
+
+  @media (max-width: 860px) {
+    .hero { grid-template-columns:1fr; }
+    .goal { border-left:none; border-top:1px solid var(--line); }
+    .chips, .ax-body { padding-left:0; }
+    .ax-ref { display:none; }
+    .life { grid-template-columns:repeat(2, 1fr); }
+    .grid2 { grid-template-columns:1fr; }
+    .swap { grid-template-columns:1fr; }
+    .swap-arrow { transform:rotate(90deg); }
+  }
+</style>
+
+<div class="hc-head">
+  <h1>헬스체크<span class="when">{{ checked_at }} 기준</span></h1>
+  {% if demo %}
+  <a class="btn secondary btn-sm" href="{{ url_for('health_view') }}">실데이터 보기</a>
   {% else %}
-  <div class="stat-grid">
-    <div class="stat-card" title="직전 {{ trend.window_days }}일: {{ "{:,}".format(trend.prev.revenue) }}원">
-      <p class="stat-num {{ 'delta-down' if trend.revenue_delta is not none and trend.revenue_delta < 0 else 'delta-up' if trend.revenue_delta is not none and trend.revenue_delta > 0 }}">
-        {{ "{:+.0%}".format(trend.revenue_delta) if trend.revenue_delta is not none else "—" }}
-      </p>
-      <p class="stat-label">매출 ({{ "{:,}".format(trend.this.revenue) }}원)</p>
-      <p class="hint">직전 {{ "{:,}".format(trend.prev.revenue) }}원</p>
-    </div>
-    <div class="stat-card" title="직전 {{ trend.window_days }}일: {{ "{:,}".format(trend.prev.profit) }}원">
-      <p class="stat-num {{ 'delta-down' if trend.profit_delta is not none and trend.profit_delta < 0 else 'delta-up' if trend.profit_delta is not none and trend.profit_delta > 0 }}">
-        {{ "{:+.0%}".format(trend.profit_delta) if trend.profit_delta is not none else "—" }}
-      </p>
-      <p class="stat-label">순수익 ({{ "{:,}".format(trend.this.profit) }}원)
-        {% if trend.this.uncertain_count %}<span class="badge-warn" title="등록 상품과 매칭 안 된 주문 — 순수익 미포함">원가미상 {{ trend.this.uncertain_count }}건 제외</span>{% endif %}
-      </p>
-      <p class="hint">직전 {{ "{:,}".format(trend.prev.profit) }}원</p>
-    </div>
-    <div class="stat-card" title="직전 {{ trend.window_days }}일: {{ trend.prev.order_count }}건">
-      <p class="stat-num {{ 'delta-down' if trend.order_delta is not none and trend.order_delta < 0 else 'delta-up' if trend.order_delta is not none and trend.order_delta > 0 }}">
-        {{ "{:+.0%}".format(trend.order_delta) if trend.order_delta is not none else "—" }}
-      </p>
-      <p class="stat-label">주문건수 ({{ trend.this.order_count }}건)</p>
-      <p class="hint">직전 {{ trend.prev.order_count }}건</p>
-    </div>
-    <div class="stat-card" title="직전 {{ trend.window_days }}일: {{ "{:,.0f}".format(trend.aov_prev) }}원">
-      <p class="stat-num {{ 'delta-down' if trend.aov_delta is not none and trend.aov_delta < 0 else 'delta-up' if trend.aov_delta is not none and trend.aov_delta > 0 }}">
-        {{ "{:+.0%}".format(trend.aov_delta) if trend.aov_delta is not none else "—" }}
-      </p>
-      <p class="stat-label">객단가 ({{ "{:,.0f}".format(trend.aov_this) }}원)</p>
-      <p class="hint">직전 {{ "{:,.0f}".format(trend.aov_prev) }}원</p>
-    </div>
-  </div>
+  <a class="btn secondary btn-sm" href="{{ url_for('health_demo') }}">샘플 데이터</a>
   {% endif %}
 </div>
 
-<div class="section">
-  <h2>원인 추정</h2>
-  <div class="stack">
-    {% for c in causes %}
-    <div class="panel" style="padding:12px 16px;">
-      <div class="row" style="align-items:center;">
-        <span style="flex:1;"><b>{{ c.label }}</b> — {{ c.detail }}</span>
-        {% if c.link %}<a class="btn secondary btn-sm" href="{{ c.link }}">확인하러 가기</a>{% endif %}
-      </div>
+{% if demo %}
+<div class="hc-scen">샘플 시나리오
+  {% for k, label in scenarios.items() %}<a href="{{ url_for('health_demo', s=k) }}" class="{{ 'on' if k == scenario }}">{{ label }}</a>{% endfor %}
+</div>
+{% endif %}
+
+{# ═══ 1단 — 이번 달 전략 ═══ #}
+{% set st = r.strategy %}
+<div class="panel hero lv-{{ st.level }}">
+  <div class="hero-main">
+    <p class="hero-kicker">이번 달 전략</p>
+    <p class="hero-title">{{ st.title }}</p>
+    <p class="hero-sum">{{ st.summary }}</p>
+    {% if st.why %}<p class="hero-why">왜? <b>{{ st.why }}</b></p>{% endif %}
+    {% if r.actions %}
+    <div class="acts">
+      {% for a in r.actions %}
+      <a class="act" href="{{ a.link }}">
+        <span class="n">{{ a.n }}</span>
+        <span>
+          <p class="t">{{ a.title }}<span class="ax">{{ AXIS_NAME[a.axis] }}</span></p>
+          <p class="w">{{ a.why }}</p>
+        </span>
+        <span class="go">{{ a.link_label }} →</span>
+      </a>
+      {% endfor %}
     </div>
-    {% endfor %}
+    {% else %}
+    <p class="acts-none">지금 바로 할 일은 없습니다.</p>
+    {% endif %}
+  </div>
+
+  <div class="goal">
+    <p class="k">이번 달 순수익 목표</p>
+    {% if g.goal %}
+    {% set gl = g.goal %}
+    <p class="big">{{ (gl.progress * 100) | round | int }}%<small>달성 예상</small></p>
+    <div class="bar"><i style="width:{{ (gl.progress * 100) | round(1) }}%;"></i></div>
+    <div class="scale"><span>페이스 {{ man(gl.pace) }}</span><span>목표 {{ man(gl.target) }}</span></div>
+    {% if gl.gap %}
+    <p class="need">부족 <b>{{ man(gl.gap) }}</b><br>= 주문 약 <b>{{ gl.need_orders }}건</b> 더{% if gl.need_products %}<br>≈ 판매 중 상품 <b>+{{ gl.need_products }}개</b> 수준{% endif %}
+      {{ tip("목표 ÷ 건당 순수익(" ~ won(gl.per_order) ~ ") = 필요 주문 수. 상품 수는 지금 판매율(상품 1개가 한 달에 내는 주문 수)로 환산한 값입니다. 판매율을 올려도 같은 효과가 납니다.") }}</p>
+    {% else %}<p class="need">목표 페이스입니다.</p>{% endif %}
+    {% else %}
+    <p class="empty">목표를 넣으면 "상품 수 대비 매출이 충분한지"를 달성 예상으로 보여줍니다.<br><a href="#manual">목표 입력 →</a></p>
+    {% endif %}
   </div>
 </div>
 
-<div class="section">
-  <h2>기회</h2>
-  <div class="stack">
-    <div class="panel" style="padding:12px 16px;">
-      틈새(바로 등록) <b>{{ opportunities.niche_count }}개</b> · 리메이크(손봐서 등록) <b>{{ opportunities.remake_count }}개</b>
-      {% if opportunities.unclassified_count %}· 미분류 <b>{{ opportunities.unclassified_count }}개</b>{% endif %}
-      <a class="btn secondary btn-sm" href="{{ url_for('candidates') }}" style="margin-left:8px;">발굴 후보 →</a>
+{# ═══ 2단 — 세 축 ═══ #}
+<div class="axes">
+{% for ax in r.axes %}
+{# 이번 달 전략의 근거가 되는 축은 펼쳐 둔다 — 누르지 않아도 "왜 이 전략인지" 이야기가 바로 보이게 #}
+<details class="axis lv-{{ ax.level }}" {{ 'open' if ax.key == r.strategy.axis }}>
+  <summary>
+    <div class="ax-top">
+      <span class="ax-name"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">{{ AXIS_ICON[ax.key]|safe }}</svg>{{ ax.name }}</span>
+      <span class="ax-pill">{{ ax.level_label }}</span>
+      <span class="ax-head">{{ ax.headline }}</span>
+      <span class="ax-ref">{% if ax.refs %}할 일 {% for n in ax.refs %}<b>{{ n }}</b>{{ ', ' if not loop.last }}{% endfor %}번{% elif ax.actions %}다음 순서 대기{% endif %}</span>
+      <svg class="chev" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="m9 18 6-6-6-6"/></svg>
     </div>
-    {% if opportunities.concentration %}
-    <div class="panel" style="padding:12px 16px;">
-      매출 쏠림 — 상품ID {{ opportunities.concentration.naver_product_id }}가 전체 매출의 {{ "{:.0%}".format(opportunities.concentration.share) }}
+    {% if ax.chips %}
+    <div class="chips">
+      {% for c in ax.chips %}<span class="chip c-{{ c.level }}"><span class="l">{{ c.label }}</span><span class="v">{{ c.value }}</span>{% if c.sub %}<span class="s">{{ c.sub }}</span>{% endif %}</span>{% endfor %}
     </div>
     {% endif %}
-    {% if deep %}
-      {% if deep_trend_error %}
-      <div class="panel" style="padding:12px 16px;">검색량 계절성 확인 실패: {{ deep_trend_error }}</div>
-      {% else %}
-      {% for d in deep_trend %}
-      <div class="panel" style="padding:12px 16px;">
-        {% if d.error %}{{ d.keyword }} — 조회 실패: {{ d.error }}
-        {% else %}{{ d.keyword }} — 검색량 {{ {'up':'상승','stable':'안정','down':'하락'}.get(d.direction, d.direction) }}{% if d.is_seasonal %} · 계절성 주의(월별 편차 {{ "{:.0%}".format(d.variance) }}){% endif %}
+  </summary>
+
+  <div class="ax-body">
+  {# 보류면 빈 칸 대신 "데이터가 쌓이면 여기 무엇이 나오는지"만 알려준다(운영은 굿서비스 입력 안내가 있어 그대로). #}
+  {% if ax.level == 'hold' and ax.key != 'ops' %}
+    <p class="hint" style="margin:0;">
+      {%- if ax.key == 'growth' %}주문이 쌓이면 여기에 주별 매출 추세, 상품 생애주기(잘 나감·꺾임·정리 대상), 상품당 매출이 표시됩니다.
+      {%- else %}정산 화면에서 건별 정산을 동기화하면 여기에 매출 100원 중 남는 돈, 실제 수수료, 정산 미입금이 표시됩니다.{% endif %}</p>
+  {% elif ax.key == 'growth' %}
+    {# 성장은 이야기 순서로: ① 무슨 일이(매출 흐름) → ② 왜(어떤 상품·어떤 상품군) → ③ 그래서(빼고 넣기) #}
+    {% set st = ax.story or {} %}
+    {% set wc = g.week_chart %}
+    <section class="step">
+      <p class="step-h"><span class="step-n">1</span>무슨 일이 <span class="step-q">주별 매출</span></p>
+      {% if st.flow %}<p class="step-say">{{ st.flow }}</p>{% endif %}
+      {% if wc %}
+      {% set L, R, T, B = 52, 700, 18, 168 %}
+      {% set ns = namespace(d='', area='', last=None) %}
+      {% for p in wc.points if not p.partial %}
+        {% set px = L + p.x * (R - L) %}{% set py = B - p.y * (B - T) %}
+        {% set ns.d = ns.d ~ ('M' if loop.first else ' L') ~ (px | round(1)) ~ ',' ~ (py | round(1)) %}
+        {% if loop.first %}{% set ns.area = 'M' ~ (px | round(1)) ~ ',' ~ B %}{% endif %}
+        {% set ns.area = ns.area ~ ' L' ~ (px | round(1)) ~ ',' ~ (py | round(1)) %}
+        {% set ns.last = (px, py) %}
+      {% endfor %}
+      {% set down = (g.week_summary.change or 0) < 0 if g.week_summary else false %}
+      <svg class="line-chart" viewBox="0 0 720 200" role="img" aria-label="최근 12주 주별 매출 꺾은선">
+        {% for t in wc.ticks %}
+        <line x1="{{ L }}" x2="{{ R }}" y1="{{ B - t.y * (B - T) }}" y2="{{ B - t.y * (B - T) }}" stroke="var(--line)" stroke-width="1"/>
+        <text x="{{ L - 8 }}" y="{{ B - t.y * (B - T) + 4 }}" text-anchor="end" class="tick">{{ "{:,.0f}만".format(t.value / 10000) if t.value >= 10000 else "{:,}".format(t.value) }}</text>
+        {% endfor %}
+        {% if ns.last %}
+        <path d="{{ ns.area }} L{{ ns.last[0] | round(1) }},{{ B }} Z" fill="var(--violet)" opacity=".08"/>
+        <path d="{{ ns.d }}" fill="none" stroke="var(--violet)" stroke-width="2.5" stroke-linejoin="round" stroke-linecap="round" class="draw"/>
+        {% endif %}
+        {% for p in wc.points if p.partial %}
+          {% set px = L + p.x * (R - L) %}{% set py = B - p.y * (B - T) %}
+          {% if ns.last %}<line x1="{{ ns.last[0] }}" y1="{{ ns.last[1] }}" x2="{{ px }}" y2="{{ py }}" stroke="var(--violet)" stroke-width="2" stroke-dasharray="3 4" opacity=".5"/>{% endif %}
+        {% endfor %}
+        {% if wc.bands %}
+          {% for key, cls, label in [('prev', 'band-prev', '그 전 4주 평균'), ('recent', 'band-recent' ~ (' down' if down else ' up'), '최근 4주 평균')] %}
+          {% set b = wc.bands[key] %}{% set by = B - b.y * (B - T) %}
+          <g class="{{ cls }}">
+            <line x1="{{ L + b.x0 * (R - L) + 6 }}" x2="{{ L + b.x1 * (R - L) - 6 }}" y1="{{ by }}" y2="{{ by }}" stroke-width="2" stroke-dasharray="5 4"/>
+            <text x="{{ L + (b.x0 + b.x1) / 2 * (R - L) }}" y="{{ by - 8 }}" text-anchor="middle" class="band-label">{{ label }} {{ "{:,.1f}만".format(b.value / 10000) }}</text>
+          </g>
+          {% endfor %}
+        {% endif %}
+        {% for p in wc.points %}
+          {% set px = L + p.x * (R - L) %}{% set py = B - p.y * (B - T) %}
+          <g class="pt{{ ' partial' if p.partial }}">
+            <circle cx="{{ px }}" cy="{{ py }}" r="{{ 3.5 if not p.partial else 3 }}"/>
+            <circle cx="{{ px }}" cy="{{ py }}" r="14" fill="transparent"><title>{{ p.label }} 주{{ ' (진행 중)' if p.partial }} · {{ "{:,}".format(p.value) }}원 · 주문 {{ p.orders }}건</title></circle>
+          </g>
+          <text x="{{ px }}" y="190" text-anchor="middle" class="tick">{{ '이번 주' if p.partial else p.label }}</text>
+        {% endfor %}
+      </svg>
+      <p class="chart-note">점 위에 마우스를 올리면 그 주 매출이 보입니다 · 이번 주(점선)는 진행 중이라 평균에서 뺐습니다</p>
+      {% endif %}
+    </section>
+
+    <section class="step">
+      <p class="step-h"><span class="step-n">2</span>왜 <span class="step-q">{{ '매출이 빠진 상품 · 새 상품 vs 기존 상품' if st.movers_falling else '매출을 끌어올린 상품' }}</span></p>
+      {% if st.cause %}<p class="step-say">{{ st.cause }}</p>{% endif %}
+      <div class="grid2">
+        {% if st.movers %}
+        {% set mmax = (st.movers | map(attribute='before') | list + st.movers | map(attribute='after') | list) | max or 1 %}
+        <div>
+          <p class="sec-t">{{ '매출이 빠진 상품' if st.movers_falling else '매출이 는 상품' }}<span class="note">그 전 4주 → 최근 4주</span></p>
+          <div class="movers">
+            {% for x in st.movers[:4] %}
+            <div class="mv">
+              <span class="mv-name">{{ x.name }}</span>
+              <span class="mv-track">
+                <i class="ghost" style="width:{{ x.before / mmax * 100 }}%;"></i>
+                <i class="now {{ 'down' if x.delta < 0 else 'up' }}" style="width:{{ x.after / mmax * 100 }}%;animation-delay:{{ loop.index0 * 70 }}ms;"></i>
+              </span>
+              <span class="mv-amt">{{ "{:,.1f}".format(x.before / 10000) }} → <b class="{{ 'down' if x.delta < 0 else 'up' }}">{{ "{:,.1f}만".format(x.after / 10000) }}</b></span>
+            </div>
+            {% endfor %}
+          </div>
+          <div class="split-legend" style="margin-top:8px;"><span style="--c:var(--line)">그 전 4주</span><span style="--c:{{ 'var(--err)' if st.movers_falling else 'var(--ok)' }}">최근 4주</span></div>
+        </div>
+        {% endif %}
+        {% if st.new_rate is not none and st.old_rate is not none %}
+        {% set co = g.cohort %}
+        <div>
+          <p class="sec-t">팔린 상품 비율 — 새 상품 vs 기존 상품 {{ tip("최근 30일에 1건이라도 팔린 상품의 비율입니다. 새 상품 = 등록 14~60일, 기존 상품 = 60일 이상. 새 상품이 유독 낮으면 '고르는 기준'이 문제이고, 기존 상품이 낮으면 '수명'이 문제입니다.") }}</p>
+          <div class="cohort">
+            {% for label, rate, c, bad in [('새 상품', st.new_rate, co.new, st.culprit == 'new'), ('기존 상품', st.old_rate, co.old, st.culprit == 'old')] %}
+            <div class="ch-row">
+              <span class="ch-l">{{ label }}<small>{{ c.count }}개 중 {{ c.sold }}개</small></span>
+              <span class="ch-track"><i class="{{ 'bad' if bad }}" style="width:{{ (rate * 100) | round(1) }}%;animation-delay:{{ loop.index0 * 100 }}ms;"></i></span>
+              <b class="{{ 'bad' if bad }}">{{ pct(rate) }}</b>
+            </div>
+            {% endfor %}
+          </div>
+        </div>
         {% endif %}
       </div>
-      {% endfor %}
+    </section>
+
+    <section class="step">
+      <p class="step-h"><span class="step-n">3</span>그래서 <span class="step-q">{{ '빼고 넣기' if st.out else '할 일' }}</span></p>
+      {% if st.fix %}<p class="step-say">{{ st.fix }}</p>{% endif %}
+      {% if st.out or st.in %}
+      <div class="swap {{ 'only-in' if not st.out }}">
+        {% if st.out %}
+        <div class="swap-col">
+          <p class="swap-h out">빼기 <span>정리 대상 {{ st.dead_total }}개 중 오래된 순</span></p>
+          {% for d in st.out %}<p class="swap-item"><span>{{ d.name }}</span><small>등록 {{ d.days }}일 · 누적 {{ d.total }}건</small></p>{% endfor %}
+          <a class="swap-more" href="/products?tab=nosale">정리 대상 전체 보기 →</a>
+        </div>
+        <div class="swap-arrow" aria-hidden="true">→</div>
+        {% endif %}
+        <div class="swap-col">
+          <p class="swap-h in">넣기 <span>발굴 후보 중 점수 높은 순 · 아직 안 올린 것</span></p>
+          {% if st.in %}
+            {% for c in st.in %}
+            <p class="swap-item"><span>{{ c.keyword }} <em class="sc">{{ c.score }}점</em></span>
+              <small>{{ c.category }}{% if c.price %} · 예상 판매가 {{ "{:,}".format(c.price) }}원{% endif %}{% if c.price and c.cost %} · 원가율 {{ "{:.0%}".format(c.cost / c.price) }}{% endif %}</small></p>
+            {% endfor %}
+          {% else %}<p class="hint">진입 권장(55점 이상) 후보가 없습니다 — 발굴 후보에서 스캔을 먼저 돌리세요.</p>{% endif %}
+          <a class="swap-more" href="/candidates">발굴 후보에서 고르기 →</a>
+        </div>
+      </div>
+      {% elif ax.actions %}
+      <a class="btn secondary btn-sm" href="{{ ax.actions[0].link }}">{{ ax.actions[0].link_label }} →</a>
       {% endif %}
+    </section>
+
+  {% elif ax.key == 'ops' %}
+    <div class="grid2">
+      <div>
+        <p class="sec-t">발송 지연은 어디서 막히나 {{ tip("결제 후 24시간 넘게 발송되지 않은 주문을 단계별로 나눕니다. 발주 단계 = 도매매에 발주를 안 넣었거나 보류, 송장 단계 = 발주는 했는데 도매처가 출고를 안 함.") }}</p>
+        {% set ds = o.delay_stage %}
+        {% if ds and (ds.values() | sum) %}
+        {% set tot = ds.values() | sum %}
+        <div class="split">
+          {% if ds['발주 단계'] %}<i style="width:{{ ds['발주 단계'] / tot * 100 }}%;background:var(--warn);">{{ ds['발주 단계'] }}건</i>{% endif %}
+          {% if ds['송장 단계'] %}<i style="width:{{ ds['송장 단계'] / tot * 100 }}%;background:var(--violet);animation-delay:120ms;">{{ ds['송장 단계'] }}건</i>{% endif %}
+        </div>
+        <div class="split-legend"><span style="--c:var(--warn)">발주 단계 — 내 쪽 처리</span><span style="--c:var(--violet)">송장 단계 — 도매처 출고</span></div>
+        {% else %}<p class="hint">최근 30일 지연 없음</p>{% endif %}
+      </div>
+      <div>
+        <p class="sec-t">반품은 누구 책임인가 {{ tip("판매자 귀책(파손·오배송·품절·상품정보 상이 등)은 상세페이지나 도매처 문제라 고칠 수 있습니다. 단순변심은 통제하기 어렵습니다. 사유 분류는 네이버 클레임 사유 기준이며 실주문으로 검증 전입니다.") }}</p>
+        {% set rc = o.return_count or 0 %}{% set rf = o.seller_fault_returns or 0 %}
+        {% if rc %}
+        <div class="split">
+          {% if rf %}<i style="width:{{ rf / rc * 100 }}%;background:var(--err);">귀책 {{ rf }}</i>{% endif %}
+          {% if rc - rf > 0 %}<i style="width:{{ (rc - rf) / rc * 100 }}%;background:var(--ink-muted);animation-delay:120ms;">기타 {{ rc - rf }}</i>{% endif %}
+        </div>
+        <div class="split-legend"><span style="--c:var(--err)">판매자 귀책 — 고칠 수 있음</span><span style="--c:var(--ink-muted)">단순변심 등</span></div>
+        {% else %}<p class="hint">최근 30일 반품 없음</p>{% endif %}
+      </div>
+    </div>
+    <div>
+      <p class="sec-t">굿서비스 점수 {{ tip("네이버가 API로 주지 않아 판매자센터에서 보고 직접 입력합니다. 4.5점 아래면 굿서비스 혜택(노출 가점 등)을 잃습니다.") }}
+        {% if ax.manual_prompt %}<span class="note" style="color:var(--warn);">{{ ax.manual_prompt }} — <a href="#manual">입력</a></span>{% endif %}</p>
+      {% if o.good_service is not none and o.good_service is defined %}
+      {% set gpos = [[(o.good_service - 3.5) / 1.5 * 100, 0] | max, 100] | min %}
+      <div class="scale-bar"><span class="line" style="left:66.7%;"></span><span class="mark" style="left:{{ gpos }}%;"></span></div>
+      <div class="split-legend" style="justify-content:space-between;"><span style="--c:transparent">3.5</span><span style="--c:transparent"><b style="color:{{ 'var(--ok)' if o.good_service >= 4.5 else 'var(--err)' }};">{{ o.good_service }}점</b> · 기준 4.5</span><span style="--c:transparent">5.0</span></div>
+      {% endif %}
+    </div>
+
+  {% elif ax.key == 'money' %}
+    {% if mo.waterfall %}
+    {% set wf = mo.waterfall %}{% set base = wf.revenue or 1 %}
+    <div>
+      <p class="sec-t">매출 100원 중 얼마가 남나 {{ tip("최근 30일 매출에서 도매원가·수수료·배송비·CS 적립을 빼 순수익까지 내려옵니다. 등록할 때의 마진 계산 기준 추정치입니다.") }}
+        <span class="note">순수익률 {{ "{:.0%}".format(wf.profit / base) }}</span></p>
+      <div class="wf">
+        {% set ns = namespace(left=0) %}
+        <div class="wf-row"><span>매출</span><span class="wf-track"><i class="wf-bar" style="left:0;width:100%;background:var(--violet-soft);"></i></span><span class="amt">{{ "{:,}".format(wf.revenue) }}</span></div>
+        {% for label, key in [('도매원가','cost'),('수수료','fee'),('배송비','shipping'),('CS 적립','reserve')] %}{% if wf[key] %}
+        <div class="wf-row"><span class="muted">− {{ label }}</span>
+          <span class="wf-track"><i class="wf-bar" style="left:{{ (ns.left / base * 100) | round(2) }}%;width:{{ (wf[key] / base * 100) | round(2) }}%;background:var(--err);opacity:.5;animation-delay:{{ loop.index * 80 }}ms;"></i></span>
+          <span class="amt muted">{{ "{:.0%}".format(wf[key] / base) }}</span></div>
+        {% set ns.left = ns.left + wf[key] %}{% endif %}{% endfor %}
+        <div class="wf-row total"><span>= 순수익</span><span class="wf-track"><i class="wf-bar" style="left:{{ (ns.left / base * 100) | round(2) }}%;width:{{ (wf.profit / base * 100) | round(2) }}%;background:var(--ok);animation-delay:420ms;"></i></span><span class="amt" style="color:var(--ok);">{{ "{:,}".format(wf.profit) }}</span></div>
+      </div>
+    </div>
     {% endif %}
+    <div class="grid2">
+      {% if mo.fee %}
+      {% set fmax = [mo.fee.measured_rate, mo.fee.assumed_rate] | max %}
+      <div>
+        <p class="sec-t">수수료 — 가정 vs 실제 {{ tip("마진 계산은 '가정' 수수료로 하는데, 실제 정산에서 떼인 비율이 더 크면 상품마다 남는 돈이 실제보다 크게 계산됩니다. 정산 대사 " ~ mo.fee.sample_count ~ "건 기준.") }}</p>
+        <div class="cmp">
+          <div><span class="muted">가정</span><i style="width:{{ mo.fee.assumed_rate / fmax * 100 }}%;background:var(--ink-muted);"></i><b>{{ "{:.1%}".format(mo.fee.assumed_rate) }}</b></div>
+          <div><span>실제</span><i style="width:{{ mo.fee.measured_rate / fmax * 100 }}%;background:{{ 'var(--warn)' if mo.fee.diff >= 0.01 else 'var(--ok)' }};animation-delay:120ms;"></i><b>{{ "{:.1%}".format(mo.fee.measured_rate) }}</b></div>
+        </div>
+      </div>
+      {% endif %}
+      <div>
+        <p class="sec-t">정산</p>
+        <div class="side-stats" style="border-top:none;padding-top:0;flex-direction:column;gap:6px;">
+          <span>빠른정산 자격<b>{{ "유지" if mo.fast_settlement_ok else ("미달" if mo.fast_settlement_ok is sameas false else "—") }}</b><em>반품률 20% 미만 · 월 20건 이상</em></span>
+          <span>정산 미입금 의심<b>{{ mo.unsettled_count or 0 }}건</b>{% if mo.unsettled_amount %}<em>{{ won(mo.unsettled_amount) }}</em>{% endif %}</span>
+          {% if mo.capacity_orders is none or mo.capacity_orders is undefined %}<span>발주 여력<b>—</b><em>이머니 잔액 연동 예정</em></span>{% endif %}
+        </div>
+      </div>
+    </div>
+  {% endif %}
   </div>
+</details>
+{% endfor %}
 </div>
 
-<div class="section">
-  <h2>체력</h2>
-  <div class="stat-grid">
-    <div class="stat-card">
-      <p class="stat-num">
-        {% if vitals.fast_settlement_ok is none %}판단 불가{% elif vitals.fast_settlement_ok %}자격 있음{% else %}자격 미달{% endif %}
-      </p>
-      <p class="stat-label">빠른정산 자격</p>
+{# ═══ 하단 — 지난 처방 결과 · 직접 입력 ═══ #}
+{% if prev %}
+<div class="panel prev">
+  <span class="lbl">지난달 처방</span>
+  <span class="what"><b>{{ prev.title }}</b> ·
+    {% if prev.done %}<span class="badge-ok">실행함</span>{% elif prev.done is sameas false %}<span class="badge-warn">안 함</span>{% else %}<span class="badge">실행 여부 미기록</span>{% endif %}
+    {{ tip(prev.actions | join(' / ')) }}</span>
+  <span class="res"><small>{{ prev.metric_label }}</small>{{ prev.before }} → <span class="{{ 'better' if prev.better else ('worse' if prev.better is sameas false) }}">{{ prev.after }}{{ ' ▲' if prev.better else (' ▼' if prev.better is sameas false) }}</span></span>
+  {% if not demo %}
+  <form method="post" action="{{ url_for('health_history_done', month=prev.month) }}" class="row" style="gap:6px;">
+    <button class="btn-sm secondary" name="done" value="1">실행했음</button>
+    <button class="btn-sm secondary" name="done" value="0">안 했음</button>
+  </form>
+  {% endif %}
+</div>
+{% endif %}
+
+<div class="panel" id="manual">
+  <p class="eyebrow">직접 입력 — API로 받을 수 없는 값</p>
+  <form class="manual-form" method="post" action="{{ url_for('health_manual') }}">
+    <div>
+      <label>굿서비스 점수</label>
+      <input type="number" name="good_service" step="0.1" min="0" max="5" placeholder="예: 4.7"
+        value="{{ manual.good_service.value if manual.good_service else '' }}" {{ 'disabled' if demo }}>
     </div>
-    <a href="{{ url_for('orders', tab='dispatch') }}" class="stat-card link">
-      <p class="stat-num {{ 'attn' if vitals.dispatch_delay_count }}">{{ vitals.dispatch_delay_count if vitals.dispatch_delay_count is not none else "판단 불가" }}</p>
-      <p class="stat-label">발송 지연</p>
-    </a>
-    <div class="stat-card">
-      <p class="stat-num">{{ "{:.1%}".format(vitals.avg_margin_rate) if vitals.avg_margin_rate is not none else "—" }}</p>
-      <p class="stat-label">평균 실현 마진</p>
+    <div>
+      <label>월 순수익 목표 (원)</label>
+      <input type="number" name="profit_goal" step="10000" min="0" placeholder="예: 500000"
+        value="{{ manual.profit_goal.value if manual.profit_goal else '' }}" {{ 'disabled' if demo }}>
     </div>
-    <a href="{{ url_for('products_view') }}" class="stat-card {{ 'link' if vitals.below_min_profit_count }}">
-      <p class="stat-num {{ 'attn' if vitals.below_min_profit_count }}">{{ vitals.below_min_profit_count }}개</p>
-      <p class="stat-label">절대이익 기준 미달</p>
-    </a>
-    <div class="stat-card">
-      <p class="stat-num">{{ "{:,}".format(vitals.cash_balance) + "원" if vitals.cash_balance is not none else "데이터 없음" }}</p>
-      <p class="stat-label">현금 흐름</p>
-    </div>
-  </div>
+    <button type="submit" class="btn-sm" {{ 'disabled' if demo }}>저장</button>
+    {% if manual.good_service %}<span class="hint">굿서비스 입력 {{ manual.good_service.updated_at }}</span>{% endif %}
+  </form>
 </div>
 
-<div class="section">
-  <h2>연동 상태</h2>
-  <div class="panel">
-    <table>
-      <tr><th>항목</th><th style="width:20%;">상태</th></tr>
-      {% for name, status in env_status.items() %}
-      {% set ok, required = status %}
-      <tr>
-        <td>{{ name }}</td>
-        <td>
-          {% if ok %}<span class="badge-ok">설정됨</span>
-          {% elif required %}<span class="badge-err">미설정</span>
-          {% else %}<span class="muted mono">미설정</span>{% endif %}
-        </td>
-      </tr>
-      {% endfor %}
-    </table>
-  </div>
-</div>
+<details class="panel" style="padding:12px 20px;">
+  <summary class="muted" style="cursor:pointer;font-size:12.5px;">연동 상태</summary>
+  <table style="margin-top:10px;">
+    {% for name, status in env_status.items() %}{% set ok, required = status %}
+    <tr><td>{{ name }}</td><td style="width:20%;">
+      {% if ok %}<span class="badge-ok">설정됨</span>{% elif required %}<span class="badge-err">미설정</span>{% else %}<span class="muted mono">미설정</span>{% endif %}
+    </td></tr>
+    {% endfor %}
+  </table>
+</details>
 {% endblock %}

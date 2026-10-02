@@ -21,8 +21,26 @@ def _fake_related(pairs):
 
 
 def test_mood_word_added_on_category_match():
-    name = optimize_name("큐티클오일", "큐티클오일 100ml", category="생활>뷰티>네일케어")
+    name = optimize_name("자석젤네일", "자석젤네일 펜", category="화장품>네일케어>네일아트")
     assert name.endswith("셀프네일"), name
+    # 손톱깎이(네일케어도구)에는 붙이지 않는다(2026-10)
+    assert "셀프네일" not in optimize_name("손톱깎이", "손톱깎이 휴대용", category="화장품>네일케어>네일케어도구")
+
+
+def test_name_rules_2026_10():
+    # 키워드를 통째로 품은 단어 반복 제거
+    assert optimize_name("며느리발톱", "확대경 손톱깎이 며느리발톱제거") == "며느리발톱 확대경 손톱깎이"
+    # 판매조건·수량가격 문구 제거
+    n = optimize_name("일회용베개커버", "[ABC0671] 특대형 일회용베개커버 호텔베개커버 10개가격 당일배송")
+    assert "당일배송" not in n and "개가격" not in n and "ABC" not in n, n
+    # 같은 꼬리 복합어는 2개까지, 오타 제거
+    n = optimize_name("여행용목베개", "목베개/여행용목베개/기내용목베개/캠핑목베개/배개")
+    assert "캠핑목베개" not in n and "배개" not in n, n
+    # 오타는 지우지 않고 바로잡는다 — 상품 유형("발톱깎이")이 사라지면 안 됨
+    assert "발톱깎이" in optimize_name("큐티클제거", "큐티클제거 발톱깍기 니퍼")
+    assert optimize_name("배게베개", "엔터콘 목 허리 배게 베개 쿠션").startswith("베개 ")
+    # 질환명 제거
+    assert "내성발톱" not in optimize_name("큐티클제거", "내성발톱 정리 큐티클제거 니퍼")
 
 
 def test_mood_word_skipped_when_over_max_len():
@@ -59,7 +77,7 @@ def test_demand_tags_api_failure_falls_back(monkeypatch):
 
 def test_no_regression_when_category_unmatched():
     name = optimize_name("우산", "우산 자동우산 3단자동우산", category="잡화>우산")
-    assert name == "우산 자동우산 3단자동우산"
+    assert name == "우산 3단자동우산"  # "자동우산"을 품은 더 구체적인 단어로 바꿔 끼움(2026-10)
 
 
 def test_substring_redundant_word_removed():
@@ -73,8 +91,9 @@ def test_substring_redundant_word_removed():
 def test_compound_word_with_extra_info_kept():
     # "자동우산"은 "우산"의 부분집합이 아니라 정보가 추가된 복합어이므로 유지돼야 한다
     # (substring 필터가 반대 방향으로 오작동해 유용한 복합어까지 지우면 안 됨).
+    # 단, "3단자동우산"은 "자동우산"을 통째로 품으므로 더 구체적인 쪽 하나만 남긴다(2026-10).
     name = optimize_name("우산", "우산 자동우산 3단자동우산 골프우산", category="잡화>우산")
-    assert name == "우산 자동우산 3단자동우산 골프우산", name
+    assert name == "우산 3단자동우산 골프우산", name
 
 
 def test_blocked_brand_word_removed_from_title():

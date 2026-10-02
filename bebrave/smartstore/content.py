@@ -20,7 +20,7 @@ import re
 from typing import TYPE_CHECKING, List, Optional
 
 from .name_optimizer import BANNED_PROMO_WORDS, MAX_NAME_LEN as _MAX_NAME_LEN
-from .name_optimizer import _find_mood_word, _is_blocked_brand, optimize_name, sanitize_ai_name
+from .name_optimizer import _find_mood_word, _is_blocked_brand, has_typo, optimize_name, sanitize_ai_name
 from ..sourcing.keyword_tool import fetch_related_keywords
 
 if TYPE_CHECKING:
@@ -50,14 +50,19 @@ def related_demand_keywords(keyword: str, product: "DomemaeProduct", limit: int 
     # 많아서, 원본 제목의 개별 토큰("두피")과 정확히 같은 통짜 토큰이어야 한다는 조건(교집합)은
     # 대부분 걸러버림. base_tokens 각각이 관련 키워드 문자열 "안에" 들어있는지로 완화
     # (2026-08 50건 실측에서 발견 — 이 조건 때문에 매칭률이 실제보다 훨씬 낮게 나왔었음).
-    base_tokens = _tokens(product.name) | _tokens(product.category)
+    # 3글자 이상 토큰만 근거로 쓴다 — "네일"·"베개" 같은 2글자 토큰은 거의 모든 연관어에 들어가
+    # 일자손톱깎이에 네일드릴·네일오일펜이, 방수베개커버에 긴베개·쿨링베개가 붙었다(2026-10 실측).
+    # 카테고리 이름도 근거에서 뺐다 — "네일케어도구" 때문에 "네일케어비트"가 붙었다(2026-10).
+    base_tokens = {t for t in _tokens(product.name) if len(t) >= 3}
     relevant = [
         r for r in related
         if r.monthly_total > 0
         and r.keyword != keyword
         and r.keyword not in BANNED_PROMO_WORDS
+        # 상품명에 없는 "자동"이 붙은 연관어는 다른 상품이다(수동 손톱깎이에 "자동손톱깎이")
+        and ("자동" not in r.keyword or "자동" in product.name)
         and (
-            keyword in r.keyword
+            (len(keyword) >= 3 and keyword in r.keyword)  # 2글자 키워드("베개")는 거의 모든 연관어에 들어간다
             or r.keyword in product.name
             or any(bt in r.keyword for bt in base_tokens)
         )
@@ -176,11 +181,18 @@ def _is_blocked_tag(t: str, category_segments: Optional[set] = None) -> bool:
     경로는 홍보어 완전일치 하나뿐이었다 — 질환명·타사 브랜드가 태그로 그대로
     나갔다(2026-09 실증: "손톱영양제" 후보가 "손톱무좀"·"손톱조갑박리증" 태그를
     달고 있었음). 태그 생성에도 같은 차단 목록을 재사용한다."""
-    from ..config import BLOCKED_MEDICAL_KEYWORDS, BLOCKED_INFO_INTENT_SUFFIXES
+    from ..config import (BLOCKED_ELECTRIC_KEYWORDS, BLOCKED_INFO_INTENT_SUFFIXES,
+                          BLOCKED_KIDS_KEYWORDS, BLOCKED_MEDICAL_KEYWORDS)
 
     if any(w in t for w in BANNED_PROMO_WORDS):  # 완전일치 → 부분일치(★특가★ 등 우회 방지)
         return True
     if any(w in t for w in BLOCKED_MEDICAL_KEYWORDS):
+        return True
+    # 아동 연상 단어("어린이베개")는 아동용품(KC 대상)으로 오인시키고, 전기 단어는 상품이
+    # 전동인 것처럼 보이게 한다. 한 글자 태그("발")와 흔한 오타("배게베개")도 뺀다(2026-10).
+    if any(w in t for w in BLOCKED_KIDS_KEYWORDS + BLOCKED_ELECTRIC_KEYWORDS):
+        return True
+    if len(t) < 2 or has_typo(t):
         return True
     if _is_blocked_brand(t):
         return True
@@ -296,6 +308,10 @@ def _build_detail_html(product: "DomemaeProduct", keyword: str) -> str:
     배송비(product.shipping_fee, 우리가 부담하는 매입 배송비)를 구매자 화면에
     "배송비"라고 표시하고 있어서 실제 구매자가 내는 배송비(config.SHIPPING_FEE)와
     다른 숫자를 보여주는 오류가 있었다(2026-09 발견).
+
+    본문 맨 위에 상품명을 다시 찍지 않는다 — 도매 원본 상품명이 그대로 들어가
+    "[ABC0671] … 10개가격 당일배송"처럼 공급사 코드·금지 문구가 노출됐다(2026-10).
+    상품명은 네이버가 상세페이지 위에 이미 보여준다.
     """
     from ..config import SHIPPING_FEE, FREE_SHIPPING_THRESHOLD, RETURN_DELIVERY_FEE, EXCHANGE_DELIVERY_FEE
     from .notice import CS_PHONE_NUMBER
@@ -318,7 +334,6 @@ def _build_detail_html(product: "DomemaeProduct", keyword: str) -> str:
     html = f"""<div style="text-align:center;font-family:sans-serif;">
 {img_tags}
 <div style="margin:20px auto;max-width:860px;text-align:left;padding:0 16px;">
-  <h3 style="font-size:18px;">{product.name}</h3>
   {points_html}
 </div>
 <div style="margin:20px auto;max-width:860px;text-align:left;padding:0 16px;">

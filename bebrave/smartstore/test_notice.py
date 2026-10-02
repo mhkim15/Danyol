@@ -113,17 +113,30 @@ def demo() -> None:
         eb = notice.build_provided_notice(e, "fake-token")
         assert eb["productInfoProvidedNoticeType"] == "ETC"
         assert set(eb["etc"]) == {"itemName", "modelName", "certificateDetails"}
-        # 모델명이 없으면 도매매 상품번호로 폴백하지 않는다 — 공급사 내부번호가
-        # 고시에 노출되는 사고였다(2026-09 수정). 다른 항목과 같은 일반 폴백을 쓴다.
-        assert eb["etc"]["modelName"] == "상세페이지 참조"
+        # 모델명이 없으면 도매매 상품번호로 폴백하지 않는다(2026-09). 상세페이지에도 없으니
+        # "참조"가 아니라 "해당없음"(2026-10). 인증 칸은 "참조"로 대신할 수 없다(2023 고시 개정).
+        assert eb["etc"]["modelName"] == "해당없음"
+        assert eb["etc"]["certificateDetails"] == "해당없음"
 
         # 알 수 없는 유형이 들어와도 ETC로 안전하게 떨어져야 함
         u = notice.build_provided_notice(_product(), "fake-token", notice_type="NOT_A_TYPE")
         assert u["productInfoProvidedNoticeType"] == "ETC"
 
         # 제조사 칸의 "협력사" 값은 고시에 나가지 않고 폴백
-        j = notice.build_provided_notice(_product(manufacturer="ablecompany협력사", domemae_category="패션잡화>양말"), "fake-token")
-        assert j["wear"]["manufacturer"] == "상세페이지 참조"
+        # — 대신 확인된 사실(제조국)만 적는다(2026-10). 제조국도 모르면 폴백.
+        j = notice.build_provided_notice(_product(manufacturer="ablecompany협력사", domemae_category="패션잡화>양말",
+                                                  origin_country="수입산_아시아_중국"), "fake-token")
+        assert j["wear"]["manufacturer"] == "중국 제조"
+        j2 = notice.build_provided_notice(_product(manufacturer="ablecompany협력사", domemae_category="패션잡화>양말"), "fake-token")
+        assert j2["wear"]["manufacturer"] == "상세페이지 참조"
+        # 국산은 행정구역 조각("종로구")이 아니라 "대한민국"
+        assert notice._field_value("producer", _product(origin_country="국산_서울특별시_종로구")) == "대한민국"
+        # 제조사 칸의 "상세페이지 참조"는 제조사 이름이 아니다
+        from .register import clean_manufacturer, clean_model
+        assert clean_manufacturer("상세페이지 참조") == "" and clean_manufacturer("중국OEM") == ""
+        # 공급사 관리코드·숫자뿐인 값은 모델명에서 뺀다
+        assert clean_model("DSJJWB7001360") == "" and clean_model("megaWB5072450") == ""
+        assert clean_model("0671") == "" and clean_model("(BD-2331)") == "BD-2331"
 
         # 원산지가 나라가 아니면 제조국으로 쓰지 않는다
         assert notice._field_value("producer", _product(origin_country="상세정보별도표기")) is None

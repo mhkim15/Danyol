@@ -54,9 +54,13 @@
   #thumbGrid .px { position:absolute; right:3px; bottom:3px; background:rgba(255,255,255,.9); color:#555;
                    font-size:10px; padding:0 4px; border-radius:3px; }
   #thumbGrid .px.low { color:#b42318; }
+  #thumbGrid .thumb-pick.extra { border:3px solid #2f855a; }
+  #thumbGrid .xtra { position:absolute; left:3px; bottom:3px; font-size:10.5px; padding:1px 6px; border-radius:4px;
+                     background:rgba(255,255,255,.92); color:#2f855a; border:1px solid #2f855a; cursor:pointer; }
+  #thumbGrid .xtra.on { background:#2f855a; color:#fff; }
 </style>
 <div class="panel" id="thumbPanel">
-  <h2>대표이미지 <span class="muted" style="font-size:12px;font-weight:400;">검색 목록에 뜨는 사진 — 추천이 자동 적용되고, 오른쪽에서 다시 고를 수 있습니다</span></h2>
+  <h2>대표·추가 이미지 <span class="muted" style="font-size:12px;font-weight:400;">사진을 누르면 대표이미지, 왼쪽 아래 "추가"를 누르면 추가이미지(대표 아래 넘겨보는 사진)에 넣고 뺍니다</span></h2>
   <div class="row" style="gap:18px;align-items:flex-start;flex-wrap:wrap;">
     <div style="width:220px;flex:none;">
       <div id="thumbMain" style="width:220px;height:220px;border:1px solid var(--line);border-radius:10px;background:#fff;
@@ -68,6 +72,7 @@
     <div style="flex:1;min-width:240px;">
       <p id="thumbStatus" class="muted" style="font-size:12.5px;margin:0 0 8px;"></p>
       <div id="thumbGrid" class="row" style="flex-wrap:wrap;gap:8px;"></div>
+      <p id="extraInfo" style="font-size:12.5px;margin:10px 0 0;"></p>
       <div class="row" style="margin-top:10px;">
         <button type="button" class="btn-sm secondary" id="thumbRebuild" onclick="thumbRun(true)">후보 다시 만들기</button>
       </div>
@@ -94,25 +99,37 @@
     var main = document.getElementById('thumbMain'), info = document.getElementById('thumbInfo'),
         grid = document.getElementById('thumbGrid');
     grid.innerHTML = '';
+    document.getElementById('extraInfo').innerHTML = '';
     if (!view || !view.items.length) {
       main.innerHTML = '<span class="muted" style="font-size:12px;">후보 없음</span>';
       info.textContent = '지금 대표사진 그대로 등록됩니다.';
       return;
     }
-    var cur = null;
+    var cur = null, extras = view.extras || [];
     view.items.forEach(function (t) {
       if (t.id === view.chosen) cur = t;
+      var isExtra = extras.indexOf(t.id) >= 0;
       var b = document.createElement('button');
       b.type = 'button';
-      b.className = 'thumb-pick' + (t.id === view.chosen ? ' on' : '');
+      b.className = 'thumb-pick' + (t.id === view.chosen ? ' on' : (isExtra ? ' extra' : ''));
       b.title = '원본 ' + t.px + 'px' + (t.text ? ' · 읽힌 글자: ' + t.text : '');
       b.innerHTML = '<img src="' + t.url + '" alt="">'
         + (t.id === view.recommended ? '<span class="rec">★ 추천</span>' : '')
         // 빨간색 = 1000px로 키우면 눈에 띄게 흐린 크기(등록은 된다). 그 이상은 키워도 티가 거의 안 난다
-        + '<span class="px' + (t.px < view.min_px ? ' low' : '') + '">' + t.px + 'px</span>';
-      b.onclick = function () { thumbChoose(t.id); };
+        + '<span class="px' + (t.px < view.min_px ? ' low' : '') + '">' + t.px + 'px</span>'
+        + (t.id === view.chosen ? '' : '<span class="xtra' + (isExtra ? ' on' : '') + '">'
+           + (isExtra ? '✓ 추가 ' + (extras.indexOf(t.id) + 1) : '+ 추가') + '</span>');
+      b.onclick = function (ev) {
+        if (ev.target.classList.contains('xtra')) thumbExtra(t.id); else thumbChoose(t.id);
+      };
       grid.appendChild(b);
     });
+    var xi = document.getElementById('extraInfo');
+    xi.innerHTML = '<b>추가이미지 ' + extras.length + '/' + view.max_extras + '장</b> · '
+      + (view.extras_by === 'user'
+         ? '직접 고름 <button type="button" class="btn-sm secondary" style="margin-left:6px;" onclick="thumbExtrasReset()">자동으로 되돌리기</button>'
+         : '점수 높은 후보로 자동 채움 — 넣고 빼면 그대로 고정됩니다')
+      + (extras.length ? '' : '<br><span class="muted">추가이미지 없이 대표이미지 한 장만 등록됩니다</span>');
     if (!cur) {
       main.innerHTML = '<span class="muted" style="font-size:12px;">추천 기다리는 중</span>';
       info.textContent = '';
@@ -169,6 +186,21 @@
       if (!d.ok) { view.chosen = prev; view.chosen_by = prevBy; render(); status('✕ ' + d.error); return; }
       view = d.view; render();
     });
+  };
+
+  function apply(params, rollback) {
+    post(params).then(function (d) {
+      if (!d.ok) { if (rollback) rollback(); render(); status('✕ ' + d.error); return; }
+      status(''); view = d.view; render();
+    });
+  }
+  window.thumbExtra = function (id) {
+    if (busy || !view) return;
+    apply({step: 'extra', id: id});
+  };
+  window.thumbExtrasReset = function () {
+    if (busy || !view) return;
+    apply({step: 'extras_reset'});
   };
 
   if (!view || view.recommended < 0) thumbRun(false); else render();

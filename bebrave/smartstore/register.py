@@ -204,7 +204,7 @@ def build_request_body(
         "deliveryInfo": _build_delivery_info(),
         "detailAttribute": detail_attribute,
     }
-    if product.options:
+    if sellable_options(product.options):
         # 네이버 스펙상 optionInfo는 detailAttribute 아래여야 한다 — 예전엔 originProduct
         # 최상위에 붙여서 옵션이 통째로 무시될 가능성이 있었다(2026-09 발견).
         detail_attribute["optionInfo"] = _build_option_info(product.option_group_name, product.options)
@@ -264,7 +264,7 @@ def _build_option_info(group_name: str, options: list) -> dict:
     return {
         "optionCombinationSortType": "CREATE",
         "useStockManagement": True,
-        "optionCombinationGroupNames": {"optionGroupName1": group_name},
+        "optionCombinationGroupNames": {"optionGroupName1": clean_option_group_name(group_name)},
         "optionCombinations": [
             {
                 "optionName1": o["name"],
@@ -272,9 +272,23 @@ def _build_option_info(group_name: str, options: list) -> dict:
                 "price": o.get("extra_price", 0),
                 "usable": True,
             }
-            for o in options
+            for o in sellable_options(options)
         ],
     }
+
+
+def sellable_options(options: list) -> list:
+    """구매자에게 보여도 되는 옵션만. 도매매는 품절 옵션을 지우지 않고 "품절(선택X)"처럼
+    이름만 바꿔 재고를 남겨두기도 한다 — 그대로 올리면 주문은 받는데 발주를 못 한다(2026-10
+    실측: 일회용베개커버 "품절(선택X)" 재고 10). 이름에 품절이 있거나 재고가 0이면 뺀다.
+    StoreProduct.options 자체는 그대로 둔다 — 발주 매칭이 옵션코드를 찾는 데 쓴다."""
+    return [o for o in options if "품절" not in str(o.get("name", "")) and int(o.get("stock", 0) or 0) > 0]
+
+
+def clean_option_group_name(name: str) -> str:
+    """"선택하세요"처럼 안내문을 옵션 제목으로 쓴 경우 "옵션"으로 바꾼다(2026-10)."""
+    n = str(name or "").strip()
+    return "옵션" if not n or "선택" in n else n
 
 
 def _build_delivery_info() -> dict:
@@ -315,10 +329,16 @@ def _build_origin_area_info(product: StoreProduct, strict: bool = True) -> dict:
             "잘못된 원산지 표시를 막기 위해 등록 금지"
         )
     info = {"originAreaCode": product.origin_code, "content": ""}
-    # 수입산(02 계열)에만 수입사를 채운다 — 도매매 제조사 칸이 스스로 수입자라고 밝힌 경우만
-    importer = importer_from(product.manufacturer) if product.origin_code.startswith("02") else ""
-    if importer:
-        info["importer"] = importer
+    # 수입산(02 계열)에만 수입사를 채운다 — 도매매가 수입자를 밝혔으면 그 값, 아니면 판매자
+    # 상호(2026-10 결정: 실제 수입자는 공급사도 모르는 경우가 대부분이고, 제조·수입자를 특정
+    # 못 하면 어차피 판매자가 책임지는 구조라 판매자 상호를 쓴다).
+    if product.origin_code.startswith("02"):
+        from .notice import SELLER_BUSINESS_NAME
+        importer = importer_from(product.manufacturer) or SELLER_BUSINESS_NAME
+        if not importer and strict:
+            raise ValueError("수입자 미설정 — .env의 SELLER_BUSINESS_NAME에 판매자 상호를 넣어야 수입산 상품을 등록할 수 있습니다")
+        if importer:
+            info["importer"] = importer
     return info
 
 
@@ -327,9 +347,15 @@ _PLACEHOLDER_VALUES = {"해당없음", "없음", "미상", "-", "n/a", "na"}
 
 
 def _clean(value: str) -> str:
-    """도매매 필드에서 '해당없음' 같은 자리표시자를 걸러낸 실제 값. 없으면 빈 문자열."""
+    """도매매 필드에서 '해당없음' 같은 자리표시자를 걸러낸 실제 값. 없으면 빈 문자열.
+    "상세페이지 참조"·"상세정보 별도표기"류도 값이 아니다 — 제조사 칸에 그대로 들어가
+    제조사 이름이 "상세페이지 참조"로 등록될 뻔했다(2026-10)."""
     v = str(value or "").strip()
-    return "" if v.lower() in _PLACEHOLDER_VALUES else v
+    if v.lower() in _PLACEHOLDER_VALUES:
+        return ""
+    if "상세" in v and any(w in v for w in ("참조", "표기", "표시", "별도")):
+        return ""
+    return v
 
 
 # 도매매 제조사 칸은 실제 제조사명이 아닌 경우가 대부분이었다 — 샘플 10건 중 7건이
@@ -358,7 +384,8 @@ def clean_manufacturer(value: str) -> str:
     if not v or any(j in v for j in _MAKER_JUNK):
         return ""
     v = re.sub(r"\s*[\(\[]\s*OEM\s*[\)\]]\s*", "", v, flags=re.I).strip()
-    v = re.sub(r"\bOEM\b", "", v, flags=re.I).strip()
+    # \b는 한글 바로 뒤의 OEM을 못 잡는다("중국OEM" — 한글도 단어 문자라 경계가 없음, 2026-10)
+    v = re.sub(r"(?<![A-Za-z])OEM(?![A-Za-z])", "", v, flags=re.I).strip()
     return "" if not v or v in _COUNTRY_ONLY else v
 
 
@@ -375,8 +402,12 @@ def clean_model(value: str, product_name: str = "") -> str:
     니퍼 큐티클관리니퍼") 일반명사("샴푸 브러쉬", "요가링(하드타입)")를 넣은 경우가 샘플 10건 중
     5건이었다(2026-09-30). 모델명은 가격비교에서 같은 상품을 묶는 기준이라 엉뚱한 값이 해롭다.
     실제 모델명은 거의 항상 영문·숫자를 포함하므로, 한글뿐인 값과 상품명의 조각은 버린다."""
-    v = _clean(value)
+    v = _clean(value).strip("()[] ")
     if not v or not re.search(r"[A-Za-z0-9]", v):
+        return ""
+    # 숫자뿐인 값("0671" — 원본 상품명 "[ABC0671]"의 공급사 코드 조각)과 공급사 관리코드
+    # 형태는 모델명이 아니다 — 가격비교 묶음을 오염시키고 소싱처를 드러낸다(2026-10).
+    if v.isdigit() or is_supplier_code(v):
         return ""
     tokens = [t for t in re.split(r"[\s\(\)\[\]/,·]+", v) if t]
     name = str(product_name or "")
@@ -385,10 +416,21 @@ def clean_model(value: str, product_name: str = "") -> str:
     return v
 
 
+def is_supplier_code(model: str) -> bool:
+    """확실한 공급사 관리코드 — 등록에서 아예 뺀다. 도매매 관리코드는 영문 접두어 + "WB" +
+    숫자 7자리 꼴이 많았고(DSJJWB7001360·megaWB5072450·TJWB5034271, 2026-10 샘플 14건 중 5건),
+    구분자 없이 영문 6자 이상 + 숫자 6자리 이상 붙은 값도 실제 제품 모델명에선 보기 드물다."""
+    v = str(model or "").strip()
+    if re.fullmatch(r"[A-Za-z]*WB\d{6,}", v, flags=re.I):
+        return True
+    return bool(re.fullmatch(r"[A-Za-z]{6,}\d{6,}", v))
+
+
 def looks_like_supplier_code(model: str) -> bool:
     """"dwa1168", "HJ5169-366"처럼 영문+숫자 코드만으로 된 모델명 — 진짜 모델명일 수도 있어
     지우진 않지만, 공급사 관리코드면 소싱처가 추적되므로 등록 항목 점검에서 확인을 요청한다."""
-    return bool(re.fullmatch(r"[A-Za-z]{1,5}[-_]?\d{3,}([-_]\d+)*", str(model or "").strip()))
+    v = str(model or "").strip()
+    return is_supplier_code(v) or bool(re.fullmatch(r"[A-Za-z]{1,5}[-_]?\d{3,}([-_]\d+)*", v))
 
 
 def fetch_registered_product(product_id: str, access_token: str) -> dict:

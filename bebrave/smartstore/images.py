@@ -45,6 +45,24 @@ def check_min_resolution(image_url: str, min_px: int = _RECOMMENDED_MIN_PX):
         return None
 
 
+# 추가이미지로 쓸 수 있는 사진의 가로세로 비율 상한. 상세페이지용 조각은 보통 세로가 가로의
+# 2배를 넘는다(860x1800 등) — 1.5배까지만 상품컷으로 본다(2026-10).
+_MAX_SHOT_RATIO = 1.5
+
+
+def pick_product_shots(image_urls: List[str], limit: int = 9) -> List[str]:
+    """정사각에 가까운 사진(상품컷)만 원래 순서대로 최대 limit장 고른다. 크기를 못 읽은 사진은
+    뺀다 — 추가이미지가 비는 것보다 잘린 상세 조각이 뜨는 쪽이 목록에서 더 나쁘다."""
+    from concurrent.futures import ThreadPoolExecutor
+
+    urls = [u for u in image_urls if u]
+    with ThreadPoolExecutor(max_workers=8) as ex:
+        sizes = list(ex.map(check_min_resolution, urls))
+    picked = [u for u, sz in zip(urls, sizes)
+              if sz and min(sz) > 0 and max(sz) / min(sz) <= _MAX_SHOT_RATIO]
+    return picked[:limit]
+
+
 # 대표이미지 원본이 이보다 작으면 흐리다고 본다(2026-09). 등록 때 1000px로 키우는데, 1.67배를
 # 넘게 키우면 확대했을 때 눈에 띄게 흐리다. 사람이 고른 사진은 경고만, 사람이 안 본 CLI 일괄
 # 등록은 건너뛴다(pipeline.py). 도매매 대표사진 760px·상세 사진 860px(실측 5개

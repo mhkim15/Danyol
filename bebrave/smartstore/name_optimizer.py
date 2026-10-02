@@ -13,7 +13,7 @@
 import re
 from typing import List, Set
 
-from ..config import BLOCKED_BRAND_PREFIXES, EXTERNAL_MALL_NAMES, HYPE_PHRASES
+from ..config import BLOCKED_BRAND_PREFIXES, BLOCKED_MEDICAL_KEYWORDS, EXTERNAL_MALL_NAMES, HYPE_PHRASES
 
 # 네이버쇼핑 SEO 가이드(2026-08) 20쪽 위반 예시("지나치게 긴 상품명")가 20자 안팎을
 # 보여준다 — 기존 45자는 넉넉한 편이라 40자로 낮춘다.
@@ -31,7 +31,26 @@ BANNED_PROMO_WORDS = {
     # 우리(위탁 소매)와 무관하다. "인쇄가능"이 상품명에 그대로 남으면 실제로 인쇄를
     # 안 해주므로 허위 표시가 된다(2026-09 발견).
     "인쇄가능", "사입가능", "도매가능", "대량구매", "소량가능",
+    # 배송·수량 판매조건 — "당일발송"만 있고 "당일배송"이 없어 "10개가격 당일배송"이
+    # 상품명에 그대로 남았다(2026-10).
+    "당일배송", "빠른배송", "익일배송", "개가격",
 }
+
+# 흔한 맞춤법 오류 — 검색량은 있어도 상품명·태그에 쓰면 품질이 떨어져 보이고, 정상 표기와
+# 함께 쓰면 같은 말 반복이 된다("목베개 … 배개", 태그 "배게베개", 2026-10).
+# 상품명에서는 지우지 않고 바로잡는다 — "발톱깍기"를 지우면 상품 유형이 통째로 사라진다.
+# 태그는 오타가 별개 검색어라 바로잡으면 중복이 되므로 그냥 뺀다(content._is_blocked_tag).
+TYPO_FIXES = {"배개": "베개", "배게": "베개", "깍이": "깎이", "깍기": "깎이"}
+
+
+def has_typo(word: str) -> bool:
+    return any(t in word for t in TYPO_FIXES)
+
+
+def fix_typos(word: str) -> str:
+    for wrong, right in TYPO_FIXES.items():
+        word = word.replace(wrong, right)
+    return word
 
 # 도매매 공급사 내부 관리코드 — "RD-10098"(코드+숫자), "-TJ"(하이픈+짧은 알파벳)처럼
 # 상품명에 토큰으로 섞여 들어온다. 슬래시 토큰화 수정(2026-09) 전에는 나열형 문자열에
@@ -87,6 +106,10 @@ def _is_blocked_word(word: str) -> bool:
         return True
     if any(h in word for h in HYPE_PHRASES):
         return True
+    # 질환명("내성발톱")은 의약품 오인 표현이라 상품명에 쓰면 안 된다 — 소싱 키워드 단계에서만
+    # 막고 있어 도매 원본 제목에 섞인 건 그대로 남았다(2026-10).
+    if any(m in word for m in BLOCKED_MEDICAL_KEYWORDS):
+        return True
     return False
 
 
@@ -105,6 +128,20 @@ def _clean_word_list(words: List[str], chosen: List[str], seen_keys: set) -> Non
         # 완전히 들어갈 때만 걸러야, "자동우산"·"골프우산"처럼 실제 구분 정보가 붙은
         # 복합어는 그대로 유지된다(2026-09).
         if any(w in c for c in chosen):
+            continue
+        # 반대 방향 중복 — 이미 고른 3글자 이상 단어를 통째로 품은 단어는 같은 키워드를 한 번 더
+        # 쓰는 셈이다("며느리발톱 … 며느리발톱제거", "쿠션퍼프 … 왕쿠션퍼프", 2026-10). 2글자
+        # 단어("우산")는 예외 — "자동우산"·"골프우산"처럼 구분 정보가 붙은 복합어를 살린다.
+        # 맨 앞(소싱 키워드)을 품은 단어는 버리고, 그 외에는 더 구체적인 쪽으로 바꿔 끼운다
+        # ("자동우산" → "3단자동우산" — 정보는 살리고 반복만 없앤다).
+        inner = next((i for i, c in enumerate(chosen) if len(c) >= 3 and c in w), None)
+        if inner is not None:
+            if inner > 0:
+                chosen[inner] = w
+            continue
+        # 같은 꼬리(마지막 3글자)를 가진 복합어는 2개까지만 — "여행용목베개 기내용목베개
+        # 캠핑목베개"처럼 쓰임새만 바꿔 나열하는 건 동의어 나열과 같다(2026-10).
+        if len(w) >= 4 and sum(1 for c in chosen if len(c) >= 4 and c[-3:] == w[-3:]) >= 2:
             continue
         seen_keys.add(key)
         chosen.append(w)
@@ -141,9 +178,10 @@ def _synonym_key(word: str) -> str:
 # 카테고리별 무드/상황 어휘 — 2030 여성 타겟 클릭률을 위해 상품명 맨 끝에 최대 1개만 붙임.
 # 매칭 안 되는 카테고리는 억지로 붙이지 않음(기본 폴백 없음). category는 도매매 분류 경로
 # 문자열(예: "생활>수납/정리>정리함")이라 키를 부분일치(in)로 찾는다.
+# 상품과 어울릴 때만 붙도록 좁혔다(2026-10) — "네일케어" 전체에 "셀프네일"을 붙여 손톱깎이가
+# "…셀프네일"이 됐고, "뷰티소품"의 "홈셀프케어"는 퍼프에 붙어 뜻이 안 통했다.
 MOOD_WORDS = {
-    "뷰티소품": "홈셀프케어",
-    "네일케어": "셀프네일",
+    "네일아트": "셀프네일",
     "헤어스타일링": "홈스타일링",
     "헤어케어": "홈케어",
     "헤어액세서리": "데일리스타일링",
@@ -175,12 +213,16 @@ def optimize_name(keyword: str, raw_title: str, category: str = "", max_len: int
     # 하나가 공백 기준 split()을 그대로 통과해 중복 제거·홍보어·브랜드 필터를
     # 전부 우회했다(2026-09 발견). 특수문자 제거는 분리 "후" 단어별로 해야 한다 —
     # 슬래시째로 지우면 나열된 단어들이 한 토큰으로 도로 뭉쳐버린다.
-    words = [_strip_special_chars(w) for w in re.split(r"[\s/]+", raw_title) if w]
+    words = [fix_typos(_strip_special_chars(w)) for w in re.split(r"[\s/]+", raw_title) if w]
     words = strip_promo_words([w for w in words if w])
 
     chosen: List[str] = []
     seen_keys = set()
 
+    keyword = fix_typos(keyword or "")
+    half = len(keyword) // 2
+    if half and keyword[:half] == keyword[half:]:  # "배게베개" → "베개베개" → "베개"
+        keyword = keyword[:half]
     if keyword:
         chosen.append(keyword)
         seen_keys.add(_synonym_key(keyword))
@@ -203,7 +245,7 @@ def sanitize_ai_name(text: str, max_len: int = MAX_NAME_LEN) -> str:
     AI가 이미 단어 순서를 잡아준 뒤라 keyword를 앞에 강제로 끼워넣지 않고, 같은
     차단·중복 제거 로직만 통과시킨다."""
     text = re.sub(r"\[.*?\]|\(.*?\)", "", text or "").strip()
-    words = [_strip_special_chars(w) for w in re.split(r"[\s/]+", text) if w]
+    words = [fix_typos(_strip_special_chars(w)) for w in re.split(r"[\s/]+", text) if w]
     words = strip_promo_words([w for w in words if w])
 
     chosen: List[str] = []

@@ -948,7 +948,7 @@ def candidates_preview():
             store_product = StoreProduct(
                 name=content["name"], leaf_category_id=cat_id, sale_price=sale_price,
                 stock_quantity=min(p.stock, MAX_LISTING_STOCK), detail_content=content["detail_content"],
-                representative_image=p.main_image, optional_images=p.images[1:10],
+                representative_image=p.main_image, optional_images=_audit_optional_images(p),
                 supply_price=p.supply_price, margin_rate=margin.margin_rate,
                 domemae_goods_no=p.goods_no, domemae_category=p.category, supplier=p.supplier,
                 keyword=keyword, tags=content.get("tags", []), origin_country=p.origin_country,
@@ -1183,10 +1183,19 @@ def recut_candidate_cut():
             "url": url_for("cut_image", goods_no=goods_no, filename=cut.filename)}
 
 
+def _audit_optional_images(p) -> list:
+    """등록 전 점검에 넣을 추가이미지 — 등록(pipeline)과 같은 규칙: 화면 후보가 있으면 그것,
+    없으면 정사각에 가까운 도매 사진."""
+    from bebrave.smartstore.images import pick_product_shots
+    from bebrave.smartstore.thumbs import extra_thumb_paths
+    extras = extra_thumb_paths(p.goods_no)
+    return [str(x) for x in extras] if extras is not None else pick_product_shots(p.images[1:])
+
+
 def _thumbs_view(goods_no: str):
     """대표이미지 영역에 보낼 값. 후보를 만든 적이 없으면 None — 화면이 열리자마자 만든다."""
     from bebrave.smartstore.images import MIN_SOURCE_PX
-    from bebrave.smartstore.thumbs import load_thumbs
+    from bebrave.smartstore.thumbs import MAX_EXTRAS, load_thumbs
     ts = load_thumbs(goods_no) if goods_no else None
     if not ts:
         return None
@@ -1196,7 +1205,8 @@ def _thumbs_view(goods_no: str):
                        "url": url_for("cut_image", goods_no=goods_no, filename=t.filename, v=ts.built_at)}
                       for t in ts.thumbs],
             "recommended": ts.recommended, "why": ts.why, "by_ai": ts.by_ai,
-            "fallback_reason": ts.fallback_reason, "chosen": ts.chosen, "chosen_by": ts.chosen_by}
+            "fallback_reason": ts.fallback_reason, "chosen": ts.chosen, "chosen_by": ts.chosen_by,
+            "extras": ts.extra_ids(), "extras_by": ts.extras_by, "max_extras": MAX_EXTRAS}
 
 
 @app.route("/candidates/thumbs", methods=["POST"])
@@ -1222,6 +1232,12 @@ def candidate_thumbs():
         elif step == "choose":
             if not th.choose(goods_no, int(request.form.get("id", "-1"))):
                 return {"ok": False, "error": "없는 후보입니다 — 새로고침하세요"}
+        elif step == "extra":
+            err = th.toggle_extra(goods_no, int(request.form.get("id", "-1")))
+            if err:
+                return {"ok": False, "error": err}
+        elif step == "extras_reset":
+            th.reset_extras(goods_no)
         else:
             return {"ok": False, "error": f"알 수 없는 단계: {step}"}, 400
         return {"ok": True, "view": _thumbs_view(goods_no)}
@@ -1579,18 +1595,54 @@ def products_view():
             "name_change": perf.get("name_change"),
             "replacements": perf.get("replacements"),
             "auto_delete_risk": auto_delete_risk,
+            "months_since_sold": months_since_sold,
+            "days_since_registered": perf.get("days_since_registered"),
+            "keyword": p.get("keyword", ""),
             "needs_action": bool(reasons),
             "reasons": reasons,
             "filters": filters,
             "eligible": _bulk_eligibility(is_suspended, sync, perf_status),
         })
 
-    action_count = len([r for r in rows if r["needs_action"]])
-    # 탭 대신 화면에서 검색어·상태를 즉시 걸러내는 필터로 처리한다(행 전부를 항상
-    # 내려보내고 자바스크립트가 보여줄 것만 고른다) — 서버 왕복 없이 바로 반응한다.
+    # 행마다 "문제 · 할 일"을 판정한다 — 헬스체크와 같은 기준(개당 순이익 하한·60일 무판매)
+    from bebrave.config import MIN_ABS_PROFIT
+    from bebrave.report import suggest_replacements
+    from bebrave.report.product_triage import triage, VERDICT_ORDER, URGENT, REPLACE
+    from bebrave.report.strategy import DEAD_DAYS, NEW_DAYS
+    candidates = _load_json(SOURCING_LOG)
+    for r in rows:
+        if not r["replacements"]:
+            r["replacements"] = suggest_replacements(r["keyword"], candidates, registered)
+        r["replacements"] = [dict(c, url=url_for("candidates_preview", keyword=c.get("keyword", ""),
+                                                 goods_no=c.get("supply_goods_no", ""), track=c.get("track", "")))
+                             for c in r["replacements"] or []]
+        r.update(triage(r, MIN_ABS_PROFIT, NEW_DAYS, DEAD_DAYS))
+        stock = (r["sync"] or {}).get("supply_stock")
+        if r["low_profit"] and "margin" not in r["filters"]:
+            r["filters"].append("margin")
+        if stock is not None and stock <= 10 and "stock" not in r["filters"]:
+            r["filters"].append("stock")
+        if r["verdict"] in (URGENT, REPLACE) and "action" not in r["filters"]:
+            r["filters"] = [f for f in r["filters"] if f != "ok"] + ["action"]
+        if (r["days_since_registered"] or 0) >= DEAD_DAYS and not r["recent_order_count"] and "nosale" not in r["filters"]:
+            r["filters"].append("nosale")
+    rows.sort(key=lambda r: VERDICT_ORDER[r["verdict"]])
+
+    def _count(f):
+        return sum(1 for r in rows if f in r["filters"])
+
+    # 데이터 신선도 — 재고·판매상태가 하루 넘게 묵었으면 화면 맨 위에서 경고한다.
+    # 한 달 묵은 "판매중지" 배지를 지금 상태로 믿고 판단하는 일을 막는다(2026-10).
+    stale_days = None
+    if sync_checked_at:
+        try:
+            stale_days = (datetime.now() - datetime.fromisoformat(sync_checked_at)).days
+        except ValueError:
+            pass
     return render_template("products.html", rows=rows, total=len(registered),
-                            action_count=action_count, ok_count=len(registered) - action_count,
-                            sync_checked_at=sync_checked_at)
+                           counts={k: _count(k) for k in ("action", "suspended", "margin", "nosale", "stock")},
+                           sync_checked_at=sync_checked_at, stale_days=stale_days,
+                           min_abs_profit=MIN_ABS_PROFIT, dead_days=DEAD_DAYS)
 
 
 @app.route("/products/refresh_stock", methods=["POST"])

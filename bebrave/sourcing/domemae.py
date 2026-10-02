@@ -350,6 +350,11 @@ def _parse_view_item(data: dict) -> DomemaeProduct:
 
     # 상세설명 HTML 안에 실제 갤러리 사진이 <img> 태그로 들어있는 경우가 많음 → 추출해서 추가
     desc_contents = desc_d.get("contents", "")
+    # 도매매가 상세설명 끝에 붙이는 "상품공급사 추천상품" 목록을 뗀다 — 다른 도매 상품의 사진·
+    # 도매매 상품번호·"사업자회원전용"·가격이 우리 상세페이지에 그대로 실렸다(2026-10 실측 2건).
+    # 사진 추출보다 먼저 떼야 그 목록의 썸네일이 상품 사진으로 섞이지 않는다.
+    desc_contents = re.sub(r"<!--\s*\[ST\]catalog\s*-->.*?<!--\s*\[ED\]catalog\s*-->", "",
+                           desc_contents, flags=re.S)
     # 대소문자·따옴표를 가리지 않는다 — 공급사에 따라 <IMG src=...>로 써서 긴 상세이미지가
     # 통째로 빠지고 대표사진 1장만 남았다(2026-09, 일자손톱깎이 67412210).
     for img_url in re.findall(r'<img[^>]+src=["\']?([^"\'\s>]+)', desc_contents, re.I):

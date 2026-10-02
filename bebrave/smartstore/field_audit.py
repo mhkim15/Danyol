@@ -14,6 +14,7 @@ from typing import Optional
 
 from ..config import SHIPPING_FEE, FREE_SHIPPING_THRESHOLD, RETURN_DELIVERY_FEE, EXCHANGE_DELIVERY_FEE
 from .origin import SEE_DETAIL_CODE
+from .notice import DIRECT_FIELDS
 from .register import looks_like_supplier_code
 
 # register.py의 하드코딩과 정확히 같은 값이어야 "기본값"으로 판정할 수 있다 — 여기서
@@ -191,7 +192,7 @@ def audit_fields(origin_product: dict, domemae_goods_no: str = "") -> list:
         # 수입산 — 도매매가 수입자를 밝힌 경우만 자동으로 채운다. 비어 있으면 판매자 상호를 넣을지 사람이 정한다.
         items.append(_judge_present(
             g, "수입자(importer)", origin.get("importer"),
-            "수입산인데 수입자가 비어 있습니다 — 도매매가 수입자를 밝히지 않았습니다. 판매자 상호를 넣을지 확인하세요.",
+            "수입산인데 수입자가 비어 있습니다 — .env의 SELLER_BUSINESS_NAME에 판매자 상호를 넣으면 자동으로 채워집니다.",
             field_path="detailAttribute.originAreaInfo.importer",
         ))
     items.append(_judge_present(
@@ -247,22 +248,33 @@ def audit_fields(origin_product: dict, domemae_goods_no: str = "") -> list:
         # 노출됐다(2026-09). 두 자리 모두 같은 기준으로 잡는다.
         return field_name == "modelName" and bool(domemae_goods_no) and value == domemae_goods_no
 
+    # "상세페이지 참조" 판정은 항목 성격에 따라 갈린다(2026-10, notice.py 상단 기준 참고):
+    # 인증·제조자·모델명처럼 우리가 직접 채워야 하는 항목에 "참조"가 있으면 허위 표시(더미),
+    # 소재·크기처럼 상세페이지에 있는 정보면 "참조"가 맞을 수 있으니 사람이 확인(확인 필요).
+    def _is_forbidden_ref(field_name: str, value) -> bool:
+        return value == _NOTICE_FALLBACK and field_name in DIRECT_FIELDS
+
     problem_count = sum(
-        1 for k, v in notice_fields.items() if v == _NOTICE_FALLBACK or _is_goods_no_leak(k, v)
+        1 for k, v in notice_fields.items() if _is_forbidden_ref(k, v) or _is_goods_no_leak(k, v)
     )
+    ref_count = sum(1 for k, v in notice_fields.items() if v == _NOTICE_FALLBACK and k not in DIRECT_FIELDS)
     for field_name, value in notice_fields.items():
-        is_fallback = value == _NOTICE_FALLBACK
+        forbidden = _is_forbidden_ref(field_name, value)
+        is_ref = value == _NOTICE_FALLBACK and not forbidden
         is_goods_no_leak_here = _is_goods_no_leak(field_name, value)
         items.append(_item(
             g, f"고시 · {field_name}", value,
-            VERDICT_DUMMY if (is_fallback or is_goods_no_leak_here) else (VERDICT_OK if value else VERDICT_EMPTY),
+            VERDICT_DUMMY if (forbidden or is_goods_no_leak_here) else
+            (VERDICT_CHECK if is_ref else (VERDICT_OK if value else VERDICT_EMPTY)),
             "도매매 상품번호가 그대로 노출됩니다." if is_goods_no_leak_here else
-            ("실제 값을 못 찾아 자리표시자로 채워졌습니다." if is_fallback else ""),
+            ("이 항목은 '상세페이지 참조'를 쓰면 안 됩니다 — 실제 값이나 '해당없음'이 들어가야 합니다." if forbidden else
+             ("상세페이지에 이 정보가 실제로 보여야 '참조'가 사실이 됩니다 — 페이지가 잘리지 않았는지 확인하세요." if is_ref else "")),
         ))
     if notice_fields:
         items.append(_item(
-            g, "고시 항목 요약", f"{len(notice_fields) - problem_count}/{len(notice_fields)}개 항목에 실제 값",
-            VERDICT_OK if problem_count == 0 else VERDICT_DUMMY,
+            g, "고시 항목 요약",
+            f"참조 금지 위반 {problem_count}개 · 상세페이지 참조 {ref_count}개 · 직접 기재 {len(notice_fields) - problem_count - ref_count}개",
+            VERDICT_DUMMY if problem_count else (VERDICT_CHECK if ref_count else VERDICT_OK),
         ))
     spec_item = _spec_coverage_item(domemae_goods_no)
     if spec_item:
@@ -342,7 +354,8 @@ def _demo() -> None:
             "originAreaInfo": {"originAreaCode": "0200037"},
             "modelName": "11013443",
             "productInfoProvidedNotice": {"productInfoProvidedNoticeType": "ETC",
-                                           "etc": {"material": "상세페이지 참조", "modelName": "11013443"}},
+                                           "etc": {"material": "상세페이지 참조", "modelName": "11013443",
+                                                   "certificateDetails": "상세페이지 참조"}},
             "seoInfo": {"sellerTags": [{"text": "실리콘주걱"}]},
             "minorPurchasable": True,
         },
@@ -355,9 +368,11 @@ def _demo() -> None:
     assert by_label["모델명(modelName)"].verdict == VERDICT_DUMMY, "도매매 상품번호 유출을 못 잡음"
     assert by_label["제조사(manufacturerName)"].verdict == VERDICT_EMPTY, "빈 제조사를 못 잡음"
     assert by_label["판매자상품코드"].verdict == VERDICT_EMPTY, "빈 판매자상품코드를 못 잡음"
-    assert by_label["고시 · material"].verdict == VERDICT_DUMMY, "고시 폴백값을 못 잡음"
+    assert by_label["고시 · material"].verdict == VERDICT_CHECK, "소재 '참조'는 확인 필요여야 함"
+    assert by_label["고시 · certificateDetails"].verdict == VERDICT_DUMMY, "인증 '참조'(고시 위반)를 못 잡음"
     assert by_label["고시 · modelName"].verdict == VERDICT_DUMMY, "고시 안쪽 도매매 상품번호 유출을 못 잡음"
-    assert by_label["고시 항목 요약"].value == "0/2개 항목에 실제 값", "고시 유출/폴백을 요약 집계에서 놓침"
+    assert by_label["고시 항목 요약"].value == "참조 금지 위반 2개 · 상세페이지 참조 1개 · 직접 기재 0개", by_label["고시 항목 요약"].value
+    assert by_label["고시 항목 요약"].verdict == VERDICT_DUMMY
     assert by_label["옵션 구성"].verdict == VERDICT_EMPTY, "옵션 없는 상품을 잘못 판정"
 
     body_ok = dict(body_missing)

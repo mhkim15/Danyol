@@ -304,6 +304,13 @@ def run(
         if kc_hit:
             print(f"  [건너뜀] KC 인증 대상 의심 — 상품명에 '{kc_hit}' 포함 (도매매: {domemae_p.name[:40]})")
             continue
+        # 생활화학제품도 같은 이유로 막는다 — 고시의 인증 칸을 "해당없음"으로 적으므로,
+        # 안전확인 번호가 필요한 품목이 섞이면 그 표시가 거짓이 된다(2026-10).
+        from ..config import BLOCKED_CHEMICAL_KEYWORDS
+        chem_hit = next((w for w in BLOCKED_CHEMICAL_KEYWORDS if w in domemae_p.name), "")
+        if chem_hit:
+            print(f"  [건너뜀] 생활화학제품 의심 — 상품명에 '{chem_hit}' 포함 (도매매: {domemae_p.name[:40]})")
+            continue
 
         # 상세설명 이미지 사용 허용 — 허용 안 된 이미지로 상세페이지를 만들어 올리면 저작권 문제가
         # 된다. 발굴 목록은 허용된 후보만 보여주지만 --supply-id·일괄 등록은 목록을 안 거치므로
@@ -378,6 +385,13 @@ def run(
         if CS_PHONE_NUMBER == DUMMY_CS_PHONE_NUMBER:
             print("  [건너뜀] A/S 연락처 미설정 — .env의 CS_PHONE_NUMBER를 실제 번호로 채워야 등록 가능")
             continue
+        # 수입자 — 도매매가 수입자를 밝히지 않은 수입산은 판매자 상호로 채운다(2026-10 결정).
+        # 상호가 비어 있으면 수입자 공란으로 나가 등록이 거부되거나 표시 의무를 어기게 된다.
+        from .notice import SELLER_BUSINESS_NAME
+        from .register import importer_from
+        if origin_code.startswith("02") and not importer_from(domemae_p.manufacturer) and not SELLER_BUSINESS_NAME:
+            print("  [건너뜀] 수입자 미설정 — .env의 SELLER_BUSINESS_NAME에 판매자 상호를 넣어야 수입산 상품을 등록할 수 있음")
+            continue
 
         # 리스팅 품질 체크 — 사진 1장뿐이거나 설명이 짧으면 최저가만 보고 고른
         # 부실한 리스팅일 가능성이 높음 (2026-07-12: 실전 등록 테스트로 발견된 패턴).
@@ -427,6 +441,10 @@ def run(
         from .category import describe_category
         category_name = describe_category(cat_id, token)
         print(f"\n[3] 카테고리 ID: {cat_id} ({category_name})")
+        block = cosmetic_block_reason(category_name)
+        if block:
+            print(f"  [건너뜀] {block}")
+            continue
 
         # 카테고리 속성(색상/소재/사이즈 등) — 네이버쇼핑 SEO 가이드가 "필터 결과 최상단
         # 노출"의 조건으로 명시하는데 지금까지 아예 안 보내고 있었다(2026-09 발견).
@@ -465,10 +483,18 @@ def run(
                 if cut_images:
                     print(f"\n[3.5] 컷 {len(cut_images)}장으로 상세페이지 재구성")
 
+        # 추가이미지는 정사각에 가까운 상품컷만 쓴다 — 도매 사진 목록 대부분이 상세페이지용
+        # 세로 긴 조각이라 그대로 넣으면 추가이미지 칸에 잘린 조각이 뜬다(2026-10). 판정은
+        # 업로드 전 원본 주소로 한다(업로드 후엔 주소가 바뀐다).
+        from .images import pick_product_shots
+        product_shots = set(pick_product_shots(domemae_p.images[1:]))
+
         url_map = {}
         if not dry_run and not cut_images:
             from .images import upload_images
-            originals = [u for u in domemae_p.images if u][:10]
+            # 10장 상한을 두지 않는다 — upload_images가 10장씩 나눠 올린다. 예전엔 여기서
+            # 10장으로 잘라 11장째부터 상세페이지 사진이 통째로 빠졌다(2026-10 실측: 19장 중 9장만 남음).
+            originals = [u for u in domemae_p.images if u]
             # upload_images()는 원본과 같은 길이로 반환하고 실패분을 None으로 채운다
             # (2026-09 수정 전엔 실패분을 건너뛴 짧은 리스트를 반환해 dict(zip(...))가
             # 엉뚱한 원본-업로드 URL을 짝짓고 있었다 — 5장 중 2장 실패 시 대표이미지까지
@@ -525,20 +551,31 @@ def run(
         # 컷으로 재구성했으면 상세페이지 첫 화면에 쓴 컷이 그대로 대표이미지가 된다 —
         # 목록에서 본 사진과 페이지 첫 장면이 어긋나지 않는다.
         # 네이버는 대표 1장 + 추가 9장까지 받는데 3장만 올리고 있었다(2026-09).
+        shots = [url_map.get(u, u) for u in product_shots] if url_map else list(product_shots)
+        shots = [u for u in domemae_p.images if u in shots]  # 원래 순서 유지
         representative = cut_images[0] if cut_images else domemae_p.main_image
-        optional = cut_images[1:10] if cut_images else domemae_p.images[1:10]
+        optional = cut_images[1:10] if cut_images else [u for u in shots if u != representative][:9]
         # 상품 상세 화면에서 대표이미지를 골랐으면(추천 자동 적용 포함) 그 사진이 이긴다(2026-09) —
         # 화면에서 본 대표이미지와 등록본이 같아야 한다. 후보를 만든 적이 없으면 위 규칙 그대로.
+        from .images import upload_images
         from .thumbs import chosen_thumb_path
         chosen_path = None if representative_image_override else chosen_thumb_path(domemae_p.goods_no)
         if chosen_path:
-            from .images import upload_images
             up = str(chosen_path) if dry_run else upload_images([str(chosen_path)], token)[0]
             if up:
-                representative, optional = up, (cut_images or domemae_p.images)[:9]
+                representative, optional = up, (cut_images or shots)[:9]
                 print(f"  대표이미지: 상품 상세 화면에서 고른 사진 ({chosen_path.name})")
             else:
                 print("  [경고] 고른 대표이미지를 올리지 못해 기존 대표이미지로 등록합니다")
+        # 추가이미지 — 상품 상세 화면의 후보에서 자동으로 채우거나 사람이 고른 것(2026-10).
+        # 후보를 만든 적이 없으면 위 규칙(상품컷 / AI 버전 컷) 그대로.
+        from .thumbs import extra_thumb_paths
+        extra_paths = extra_thumb_paths(domemae_p.goods_no)
+        if extra_paths is not None:
+            files = [str(x) for x in extra_paths]
+            ups = files if dry_run else (upload_images(files, token, square_first=False) if files else [])
+            optional = [u for u in ups if u]
+            print(f"  추가이미지: 상품 상세 화면의 후보 {len(optional)}장")
 
         store_product = StoreProduct(
             name=content["name"],
@@ -599,6 +636,18 @@ def run(
         _save_result(store_product, output_path)
 
     return registered
+
+
+def cosmetic_block_reason(category_path: str) -> str:
+    """네이버 카테고리가 화장품이면 등록 금지 사유, 아니면 빈 문자열. "화장품/미용" 아래라도
+    도구류(퍼프·손톱깎이 등)는 허용한다 — config.COSMETIC_ALLOWED_CATEGORIES 참고(2026-10)."""
+    from ..config import COSMETIC_ROOT_CATEGORY, COSMETIC_ALLOWED_CATEGORIES
+    path = str(category_path or "")
+    if not path.startswith(COSMETIC_ROOT_CATEGORY):
+        return ""
+    if path.startswith(COSMETIC_ALLOWED_CATEGORIES):
+        return ""
+    return f"화장품 카테고리({path}) — 책임판매업자·전성분 고시를 채울 수 없어 등록 금지"
 
 
 def _decide_sale_price(supply_price: int, retail_price: int) -> int:

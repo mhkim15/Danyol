@@ -50,6 +50,9 @@ _MARGIN = 0.85        # 흰 바탕에서 잘라낸 칸은 상품이 이만큼 �
 
 Box = Tuple[int, int, int, int]
 
+AUTO_EXTRAS = 5       # 자동으로 채우는 추가이미지 수 — 후보 뒤쪽은 비슷한 칸이 많다
+MAX_EXTRAS = 9        # 네이버 추가이미지 상한
+
 
 @dataclass
 class Thumb:
@@ -73,9 +76,20 @@ class ThumbSet:
     chosen: int = -1
     chosen_by: str = ""   # auto 추천이 자동 적용됨 | user 사람이 추천과 다른 걸 고름
     built_at: str = ""
+    # 추가이미지(대표사진 아래 넘겨보는 사진) — 사람이 손대기 전엔 점수 상위 후보로 자동 채우고,
+    # 한 번이라도 넣고 빼면 그 목록을 그대로 쓴다(2026-10). 예전엔 도매 상세 조각이 들어가
+    # 작은 정사각 칸에서 잘린 모습으로 보였다.
+    extras: List[int] = field(default_factory=list)
+    extras_by: str = ""   # "" 자동 | user 사람이 고름
 
     def of(self, tid: int) -> Optional[Thumb]:
         return next((t for t in self.thumbs if t.id == tid), None)
+
+    def extra_ids(self) -> List[int]:
+        """등록에 쓸 추가이미지 후보 번호. 대표로 고른 사진은 뺀다."""
+        if self.extras_by == "user":
+            return [i for i in self.extras if self.of(i) and i != self.chosen][:MAX_EXTRAS]
+        return [t.id for t in self.thumbs if t.id != self.chosen][:AUTO_EXTRAS]   # 점수순 정렬돼 있다
 
     def chosen_thumb(self) -> Optional[Thumb]:
         t = self.of(self.chosen)
@@ -110,6 +124,44 @@ def chosen_thumb_path(goods_no: str) -> Optional[Path]:
     ts = load_thumbs(goods_no) if goods_no else None
     t = ts.chosen_thumb() if ts else None
     return CUTS_DIR / str(goods_no) / t.filename if t else None
+
+
+def extra_thumb_paths(goods_no: str) -> Optional[List[Path]]:
+    """등록에 쓸 추가이미지 파일들. 화면에서 후보를 만든 적이 없으면 None — 호출부가 예전 규칙으로
+    채운다. 후보는 있는데 사람이 전부 뺐으면 빈 목록(추가이미지 없이 등록)."""
+    ts = load_thumbs(goods_no) if goods_no else None
+    if not ts:
+        return None
+    d = CUTS_DIR / str(goods_no)
+    return [d / ts.of(i).filename for i in ts.extra_ids() if (d / ts.of(i).filename).exists()]
+
+
+def toggle_extra(goods_no: str, tid: int) -> str:
+    """추가이미지에 넣거나 뺀다. 실패하면 사유, 성공하면 빈 문자열."""
+    ts = load_thumbs(goods_no)
+    if not ts or not ts.of(tid):
+        return "없는 후보입니다 — 새로고침하세요"
+    if tid == ts.chosen:
+        return "대표이미지로 고른 사진입니다 — 추가이미지에는 넣지 않습니다"
+    cur = ts.extra_ids()
+    if tid in cur:
+        cur.remove(tid)
+    elif len(cur) >= MAX_EXTRAS:
+        return f"추가이미지는 {MAX_EXTRAS}장까지입니다"
+    else:
+        cur.append(tid)
+    ts.extras, ts.extras_by = cur, "user"
+    save_thumbs(ts)
+    return ""
+
+
+def reset_extras(goods_no: str) -> bool:
+    ts = load_thumbs(goods_no)
+    if not ts:
+        return False
+    ts.extras, ts.extras_by = [], ""
+    save_thumbs(ts)
+    return True
 
 
 def choose(goods_no: str, tid: int) -> bool:
@@ -411,6 +463,15 @@ def _demo() -> None:
         assert chosen_thumb_path(g).name == "thumb_01.jpg", "등록에 고른 사진이 안 실림"
         assert choose(g, 0) and load_thumbs(g).chosen_by == "auto"
         assert not choose(g, 9), "없는 후보가 선택됨"
+
+        # (d) 추가이미지 — 자동으로 대표 외 후보가 채워지고, 넣고 빼면 사람 선택으로 고정된다
+        assert [p.name for p in extra_thumb_paths(g)] == ["thumb_01.jpg"], "자동 추가이미지가 안 채워짐"
+        assert toggle_extra(g, 0), "대표로 고른 사진이 추가이미지에 들어감"
+        assert toggle_extra(g, 1) == "" and extra_thumb_paths(g) == [], "뺐는데 남아 있음"
+        assert load_thumbs(g).extras_by == "user"
+        assert reset_extras(g) and len(extra_thumb_paths(g)) == 1, "자동으로 되돌리기 실패"
+        assert extra_thumb_paths("_없는상품") is None
+
         (CUTS_DIR / g / "thumb_00.jpg").unlink()
         assert chosen_thumb_path(g) is None, "파일이 사라진 대표이미지를 등록에 넘김"
     finally:

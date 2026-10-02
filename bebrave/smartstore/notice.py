@@ -40,6 +40,27 @@ CS_PHONE_NUMBER = os.environ.get("CS_PHONE_NUMBER", "") or DUMMY_CS_PHONE_NUMBER
 if CS_PHONE_NUMBER == DUMMY_CS_PHONE_NUMBER:
     print("[경고] CS_PHONE_NUMBER 미설정 — 등록 상품에 더미 연락처(010-0000-0000)가 나갑니다. .env에 실제 번호를 넣으세요.")
 
+# 수입자 — 도매매가 수입자를 밝히지 않은 수입산은 판매자 상호를 쓴다(2026-10 결정).
+SELLER_BUSINESS_NAME = os.environ.get("SELLER_BUSINESS_NAME", "").strip()
+
+# ── "상세페이지 참조"를 써도 되는 항목과 안 되는 항목 (2026-10) ───────────────────
+# 기준: 상세페이지에 그 정보가 실제로 있을 때만 "참조"가 사실이다. 아래 두 묶음은
+# 상세페이지와 무관하게 값을 정할 수 있으므로 "참조"를 절대 쓰지 않는다.
+#
+# 인증·허가 — 2023년 고시 개정으로 "상세정보 참조"로 대신할 수 없다고 명시됐다. 인증 대상
+# 품목(전기·어린이·생활화학·화장품)은 등록 단계에서 이미 막으므로 남은 상품은 "해당없음"이 사실이다.
+CERT_FIELDS = {"certificateDetails", "certificationType", "licenceNo", "safeCriterionNo",
+               "approvalNumber", "roadWorthyCertification"}
+CERT_NOT_APPLICABLE = "해당없음"
+# 우리가 가진 데이터로 직접 채우는 항목 — 상품명·모델명·제조자·수입자·제조국·연락처.
+# 도매 상세페이지에 제조자·수입자가 적힌 경우는 거의 없어 "참조"는 대개 거짓이 된다.
+DIRECT_FIELDS = {"itemName", "productName", "modelName", "manufacturer", "importer", "producer",
+                 "afterServiceDirector", "customerServicePhoneNumber", "warrantyPolicy"} | CERT_FIELDS
+# 품질보증기준은 어느 상품에나 사실인 표준 문구로 채운다.
+WARRANTY_TEXT = "관련 법 및 소비자분쟁해결기준에 따름"
+# 나머지(소재·색상·크기·구성품·주의사항 등)는 "상세페이지 참조"를 쓰되, 도매 원본 상세페이지가
+# 잘리지 않고 전부 실렸을 때만 사실이다 — 등록 항목 점검이 "확인 필요"로 표시한다.
+
 # 카테고리 경로에 이 단어가 들어가면 해당 고시유형으로 본다. 위에서부터 먼저 맞는 것을 쓰므로
 # 구체적인 것이 앞에 와야 한다. 확신이 없는 카테고리는 일부러 비워두고 ETC로 떨어뜨린다 —
 # 틀린 유형을 쓰면 엉뚱한 고시 항목이 소비자에게 표시되기 때문.
@@ -110,29 +131,45 @@ def _field_value(field_name: str, product) -> Optional[str]:
     """항목 이름 → 도매매/상품 데이터에서 찾은 값. 못 찾으면 None(호출부가 폴백 처리)."""
     from .register import clean_manufacturer, clean_model, importer_from
 
-    if field_name == "itemName":
+    if field_name in ("itemName", "productName"):
         return product.name
+    if field_name in CERT_FIELDS:
+        return CERT_NOT_APPLICABLE
+    if field_name == "warrantyPolicy":
+        return WARRANTY_TEXT
     if field_name == "modelName":
         # 도매매 상품번호로 폴백하지 않는다 — 공급사 내부 관리번호가 고시에 그대로
-        # 노출돼 위탁 소싱 구조가 드러났다(2026-09 발견). 못 찾으면 다른 항목처럼
-        # 호출부의 일반 폴백("상세페이지 참조")을 그대로 쓴다.
-        return clean_model(getattr(product, "model", ""), product.name) or None
+        # 노출돼 위탁 소싱 구조가 드러났다(2026-09 발견). 모델명이 없는 상품이면
+        # "해당없음"이 사실이다 — 상세페이지에도 없으니 "참조"는 거짓이 된다(2026-10).
+        return clean_model(getattr(product, "model", ""), product.name) or CERT_NOT_APPLICABLE
     if field_name == "manufacturer":
-        return clean_manufacturer(getattr(product, "manufacturer", "")) or None
+        # 실제 회사명이 없으면 확인된 사실(제조국)만 적는다 — "~협력사"는 공급사를 드러낸다(2026-10).
+        maker = clean_manufacturer(getattr(product, "manufacturer", ""))
+        country = _producer_country(product)
+        return maker or (f"{country} 제조" if country else None)
     if field_name == "importer":
-        return importer_from(getattr(product, "manufacturer", "")) or None
+        if not str(getattr(product, "origin_country", "") or "").startswith("수입산"):
+            return CERT_NOT_APPLICABLE
+        return importer_from(getattr(product, "manufacturer", "")) or SELLER_BUSINESS_NAME or None
     if field_name == "producer":
-        # 제조국 — 도매매 원산지 표기("수입산_아시아_중국")의 마지막 조각을 쓴다.
-        # "상세정보별도표기"처럼 나라가 아닌 값은 제조국으로 쓰지 않는다.
-        raw = getattr(product, "origin_country", "") or ""
-        if not raw.startswith(("국산", "수입산", "원양산")):
-            return None
-        return raw.split("_")[-1]
+        return _producer_country(product) or None
     if field_name in ("afterServiceDirector", "customerServicePhoneNumber"):
         return CS_PHONE_NUMBER
     # 소재·크기 등 나머지는 "상세페이지 참조" — 상세 이미지에서 AI가 읽은 문구로 채워봤지만(2026-09)
     # 오독·광고 문구가 법정 표시 칸에 들어갈 위험이 더 커서 되돌렸다. 도매매가 주는 확실한 값만 쓴다.
     return None
+
+
+def _producer_country(product) -> str:
+    """제조국. 수입산은 도매매 원산지 표기("수입산_아시아_중국")의 마지막 조각, 국산은 "대한민국".
+    예전엔 국산도 마지막 조각을 써서 "국산_서울특별시_종로구"가 제조국 "종로구"로 나갔다(2026-10).
+    "상세정보별도표기"처럼 나라가 아닌 값은 제조국으로 쓰지 않는다."""
+    raw = str(getattr(product, "origin_country", "") or "")
+    if raw.startswith("국산"):
+        return "대한민국"
+    if raw.startswith(("수입산", "원양산")):
+        return raw.split("_")[-1]
+    return ""
 
 
 def build_provided_notice(product, access_token: str, notice_type: str = "") -> dict:

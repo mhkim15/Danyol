@@ -206,14 +206,21 @@ def _growth(g: dict) -> dict:
     lc = g.get("lifecycle") or {}
     dead = lc.get("dead", 0)
     dead_ratio = dead / active if active else 0
-    rev_d, m_now, m_prev = g.get("revenue_delta"), g.get("margin_rate"), g.get("margin_rate_prev")
+    m_now, m_prev = g.get("margin_rate"), g.get("margin_rate_prev")
+    # 매출 증감은 펼친 화면의 주별 그래프·문장과 같은 숫자(완료된 최근 4주 vs 그 전 4주)로 판정한다.
+    # 30일 비교를 따로 쓰면 같은 화면에 -18%와 -16%가 나란히 뜬다. 8주가 안 쌓였을 때만 30일 비교로 대신한다.
+    ws = g.get("week_summary")
+    if ws and ws.get("change") is not None:
+        rev_d, rev_label, rev_sub = ws["change"], "4주 매출", "그 전 4주 대비"
+    else:
+        rev_d, rev_label, rev_sub = g.get("revenue_delta"), "30일 매출", "직전 30일 대비"
     prod_ch = _ch(active, g.get("active_products_prev"))
 
     rate_low = bool(base and sell_rate is not None and sell_rate < base * SELL_RATE_DROP)
     chips = [
         _chip("팔린 상품 비율", _pct(sell_rate), "warn" if rate_low else "ok",
-              f"평소 {_pct(base)}" if base else "최근 30일"),
-        _chip("30일 매출", _pct(rev_d, True), "warn" if rev_d is not None and rev_d <= -0.15 else "ok", "직전 30일 대비"),
+              f"직전 3개월 평균 {_pct(base)}" if base else "최근 30일"),
+        _chip(rev_label, _pct(rev_d, True), "warn" if rev_d is not None and rev_d <= -0.15 else "ok", rev_sub),
         _chip("정리 대상", f"{dead}개", "warn" if dead_ratio >= DEAD_RATIO_LIMIT else "ok", f"{DEAD_DAYS}일+ 0건"),
     ]
 
@@ -521,7 +528,16 @@ def growth_story(g: dict, kind: str) -> dict:
             "new_rate": new_rate, "old_rate": old_rate, "culprit": culprit,
             "out": (g.get("dead_list") or [])[:5] if kind in ("cleanup", "decline", "keep") else [],
             "dead_total": (g.get("lifecycle") or {}).get("dead", 0),
-            "in": g.get("replacements") or []}
+            "in": [_with_profit(c) for c in g.get("replacements") or []]}
+
+
+def _with_profit(c: dict) -> dict:
+    """교체 후보에 개당 순이익(수수료·배송비·CS 적립 뺀 값)을 붙인다 — 원가율보다 "1개 팔면 얼마 남나"가 판단에 직접적이다."""
+    if not (c.get("price") and c.get("cost")):
+        return dict(c, profit=None, profit_ok=False)
+    from ..margin.calculator import calculate
+    r = calculate(c["price"], c["cost"])
+    return dict(c, profit=r.net_profit, profit_ok=r.passes_abs_floor and r.passes_min)
 
 
 def week_trend(weeks: list) -> Optional[float]:
@@ -866,6 +882,10 @@ def demo_metrics(scenario: str = "cleanup", today: Optional[date] = None) -> tup
                  lifecycle={"new": 6, "star": 11, "falling": 1, "dead": 4, "steady": 20})
         mo.update(fee={"measured_rate": 0.041, "assumed_rate": 0.04, "diff": 0.001, "sample_count": 18}, cash_cycle_days=11)
     elif scenario == "margin":
+        weeks_up = [dict(w, revenue=v, profit=round(v * 0.12)) for w, v in zip(weeks, [
+            70000, 72000, 69000, 75000, 71000, 74000, 79000, 83000, 80000, 84000, 86000, 29000])]
+        g.update(weeks=weeks_up, week_trend=week_trend(weeks_up), week_summary=week_summary(weeks_up),
+                 week_chart=week_chart(weeks_up))
         g.update(sell_rate=0.36, revenue_delta=0.14, margin_rate=0.118, margin_rate_prev=0.171, active_products_prev=40,
                  lifecycle={"new": 3, "star": 8, "falling": 2, "dead": 6, "steady": 23})
     elif scenario == "ops":

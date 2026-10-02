@@ -264,8 +264,18 @@ def _todo_groups(registered: list, pending_orders, returns_count, inquiry_count)
     groups.append({"name": "주문", "rows": order_items})
 
     supply_n = len(issues_by_category.get("품절", [])) + len(issues_by_category.get("재고조정", []))
-    margin_n = len(issues_by_category.get("마진붕괴", []))
-    no_sale_n = len([p for p in product_performance(registered=registered) if p["status"].startswith("무판매")])
+    # 상품 관리 요약 칸("마진 부족"·"60일+ 무판매")과 같은 기준으로 센다 — 홈은 3건, 들어가면 2건이던 어긋남(2026-10)
+    from bebrave.config import MIN_ABS_PROFIT
+    from bebrave.report import recent_order_counts
+    from bebrave.report.strategy import DEAD_DAYS
+    sync_cache = _load_json(PRODUCT_SYNC_CACHE)
+    margin_ids = {s["naver_product_id"] for s in sync_cache if s.get("action") == "마진경고"} if isinstance(sync_cache, list) else set()
+    margin_ids |= {str(p.get("naver_product_id", "")) for p in registered
+                   if (p.get("sale_price") or 0) * (p.get("margin_rate") or 0) < MIN_ABS_PROFIT}
+    margin_n = len(margin_ids)
+    recent = recent_order_counts()
+    no_sale_n = len([p for p in product_performance(registered=registered)
+                     if (p.get("days_since_registered") or 0) >= DEAD_DAYS and not recent.get(p["naver_product_id"], 0)])
 
     # 셋이 서로 다른 일인데 링크가 전부 같은 "조치 필요" 필터로 가고 있었다 —
     # 상품 관리에 성격별 필터가 이미 있으므로 각각 그리로 보낸다.
@@ -1622,9 +1632,11 @@ def products_view():
             r["filters"].append("margin")
         if stock is not None and stock <= 10 and "stock" not in r["filters"]:
             r["filters"].append("stock")
-        if r["verdict"] in (URGENT, REPLACE) and "action" not in r["filters"]:
-            r["filters"] = [f for f in r["filters"] if f != "ok"] + ["action"]
-        if (r["days_since_registered"] or 0) >= DEAD_DAYS and not r["recent_order_count"] and "nosale" not in r["filters"]:
+        # "조치 필요"·"무판매"는 판정 결과로 다시 매긴다 — 옛 기준(등록 14일+ 무판매)이 남아 있으면
+        # 20일 된 상품이 "60일+ 무판매"·"조치 필요"에 섞여 표의 "지켜보기"와 숫자가 어긋난다
+        r["filters"] = [f for f in r["filters"] if f not in ("action", "nosale", "ok")]
+        r["filters"].append("action" if r["verdict"] in (URGENT, REPLACE) else "ok")
+        if (r["days_since_registered"] or 0) >= DEAD_DAYS and not r["recent_order_count"]:
             r["filters"].append("nosale")
     rows.sort(key=lambda r: VERDICT_ORDER[r["verdict"]])
 
@@ -1825,10 +1837,24 @@ def products_detail(product_id):
             audit_problem_count=sum(1 for i in audit_items if i.problem),
         )
     except Exception as e:
-        ctx["fetch_error"] = str(e)
+        ctx["fetch_error"] = _friendly_naver_error(e)
         ctx["quality"] = score_listing(record)
 
-    return render_template("product_detail.html", **ctx)
+    from bebrave.config import MIN_ABS_PROFIT
+    return render_template("product_detail.html", min_abs_profit=MIN_ABS_PROFIT, **ctx)
+
+
+def _friendly_naver_error(e: Exception) -> str:
+    """네이버 API 실패를 운영자가 할 일로 바꾼다 — "403 Client Error: Forbidden for url: …"를
+    그대로 세 번 보여주고 있었다(2026-10). 대부분은 IP 허용목록(GW.IP_NOT_ALLOWED) 문제다."""
+    msg = str(e)
+    if "403" in msg or "IP_NOT_ALLOWED" in msg:
+        return "네이버 연결이 막혀 있습니다 — 커머스API센터에서 지금 공인 IP를 허용 목록에 추가해야 합니다."
+    if "401" in msg:
+        return "네이버 인증이 거절됐습니다 — 커머스API 키(.env)를 확인하세요."
+    if "timed out" in msg.lower() or "connection" in msg.lower():
+        return "네이버 서버에 연결하지 못했습니다 — 인터넷 연결을 확인하고 잠시 뒤 다시 여세요."
+    return f"네이버 조회에 실패했습니다({msg[:80]})."
 
 
 @app.route("/products/edit_detail", methods=["POST"])

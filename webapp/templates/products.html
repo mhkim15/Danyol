@@ -1,161 +1,181 @@
 {% extends "base.html" %}
 {% block title %}상품 관리{% endblock %}
 {% block content %}
-<div class="row" style="justify-content:space-between;align-items:center;margin-bottom:18px;">
-  <h1 style="margin:0;">상품 관리</h1>
+{#- 정보 위계 (헬스체크와 같은 원칙)
+    1) 데이터가 묵었으면 맨 위에서 경고 — 묵은 배지를 지금 상태로 믿지 않게
+    2) 요약 숫자(누르면 걸러짐) — 무엇이 몇 건인지
+    3) 표: 상품마다 "문제 · 할 일"이 주인공. 상태·판매·순이익은 그 판단 근거
+    판정은 product_triage 한 곳에서 하고, 여기서는 그리기만 한다. -#}
+<style>
+  .pm-head { display:flex; justify-content:space-between; align-items:center; gap:12px; margin-bottom:14px; }
+  .pm-head h1 { margin:0; }
+  .pm-head .when { font-size:12px; color:var(--ink-muted); font-weight:400; margin-left:8px; }
+  .stale { display:flex; align-items:center; gap:10px; background:var(--warn-bg); color:var(--ink); border-radius:12px;
+    padding:12px 16px; margin-bottom:14px; font-size:13px; line-height:1.5; }
+  .stale b { color:var(--warn); }
+  .stale .ico { width:8px; height:8px; border-radius:50%; background:var(--warn); flex-shrink:0; }
+
+  .pm-tiles { display:grid; grid-template-columns:repeat(6, minmax(0,1fr)); gap:8px; margin-bottom:14px; }
+  .pm-tile { all:unset; cursor:pointer; background:var(--panel); border:1px solid var(--line); border-radius:12px;
+    padding:12px 14px; display:flex; flex-direction:column; gap:2px; transition:border-color var(--d-fast) ease; }
+  .pm-tile:hover { border-color:var(--ink-muted); }
+  .pm-tile.on { border-color:var(--ink); box-shadow:inset 0 0 0 1px var(--ink); }
+  .pm-tile .l { font-size:12px; font-weight:600; color:var(--ink-soft); }
+  .pm-tile .v { font-size:22px; font-weight:700; font-variant-numeric:tabular-nums; letter-spacing:-0.02em; }
+  .pm-tile .v.bad { color:var(--err); } .pm-tile .v.warn { color:var(--warn); } .pm-tile .v.zero { color:var(--ink-muted); }
+
+  .pm-tools { display:flex; align-items:center; gap:10px; margin-bottom:10px; }
+  .pm-tools input { margin:0; max-width:240px; }
+  .pm-tools .cnt { font-size:12px; color:var(--ink-muted); }
+
+  #productTable td { vertical-align:top; padding:14px 10px; }
+  #productTable th { padding:10px; }
+  .p-name { font-weight:600; color:var(--ink); text-decoration:none; line-height:1.4; display:block; }
+  .p-name:hover { color:var(--accent); }
+  .p-sub { font-size:12px; color:var(--ink-muted); margin-top:3px; font-variant-numeric:tabular-nums; }
+  .st { display:inline-flex; align-items:center; gap:6px; font-size:13px; font-weight:600; white-space:nowrap; }
+  .st::before { content:""; width:7px; height:7px; border-radius:50%; background:var(--c); }
+  .st.on { --c:var(--ok); } .st.off { --c:var(--err); } .st.out { --c:var(--err); color:var(--err); } .st.unk { --c:var(--ink-muted); color:var(--ink-muted); }
+  .num-big { font-size:15px; font-weight:700; font-variant-numeric:tabular-nums; white-space:nowrap; }
+  .num-big.bad { color:var(--err); }
+  .verdict { display:inline-block; font-size:12px; font-weight:700; padding:2px 9px; border-radius:6px; margin-bottom:6px; }
+  .verdict.urgent { background:var(--err-bg); color:var(--err); }
+  .verdict.replace { background:var(--warn-bg); color:var(--warn); }
+  .verdict.watch { background:var(--chip-bg); color:var(--ink-soft); }
+  .verdict.ok { background:var(--ok-bg); color:var(--ok); }
+  .issues { margin:0; padding:0; list-style:none; display:flex; flex-direction:column; gap:3px; }
+  .issues li { font-size:12.5px; color:var(--ink-soft); line-height:1.45; padding-left:12px; position:relative; }
+  .issues li::before { content:""; position:absolute; left:0; top:7px; width:5px; height:5px; border-radius:50%; background:var(--ink-muted); }
+  .issues li.bad::before { background:var(--err); } .issues li.warn::before { background:var(--warn); }
+  .acts { display:flex; flex-wrap:wrap; gap:6px; margin-top:9px; }
+  .acts .btn-sm { white-space:nowrap; }
+
+  .bulkbar { display:flex; align-items:center; gap:8px; flex-wrap:wrap; }
+
+  @media (max-width: 1100px) { .pm-tiles { grid-template-columns:repeat(3, minmax(0,1fr)); } }
+  @media (max-width: 860px) {
+    .pm-tiles { grid-template-columns:repeat(2, minmax(0,1fr)); }
+    #productTable thead { display:none; }
+    #productTable tr { display:grid; grid-template-columns:24px 1fr 1fr; gap:4px 10px; padding:12px 0; border-bottom:1px solid var(--line); }
+    #productTable td { border:none; padding:2px 0; }
+    #productTable td.c-chk { grid-row:span 4; }
+    #productTable td.c-name, #productTable td.c-todo { grid-column:2 / -1; }
+  }
+</style>
+
+<div class="pm-head">
+  <h1>상품 관리{% if sync_checked_at %}<span class="when">{{ sync_checked_at.replace('T', ' ') }} 기준</span>{% endif %}</h1>
   <form method="post" action="{{ url_for('products_refresh_stock') }}" style="margin:0;">
-    <button type="submit" class="secondary btn-sm">지금 확인</button>
+    <button type="submit" class="{{ 'btn-sm' if stale_days is none or stale_days >= 1 else 'secondary btn-sm' }}">지금 확인</button>
   </form>
 </div>
 
-<div class="filterbar">
+{% if stale_days is none or stale_days >= 1 %}
+<div class="stale"><span class="ico"></span>
+  <span>{% if stale_days is none %}<b>재고·판매상태를 아직 한 번도 확인하지 않았습니다.</b>
+  {% else %}<b>재고·판매상태가 {{ stale_days }}일 전 기준입니다</b> — 아래 '판매중지'·재고 표시는 지금과 다를 수 있습니다.{% endif %}
+  '지금 확인'을 누르세요. 확인이 실패하면 네이버 커머스API센터에서 지금 공인 IP를 허용 목록에 추가해야 합니다.</span>
+</div>
+{% endif %}
+
+{# 요약 — 누르면 그 조건으로 표가 걸러진다. 헬스체크 링크(?tab=)도 같은 값으로 들어온다 #}
+<div class="pm-tiles" id="tiles">
+  {% for key, label, n, tone in [('all', '전체', total, ''), ('action', '조치 필요', counts.action, 'bad'),
+       ('margin', '마진 부족', counts.margin, 'bad'), ('nosale', dead_days ~ '일+ 무판매', counts.nosale, 'warn'),
+       ('suspended', '판매중지', counts.suspended, 'warn'), ('stock', '품절·임박', counts.stock, 'bad')] %}
+  <button type="button" class="pm-tile" data-filter="{{ key }}" onclick="setFilter('{{ key }}')">
+    <span class="l">{{ label }}</span>
+    <span class="v {{ 'zero' if not n else tone }}">{{ n }}</span>
+  </button>
+  {% endfor %}
+</div>
+
+<div class="pm-tools">
   <input type="text" id="searchInput" placeholder="상품명 검색" oninput="applyFilters()">
-  <select id="statusFilter" onchange="applyFilters()">
-    <option value="all">전체 {{ total }}</option>
-    <option value="action">조치 필요 {{ action_count }}</option>
-    <option value="suspended">판매중지 상태</option>
-    <option value="stock">품절·재고조정</option>
-    <option value="margin">마진경고</option>
-    {# 표의 "상품 상태" 배지와 같은 말을 쓴다 — 필터는 무판매인데 행은 점검필요면 헷갈린다 #}
-    <option value="nosale">판매 점검필요</option>
-    <option value="ok">정상 {{ ok_count }}</option>
-  </select>
-  <span id="filterCount" class="muted" style="font-size:12px;"></span>
-  <span class="spacer"></span>
-  {% if sync_checked_at %}
-  <span class="muted" style="font-size:12px;">{{ sync_checked_at.replace('T', ' ') }} 확인</span>
-  {% else %}
-  <span class="badge-warn">재고 미확인</span>
-  {% endif %}
+  <span id="filterCount" class="cnt"></span>
 </div>
 
-<form id="bulkForm" method="post" action="{{ url_for('products_bulk') }}"></form>
-
-<div class="bulkbar" id="bulkBar" style="background:none;border:none;padding:10px 0;">
-  <div class="row" style="align-items:center;">
-    <span class="sel-count" id="bulkCount">0건 선택</span>
-    <span class="divider"></span>
-    <span class="group-label">판매 상태</span>
-    <button type="submit" form="bulkForm" name="action" value="resume" data-act="resume" class="bulk-btn btn-sm">판매 재개</button>
-    <button type="submit" form="bulkForm" name="action" value="suspend" data-act="suspend" class="bulk-btn btn-sm danger">판매중지</button>
-    <span class="divider"></span>
-    <span class="group-label">공급 반영</span>
-    <button type="submit" form="bulkForm" name="action" value="apply_sync" data-act="apply_sync" class="bulk-btn btn-sm secondary">도매매 반영</button>
-    <button type="submit" form="bulkForm" name="action" value="apply_price" data-act="apply_price" class="bulk-btn btn-sm secondary">권장가 변경</button>
-    <span class="divider"></span>
-    <span class="group-label">리스팅</span>
-    <button type="submit" form="bulkForm" name="action" value="reoptimize" data-act="reoptimize" class="bulk-btn btn-sm secondary">이름 재최적화</button>
-    <span class="spacer"></span>
-    <label style="margin:0;font-size:13px;white-space:nowrap;"><input type="checkbox" name="live" form="bulkForm"> 확인함 — 실제로 반영</label>
-  </div>
+{# 일괄 처리 — 상품을 고를 때만 나타난다. 실제 반영 여부는 버튼을 누를 때 확인 창에서 묻는다 #}
+<form id="bulkForm" method="post" action="{{ url_for('products_bulk') }}"><input type="hidden" name="live" id="bulkLive" value=""></form>
+<div class="bulkbar" id="bulkBar" hidden>
+  <span class="sel-count" id="bulkCount">0건 선택</span>
+  <span class="divider"></span>
+  {% for act, label, cls in [('resume', '판매 재개', ''), ('apply_sync', '도매매 반영', 'secondary'), ('apply_price', '권장가 적용', 'secondary'),
+       ('reoptimize', '이름 다시 짓기', 'secondary'), ('suspend', '판매중지', 'danger')] %}
+  <button type="button" data-act="{{ act }}" data-label="{{ label }}" class="bulk-btn btn-sm {{ cls }}" onclick="bulkAct(this)">{{ label }}</button>
+  {% endfor %}
+  <span style="flex:1;"></span>
+  <button type="button" class="btn-sm secondary" onclick="clearSel()">선택 해제</button>
 </div>
 
-<div class="panel">
+{# 행 버튼 — 이 상품 1건만 일괄 처리와 같은 경로로 보낸다(판정·반영 로직 한 곳) #}
+<form id="rowForm" method="post" action="{{ url_for('products_bulk') }}">
+  <input type="hidden" name="action" id="rowAction"><input type="hidden" name="ids" id="rowId"><input type="hidden" name="live" value="on">
+</form>
+
+<div class="panel" style="padding:4px 12px;">
   <div class="table-wrap">
   <table id="productTable">
     <thead>
     <tr>
       <th style="width:24px;"><input type="checkbox" id="checkAll" onclick="toggleAll(this)"></th>
       <th>상품</th>
-      <th style="width:10%;">판매상태</th>
-      <th style="width:11%;">도매처 재고
+      <th style="width:96px;">상태</th>
+      <th style="width:110px;">최근 30일</th>
+      <th style="width:140px;">개당 순이익
         <button type="button" class="tip-btn" data-tip-toggle>?<span class="tip-bubble">
-          <p>위탁판매는 내가 재고를 갖고 있지 않으므로 <b>도매처에 남은 수량이 곧 팔 수 있는 수량</b>입니다.</p>
-          <p>스마트스토어에 걸어둔 수량(등록 시 999)은 판단에 쓸모가 없어 표시하지 않습니다.</p>
-          <p>10개 이하면 품절 임박으로 봅니다 — 주문이 몰리면 발주가 실패합니다.</p>
+          <p>1개 팔았을 때 수수료·배송비·CS 적립까지 빼고 남는 돈입니다(등록 당시 계산).</p>
+          <p>{{ "{:,}".format(min_abs_profit) }}원 미만이면 반품 한 건에 적자가 되기 쉬워 빨강으로 표시합니다.</p>
         </span></button>
       </th>
-      <th style="width:14%;">판매가</th>
-      <th style="width:11%;">상품 상태
-        <button type="button" class="tip-btn" data-tip-toggle>?<span class="tip-bubble">
-          <p>최근 30일 주문건수 기준 판매 등급입니다.</p>
-          <ul>
-            <li><b>점검필요</b> — 0건, 최근 판매이력 없음</li>
-            <li><b>저조</b> — 1~4건</li>
-            <li><b>양호</b> — 5~19건</li>
-            <li><b>인기</b> — 20건 이상</li>
-          </ul>
-        </span></button>
-      </th>
-      <th style="width:11%;">반품률·교환률</th>
-      <th style="width:11%;">11번가 대비가
-        <button type="button" class="tip-btn" data-tip-toggle>?<span class="tip-bubble">
-          <p>11번가에서 같은 키워드로 검색한 결과의 <b>평균가</b> 대비 내 판매가 위치입니다. ±5% 안이면 보통.</p>
-          <p><b>주의</b> — 내가 파는 곳은 스마트스토어입니다. 네이버 쇼핑 리스팅 API가 종료돼(2026-07-31) 같은 채널 비교가 불가능해 11번가로 대신 봅니다.</p>
-          <p>키워드가 넓으면 다른 상품군이 섞여 평균가가 실제 경쟁 상품과 어긋납니다 — 배지보다 툴팁의 표본 수·평균가를 확인하세요.</p>
-        </span></button>
-      </th>
+      <th style="width:38%;">문제 · 할 일</th>
     </tr>
     </thead>
     <tbody>
     {% for p in rows %}
-    <tr data-filters="{{ p.filters|join(' ') }}" data-eligible="{{ p.eligible|join(' ') }}" data-name="{{ p.name|lower }}">
-      <td><input type="checkbox" form="bulkForm" class="row-check" name="ids" value="{{ p.naver_product_id }}" onclick="updateBulkBar()"></td>
+    {% set stock = p.sync.get('supply_stock') if p.sync else none %}
+    <tr data-filters="{{ p.filters|join(' ') }} all" data-eligible="{{ p.eligible|join(' ') }}" data-name="{{ p.name|lower }}">
+      <td class="c-chk"><input type="checkbox" form="bulkForm" class="row-check" name="ids" value="{{ p.naver_product_id }}" onclick="updateBulkBar()"></td>
+      <td class="c-name">
+        <a href="#" class="p-name" onclick="openPreviewModal('{{ url_for('products_detail', product_id=p.naver_product_id) }}'); return false;">{{ p.name }}</a>
+        <div class="p-sub">{% if p.days_since_registered is not none %}등록 {{ p.days_since_registered }}일 · {% endif %}판매가 {{ "{:,}".format(p.sale_price) }}원</div>
+      </td>
       <td>
-        <a href="#" onclick="openPreviewModal('{{ url_for('products_detail', product_id=p.naver_product_id) }}'); return false;">{{ p.name }}</a>
-        {% if p.channels %}
-        <div class="row" style="gap:4px;margin-top:4px;">
-          {% for ch in p.channels %}
-          <a href="{{ ch.external_url or '#' }}"
-             {% if ch.external_url %}target="_blank" rel="noopener"{% else %}onclick="openPreviewModal('{{ ch.modal_url }}'); return false;"{% endif %}
-             title="{{ ch.label }}"
-             style="display:inline-flex;align-items:center;justify-content:center;width:17px;height:17px;border-radius:5px;background:{{ ch.color }};color:#fff;font-size:9px;font-weight:700;text-decoration:none;line-height:1;">{{ ch.abbr }}</a>
+        {% if stock is not none and stock <= 0 %}<span class="st out">품절</span>
+        {% elif p.is_suspended %}<span class="st off">판매중지</span>
+        {% elif p.sale_status == '판매중' %}<span class="st on">판매중</span>
+        {% else %}<span class="st unk" title="'지금 확인'을 눌러야 네이버 판매상태를 가져옵니다">미확인</span>{% endif %}
+        {% if stock is not none and stock > 0 %}<div class="p-sub">도매 재고 {{ "{:,}".format(stock) }}개</div>{% endif %}
+      </td>
+      <td>
+        <div class="num-big">{{ p.recent_order_count }}건</div>
+        <div class="p-sub">누적 {{ p.order_count }}건{% if p.revenue %} · {{ "{:,}".format(p.revenue) }}원{% endif %}</div>
+      </td>
+      <td>
+        <div class="num-big {{ 'bad' if p.low_profit }}">{{ "{:,}".format(p.unit_profit) }}원</div>
+        <div class="p-sub">도매가 {{ "{:,}".format(p.supply_price) if p.supply_price else '—' }} · {{ "%.0f"|format(p.margin_rate * 100) }}%</div>
+      </td>
+      <td class="c-todo">
+        <span class="verdict {{ p.verdict }}">{{ p.verdict_label }}</span>
+        {% if p.issues %}
+        <ul class="issues">{% for i in p.issues %}<li class="{{ i.level }}">{{ i.text }}</li>{% endfor %}</ul>
+        {% endif %}
+        {% if p.actions %}
+        <div class="acts">
+          {% for a in p.actions %}
+          {% if a.kind == 'link' %}
+          <a class="btn btn-sm{{ '' if loop.first else ' secondary' }}" href="{{ a.url }}">{{ a.label }} →</a>
+          {% else %}
+          <button type="button" class="btn-sm {{ 'danger' if a.action == 'suspend' else ('' if loop.first else 'secondary') }}"
+                  onclick="rowAct('{{ p.naver_product_id }}', '{{ a.action }}', {{ a.label|tojson }}, {{ p.name[:24]|tojson }})">{{ a.label }}</button>
+          {% endif %}
           {% endfor %}
         </div>
         {% endif %}
       </td>
-      <td>
-        <span class="{{ 'badge-ok' if p.sale_status == '판매중' else ('badge-err' if p.sale_status == '판매중지' else 'badge') }}">{{ p.sale_status }}</span>
-      </td>
-      <td>
-        {# "지금 확인"을 다시 누르기 전까지는 옛 캐시라 이 항목이 없다 — get으로 읽는다 #}
-        {% set s = p.sync.get('supply_stock') if p.sync else none %}
-        {% if s is not none %}
-          {% if s <= 0 %}
-            <span class="badge-err">품절</span>
-          {% elif s <= 10 %}
-            <span class="badge-warn" title="도매처에 {{ s }}개 남았습니다 — 주문이 몰리면 발주가 실패합니다">{{ "{:,}".format(s) }}개 · 임박</span>
-          {% else %}
-            <span class="mono">{{ "{:,}".format(s) }}개</span>
-          {% endif %}
-        {% else %}
-          <span class="muted mono" title="'지금 확인'을 눌러야 도매처 재고를 가져옵니다">미확인</span>
-        {% endif %}
-        {% if p.sync and p.sync.action == '재고조정' %}
-          <div style="margin-top:4px;"><span class="badge-warn" title="{{ p.sync.detail }}">내 등록수량 조정 필요</span></div>
-        {% elif p.sync and p.sync.action == '확인실패' %}
-          <div style="margin-top:4px;"><span class="badge-err" title="{{ p.sync.detail }}">확인실패</span></div>
-        {% endif %}
-      </td>
-      <td class="mono" style="font-size:12px;line-height:1.7;">
-        {{ "{:,}".format(p.sale_price) }}원<br>
-        <span class="muted">도매가 {{ "{:,}".format(p.supply_price) if p.supply_price else '—' }}</span><br>
-        <span class="muted">개당 마진 {{ "%.1f"|format(p.margin_rate * 100) }}% ({{ "{:,}".format((p.sale_price * p.margin_rate) | round | int) }}원)</span>
-        {% if p.sync and p.sync.action == '마진경고' %}
-          <div style="margin-top:4px;"><span class="badge-warn" title="{{ p.sync.detail }}">권장 {{ "{:,}".format(p.sync.suggested_price) }}원</span></div>
-        {% endif %}
-      </td>
-      <td>
-        <span class="{{ 'badge-err' if p.sales_status == '점검필요' else ('badge-warn' if p.sales_status == '저조' else 'badge-ok') }}"
-              title="최근 30일 {{ p.recent_order_count }}건 주문">{{ p.sales_status }}</span>
-      </td>
-      <td style="font-size:12px;line-height:1.7;">
-        {% if p.order_count %}
-          반품 {{ "%.0f"|format((p.return_rate or 0) * 100) }}%({{ p.return_count }}건)<br>
-          교환 {{ "%.0f"|format((p.exchange_rate or 0) * 100) }}%({{ p.exchange_count }}건)
-        {% else %}
-          <span class="muted">주문 없음</span>
-        {% endif %}
-      </td>
-      <td>
-        {% if p.price_position and p.price_position.label != '확인불가' %}
-        <span class="{{ 'badge-ok' if p.price_position.label == '강함' else ('badge-warn' if p.price_position.label == '약함' else 'badge') }}"
-              title="시장 중앙값 {{ '{:,}'.format(p.price_position.market_median or p.price_position.market_avg) }}원 (최저 {{ '{:,}'.format(p.price_position.min) if p.price_position.min else '-' }}원 · 최고 {{ '{:,}'.format(p.price_position.max) if p.price_position.max else '-' }}원, 11번가 {{ p.price_position.sample_size }}건 기준) — 평균가는 참고용으로 {{ '{:,}'.format(p.price_position.market_avg) }}원">{{ p.price_position.label }}</span>
-        {% else %}<span class="muted">미확인</span>{% endif %}
-      </td>
     </tr>
     {% else %}
-    <tr><td colspan="8" class="muted">등록된 상품이 없습니다</td></tr>
+    <tr><td colspan="6" class="muted">등록된 상품이 없습니다</td></tr>
     {% endfor %}
     </tbody>
   </table>
@@ -163,67 +183,81 @@
 </div>
 
 <script>
+var currentFilter = 'all';
+function rowsAll() { return document.querySelectorAll('#productTable tbody tr[data-filters]'); }
 function visibleRows() {
-  return Array.prototype.filter.call(
-    document.querySelectorAll('#productTable tbody tr[data-filters]'),
-    function (tr) { return tr.style.display !== 'none'; });
+  return Array.prototype.filter.call(rowsAll(), function (tr) { return tr.style.display !== 'none'; });
 }
-
+function setFilter(f) {
+  currentFilter = f;
+  document.querySelectorAll('.pm-tile').forEach(function (t) { t.classList.toggle('on', t.dataset.filter === f); });
+  applyFilters();
+}
 function toggleAll(box) {
   visibleRows().forEach(function (tr) { tr.querySelector('.row-check').checked = box.checked; });
   updateBulkBar();
 }
-
+function clearSel() {
+  document.querySelectorAll('.row-check').forEach(function (c) { c.checked = false; });
+  document.getElementById('checkAll').checked = false;
+  updateBulkBar();
+}
 function applyFilters() {
   var q = document.getElementById('searchInput').value.trim().toLowerCase();
-  var f = document.getElementById('statusFilter').value;
   var shown = 0;
-  document.querySelectorAll('#productTable tbody tr[data-filters]').forEach(function (tr) {
-    var okFilter = f === 'all' || tr.dataset.filters.split(' ').indexOf(f) !== -1;
-    var okSearch = !q || tr.dataset.name.indexOf(q) !== -1;
-    var show = okFilter && okSearch;
+  rowsAll().forEach(function (tr) {
+    var show = tr.dataset.filters.split(' ').indexOf(currentFilter) !== -1 && (!q || tr.dataset.name.indexOf(q) !== -1);
     tr.style.display = show ? '' : 'none';
     if (!show) tr.querySelector('.row-check').checked = false;
     if (show) shown++;
   });
-  document.getElementById('filterCount').textContent =
-    (q || f !== 'all') ? shown + '개 표시' : '';
+  document.getElementById('filterCount').textContent = (q || currentFilter !== 'all') ? shown + '개 표시' : '';
   document.getElementById('checkAll').checked = false;
   updateBulkBar();
 }
-
+function checkedBoxes() {
+  return Array.prototype.filter.call(document.querySelectorAll('.row-check'), function (c) { return c.checked; });
+}
 function updateBulkBar() {
-  var checked = Array.prototype.filter.call(
-    document.querySelectorAll('.row-check'), function (c) { return c.checked; });
+  var checked = checkedBoxes();
+  document.getElementById('bulkBar').hidden = !checked.length;
   document.getElementById('bulkCount').textContent = checked.length + '건 선택';
-
-  // 버튼마다 "선택한 것 중 실제로 적용될 건수"를 표시한다 — 몇 건에 적용되는지
-  // 누르기 전에 알 수 있도록. 선택 0건이어도 버튼 자체는 항상 눌러볼 수 있다.
+  // 버튼마다 "선택한 것 중 실제로 적용될 건수" — 누르기 전에 몇 건인지 알 수 있게
   document.querySelectorAll('.bulk-btn').forEach(function (btn) {
-    var act = btn.dataset.act;
     var n = checked.filter(function (c) {
-      return c.closest('tr').dataset.eligible.split(' ').indexOf(act) !== -1;
+      return c.closest('tr').dataset.eligible.split(' ').indexOf(btn.dataset.act) !== -1;
     }).length;
-    var base = btn.dataset.label || (btn.dataset.label = btn.textContent.trim());
-    btn.textContent = base + ' (' + n + ')';
-    btn.onclick = function () {
-      return confirm(base + ' — ' + n + '건에 적용합니다. 진행할까요?');
-    };
+    btn.textContent = btn.dataset.label + ' (' + n + ')';
+    btn.disabled = !n;
   });
 }
-
+function bulkAct(btn) {
+  var checked = checkedBoxes().filter(function (c) {
+    return c.closest('tr').dataset.eligible.split(' ').indexOf(btn.dataset.act) !== -1;
+  });
+  if (!checked.length) return;
+  var names = checked.slice(0, 5).map(function (c) { return '· ' + c.closest('tr').querySelector('.p-name').textContent.trim().slice(0, 24); });
+  if (checked.length > 5) names.push('외 ' + (checked.length - 5) + '건');
+  // 예전엔 "확인함 — 실제로 반영" 체크박스를 따로 눌러야 했다 — 확인 창 하나로 합쳤다
+  if (!confirm(btn.dataset.label + ' — ' + checked.length + '건을 네이버에 실제로 반영합니다.\n\n' + names.join('\n') + '\n\n진행할까요?')) return;
+  var f = document.getElementById('bulkForm');
+  document.getElementById('bulkLive').value = 'on';
+  var a = document.createElement('input'); a.type = 'hidden'; a.name = 'action'; a.value = btn.dataset.act; f.appendChild(a);
+  f.submit();
+}
+function rowAct(id, action, label, name) {
+  if (!confirm(label + ' — "' + name + '"\n\n네이버에 실제로 반영합니다. 진행할까요?')) return;
+  document.getElementById('rowAction').value = action;
+  document.getElementById('rowId').value = id;
+  document.getElementById('rowForm').submit();
+}
 (function () {
-  // 홈·헬스체크의 "확인하러 가기" 링크가 ?tab=action 으로 들어온다 — 필터 초기값으로 받는다.
+  // 홈·헬스체크의 "확인하러 가기" 링크가 ?tab=action 으로 들어온다 — 같은 값으로 요약 칸을 고른다.
   var params = new URLSearchParams(window.location.search);
   var tab = params.get('tab');
-  if (tab) {
-    var sel = document.getElementById('statusFilter');
-    if (Array.prototype.some.call(sel.options, function (o) { return o.value === tab; })) sel.value = tab;
-  }
-  // CS에서 "이 상품 보러가기"로 넘어올 때 상품명이 ?q= 로 들어온다.
-  var q = params.get('q');
+  var q = params.get('q');  // CS에서 "이 상품 보러가기"로 넘어올 때
   if (q) document.getElementById('searchInput').value = q;
-  applyFilters();
+  setFilter(tab && document.querySelector('.pm-tile[data-filter="' + tab + '"]') ? tab : 'all');
 })();
 </script>
 {% endblock %}

@@ -769,6 +769,13 @@ def candidates_preview():
     # 샘플 목록에서 연 미리보기 — 상품은 실제 도매매 상품이라 나머지는 그대로 보여주고 등록만 막는다
     demo = request.args.get("demo") == "1"
     ctx = {"keyword": keyword, "modal": is_modal, "track": track, "demo": demo}
+    # 상품 관리의 "교체 후보" 버튼으로 들어왔으면 어떤 상품을 대신하는지 들고 다닌다 —
+    # 등록하면 옛 상품 판매중지·교체 기록까지 한 번에(2026-10)
+    replaces = request.args.get("replaces", "")
+    if replaces:
+        old = next((p for p in _load_json(REGISTERED_PRODUCTS) if str(p.get("naver_product_id", "")) == replaces), None)
+        if old:
+            ctx.update(replaces=replaces, replaces_name=old.get("name", ""))
 
     def _fail(message):
         if is_modal:
@@ -1080,6 +1087,7 @@ def register_candidate():
         for key, value in request.form.items()
         if key.startswith("field_override:")
     }
+    replaces = request.form.get("replaces", "").strip()
 
     buf = io.StringIO()
     try:
@@ -1128,6 +1136,9 @@ def register_candidate():
             r = results[0]
             if live:
                 flash(f"'{r.name}' 등록 완료 (판매중지 상태) — 상품ID {r.naver_product_id}", "success")
+                if replaces and r.naver_product_id:
+                    _finish_replacement(replaces, r)
+                    return redirect(url_for("products_view"))
             else:
                 flash(f"[미리보기] '{r.name}' — 판매가 {r.sale_price:,}원, 마진 {r.margin_rate:.1%} (실제 등록 안 함)", "success")
         elif not reasons:
@@ -1135,6 +1146,28 @@ def register_candidate():
     except Exception as e:
         flash(f"등록 실패: {e}", "error")
     return redirect(url_for("candidates"))
+
+
+def _finish_replacement(old_pid: str, new) -> None:
+    """교체 등록의 뒷정리 — 옛 상품 판매중지(아직 판매중이면) + 양쪽에 교체 기록.
+    새 상품은 다른 등록과 똑같이 판매중지 상태로 올라가므로, 상세를 확인하고 판매 재개를 눌러야 팔린다."""
+    from bebrave.report import action_log
+    registered = _load_json(REGISTERED_PRODUCTS)
+    old = next((p for p in registered if str(p.get("naver_product_id", "")) == old_pid), None)
+    if not old:
+        flash("교체할 옛 상품 기록을 찾지 못해 교체 기록은 남기지 못했습니다.", "error")
+        return
+    status = next((s for s in (_load_json(PRODUCT_STATUS_CACHE) or []) if s.get("product_id") == old_pid), {})
+    if status.get("status_type") != "SUSPENSION":
+        try:
+            from bebrave.smartstore.auth import get_access_token
+            _apply_product_action("suspend", old, get_access_token())
+        except Exception as e:
+            flash(f"옛 상품 판매중지 실패 — 상품 관리에서 직접 판매중지하세요: {_friendly_naver_error(e)}", "error")
+    action_log.record(old_pid, "replaced", f"→ {new.name[:24]}", new_product_id=str(new.naver_product_id))
+    action_log.record(new.naver_product_id, "replacement", f"← {old.get('name', '')[:24]} 대신 등록", old_product_id=old_pid)
+    flash(f"교체 완료 — '{old.get('name', '')[:20]}' 대신 새 상품을 올렸습니다. 새 상품은 판매중지 상태라, "
+          f"아래 표에서 확인 후 '판매 재개'를 누르면 팔리기 시작합니다.", "success")
 
 
 @app.route("/generated_image/<filename>")
@@ -1619,13 +1652,18 @@ def products_view():
     from bebrave.report import suggest_replacements
     from bebrave.report.product_triage import triage, VERDICT_ORDER, URGENT, REPLACE
     from bebrave.report.strategy import DEAD_DAYS, NEW_DAYS
+    from bebrave.report import action_log, load_sales_orders
     candidates = _load_json(SOURCING_LOG)
+    sales, actions = load_sales_orders(), action_log.load()
     for r in rows:
         if not r["replacements"]:
             r["replacements"] = suggest_replacements(r["keyword"], candidates, registered)
         r["replacements"] = [dict(c, url=url_for("candidates_preview", keyword=c.get("keyword", ""),
-                                                 goods_no=c.get("supply_goods_no", ""), track=c.get("track", "")))
+                                                 goods_no=c.get("supply_goods_no", ""), track=c.get("track", ""),
+                                                 replaces=r["naver_product_id"]))
                              for c in r["replacements"] or []]
+        r["detail_url"] = url_for("products_detail", product_id=r["naver_product_id"])
+        r["last_action"] = (action_log.history(r["naver_product_id"], sales, actions) or [None])[0]
         r.update(triage(r, MIN_ABS_PROFIT, NEW_DAYS, DEAD_DAYS))
         stock = (r["sync"] or {}).get("supply_stock")
         if r["low_profit"] and "margin" not in r["filters"]:
@@ -1841,7 +1879,65 @@ def products_detail(product_id):
         ctx["quality"] = score_listing(record)
 
     from bebrave.config import MIN_ABS_PROFIT
-    return render_template("product_detail.html", min_abs_profit=MIN_ABS_PROFIT, **ctx)
+    from bebrave.report import action_log, load_sales_orders
+    return render_template("product_detail.html", min_abs_profit=MIN_ABS_PROFIT,
+                           history=action_log.history(product_id, load_sales_orders()), **ctx)
+
+
+@app.route("/margin/quick")
+def margin_quick():
+    """판매가를 입력하는 동안 개당 순이익을 바로 보여준다 — 계산은 등록 때와 같은 마진 계산기."""
+    from bebrave.margin.calculator import calculate
+    from bebrave.config import MIN_ABS_PROFIT
+    try:
+        sale, cost = int(request.args.get("sale", 0)), int(request.args.get("cost", 0))
+    except ValueError:
+        return {"ok": False}, 400
+    if sale <= 0:
+        return {"ok": False}
+    m = calculate(sale, cost, free_shipping=(sale >= 30_000))
+    return {"ok": True, "net_profit": m.net_profit, "margin_rate": m.margin_rate,
+            "below_floor": m.net_profit < MIN_ABS_PROFIT}
+
+
+@app.route("/products/set_price", methods=["POST"])
+def products_set_price():
+    """판매가 직접 변경 — 권장가 적용만 있어서 "가격을 올려 살릴지"를 시험할 수단이 없었다(2026-10)."""
+    from bebrave.margin.calculator import calculate
+    from bebrave.smartstore.register import update_registered_product
+    pid = request.form.get("naver_product_id", "")
+    raw = request.form.get("sale_price", "").replace(",", "").strip()
+    if not raw.isdigit() or not (100 <= int(raw) <= 10_000_000):
+        flash("판매가는 100원 이상 숫자로 입력하세요.", "error")
+        return redirect(url_for("products_view"))
+    new_price = int(raw)
+    registered = _load_json(REGISTERED_PRODUCTS)
+    record = next((p for p in registered if str(p.get("naver_product_id", "")) == pid), None)
+    if not record:
+        flash("등록 기록을 찾을 수 없습니다.", "error")
+        return redirect(url_for("products_view"))
+    old_price = record.get("sale_price", 0)
+    if new_price == old_price:
+        flash("지금 판매가와 같습니다 — 바꾸지 않았습니다.", "error")
+        return redirect(url_for("products_view"))
+    try:
+        from bebrave.smartstore.auth import get_access_token
+        token = get_access_token()
+
+        def _mutate(body):
+            body["originProduct"]["salePrice"] = new_price
+        update_registered_product(pid, token, _mutate)
+    except Exception as e:
+        flash(f"판매가 변경 실패 — {_friendly_naver_error(e)}", "error")
+        return redirect(url_for("products_view"))
+    m = calculate(new_price, record.get("supply_price", 0), free_shipping=(new_price >= 30_000))
+    record["sale_price"], record["margin_rate"] = new_price, round(m.margin_rate, 4)
+    with open(REGISTERED_PRODUCTS, "w", encoding="utf-8") as f:
+        json.dump(registered, f, ensure_ascii=False, indent=2)
+    from bebrave.report import action_log
+    action_log.record(pid, "price", f"판매가 {old_price:,} → {new_price:,}원 (개당 {m.net_profit:,}원)")
+    flash(f"'{record.get('name', '')[:20]}' 판매가 {old_price:,} → {new_price:,}원 — 개당 순이익 {m.net_profit:,}원", "success")
+    return redirect(url_for("products_view"))
 
 
 def _friendly_naver_error(e: Exception) -> str:
@@ -2690,7 +2786,21 @@ def _performance_with_quality(live_quality: bool = False):
     return results
 
 
+_ACTION_KIND = {"suspend": "suspend", "resume": "resume", "apply_price": "price",
+                "reoptimize": "rename", "apply_sync": "sync"}
+
+
 def _apply_product_action(action: str, record: dict, token: str, sync: dict = None) -> str:
+    """실제 반영 + 조치 이력 기록. 개별 버튼·일괄 처리·교체가 전부 여기를 지나므로
+    이력이 빠지는 경로가 없다(2026-10)."""
+    msg = _apply_product_action_raw(action, record, token, sync)
+    if not msg.endswith("변경 없음"):
+        from bebrave.report import action_log
+        action_log.record(record.get("naver_product_id", ""), _ACTION_KIND.get(action, action), msg)
+    return msg
+
+
+def _apply_product_action_raw(action: str, record: dict, token: str, sync: dict = None) -> str:
     """건 1개에 실제 반영 액션 1개를 적용하고 사람이 읽을 결과 문장을 돌려준다.
     개별 버튼(판매중지/이름 재최적화/도매매 판정 반영)과 일괄 처리가 판정 로직을
     두 벌로 유지하지 않도록 이 함수 하나로 합친다. 실패하면 예외를 그대로 던지고

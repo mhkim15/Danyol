@@ -1043,8 +1043,18 @@ function showNameTab(which) {
 </div>
 
 <div class="panel">
+  {% if replaces %}
+  <div class="flash" style="margin:0 0 10px;background:var(--warn-bg);color:var(--ink);">
+    <b>교체 등록</b> — 이 상품을 등록하면 <b>{{ replaces_name[:30] }}</b>은(는) 판매중지되고, 두 상품에 교체 기록이 남습니다.
+    몇 주 뒤 상품 관리에서 교체 전후 판매를 비교할 수 있습니다.
+  </div>
+  {% endif %}
+  {% set reg_msg = ('실제로 스마트스토어에 등록하고, 옛 상품 「' ~ replaces_name[:20] ~ '」을(를) 판매중지합니다. 계속할까요?')
+       if replaces else '실제로 스마트스토어에 등록합니다(판매중지 상태). 계속할까요?' %}
+  {# 속성을 작은따옴표로 감싼다 — tojson은 큰따옴표를 그대로 두고 작은따옴표만 이스케이프한다 #}
   <form method="post" action="{{ url_for('register_candidate') }}" id="register-form"
-        onsubmit="return confirm('실제로 스마트스토어에 등록합니다(판매중지 상태). 계속할까요?');">
+        onsubmit='return confirm({{ reg_msg | tojson }});'>
+    {% if replaces %}<input type="hidden" name="replaces" value="{{ replaces }}">{% endif %}
     <input type="hidden" name="keyword" value="{{ keyword }}">
     <input type="hidden" name="track" value="{{ track }}">
     <input type="hidden" name="goods_no" value="{{ goods_no }}">

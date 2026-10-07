@@ -6,6 +6,7 @@
 행동 종류
   post — 상품 관리 일괄처리(products_bulk)에 이 상품 1건만 실어 보낸다(네이버에 실제 반영, 확인 창 거침)
   link — 다른 화면으로 이동(교체 후보 미리보기 등)
+  modal — 상품 상세 창을 연다(판매가 직접 변경 등)
 """
 from typing import Optional
 
@@ -73,6 +74,9 @@ def triage(p: dict, min_abs_profit: int, new_days: int, dead_days: int) -> dict:
                             "url": rep.get("url", "/candidates")})
         else:
             actions.append({"kind": "link", "label": "교체 후보 찾기", "url": "/candidates"})
+        if low_profit and p.get("detail_url"):
+            # 교체 말고 "가격을 올려 살리기"도 선택지 — 상세 창의 판매가 칸에서 순이익을 보며 바꾼다
+            actions.append({"kind": "modal", "label": "가격 바꿔 보기", "url": p["detail_url"]})
         if no_sale_long and not low_profit and "reoptimize" in eligible:
             actions.append({"kind": "post", "action": "reoptimize", "label": "이름 다시 짓기"})
         if not p.get("is_suspended"):

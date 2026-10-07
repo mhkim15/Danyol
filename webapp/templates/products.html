@@ -49,8 +49,16 @@
   .issues li.bad::before { background:var(--err); } .issues li.warn::before { background:var(--warn); }
   .acts { display:flex; flex-wrap:wrap; gap:6px; margin-top:9px; }
   .acts .btn-sm { white-space:nowrap; }
+  .last-act { margin:8px 0 0; font-size:12px; color:var(--ink-muted); }
+  .last-act b.up { color:var(--ok); } .last-act b.down { color:var(--err); }
 
-  .bulkbar { display:flex; align-items:center; gap:8px; flex-wrap:wrap; }
+  .bulkbar { display:flex; align-items:center; gap:8px; flex-wrap:wrap; transition:background var(--d-fast) ease; }
+  /* 아무것도 안 골랐을 때 — 기능이 있다는 것만 알리고 눈에 띄지 않게(빨간 판매중지가 혼자 튀지 않게) */
+  .bulkbar.idle { background:var(--panel); border-color:var(--line); }
+  .bulkbar.idle .sel-count { color:var(--ink-muted); }
+  .bulkbar.idle .bulk-btn, .bulkbar.idle .divider, .bulkbar.idle .clear-btn { display:none; }
+  .bulkbar:not(.idle) .idle-hint { display:none; }
+  .idle-hint { font-size:12.5px; color:var(--ink-muted); }
 
   @media (max-width: 1100px) { .pm-tiles { grid-template-columns:repeat(3, minmax(0,1fr)); } }
   @media (max-width: 860px) {
@@ -95,17 +103,18 @@
   <span id="filterCount" class="cnt"></span>
 </div>
 
-{# 일괄 처리 — 상품을 고를 때만 나타난다. 실제 반영 여부는 버튼을 누를 때 확인 창에서 묻는다 #}
+{# 일괄 처리 — 늘 보이지만 고르기 전엔 안내 한 줄만. 실제 반영 여부는 버튼을 누를 때 확인 창에서 묻는다 #}
 <form id="bulkForm" method="post" action="{{ url_for('products_bulk') }}"><input type="hidden" name="live" id="bulkLive" value=""></form>
-<div class="bulkbar" id="bulkBar" hidden>
+<div class="bulkbar idle" id="bulkBar">
   <span class="sel-count" id="bulkCount">0건 선택</span>
+  <span class="idle-hint">상품을 체크하면 여러 개를 한 번에 처리할 수 있어요</span>
   <span class="divider"></span>
   {% for act, label, cls in [('resume', '판매 재개', ''), ('apply_sync', '도매매 반영', 'secondary'), ('apply_price', '권장가 적용', 'secondary'),
        ('reoptimize', '이름 다시 짓기', 'secondary'), ('suspend', '판매중지', 'danger')] %}
   <button type="button" data-act="{{ act }}" data-label="{{ label }}" class="bulk-btn btn-sm {{ cls }}" onclick="bulkAct(this)">{{ label }}</button>
   {% endfor %}
   <span style="flex:1;"></span>
-  <button type="button" class="btn-sm secondary" onclick="clearSel()">선택 해제</button>
+  <button type="button" class="btn-sm secondary clear-btn" onclick="clearSel()">선택 해제</button>
 </div>
 
 {# 행 버튼 — 이 상품 1건만 일괄 처리와 같은 경로로 보낸다(판정·반영 로직 한 곳) #}
@@ -160,11 +169,19 @@
         {% if p.issues %}
         <ul class="issues">{% for i in p.issues %}<li class="{{ i.level }}">{{ i.text }}</li>{% endfor %}</ul>
         {% endif %}
+        {% set la = p.last_action %}
+        {% if la %}
+        <p class="last-act">최근 조치 · {{ la.at[5:].replace('-', '/') }} {{ la.label }}
+          {%- if la.effect %} — 이후 {{ la.effect.days }}일 주문 <b class="{{ 'up' if la.effect.better else ('down' if la.effect.better is sameas false) }}">{{ la.effect.after_orders }}건</b> (이전 {{ la.effect.days }}일 {{ la.effect.before_orders }}건)
+          {%- else %} — 효과는 내일부터 보입니다{% endif %}</p>
+        {% endif %}
         {% if p.actions %}
         <div class="acts">
           {% for a in p.actions %}
           {% if a.kind == 'link' %}
           <a class="btn btn-sm{{ '' if loop.first else ' secondary' }}" href="{{ a.url }}">{{ a.label }} →</a>
+          {% elif a.kind == 'modal' %}
+          <button type="button" class="btn-sm secondary" onclick="openPreviewModal('{{ a.url }}')">{{ a.label }}</button>
           {% else %}
           <button type="button" class="btn-sm {{ 'danger' if a.action == 'suspend' else ('' if loop.first else 'secondary') }}"
                   onclick="rowAct('{{ p.naver_product_id }}', '{{ a.action }}', {{ a.label|tojson }}, {{ p.name[:24]|tojson }})">{{ a.label }}</button>
@@ -220,7 +237,7 @@ function checkedBoxes() {
 }
 function updateBulkBar() {
   var checked = checkedBoxes();
-  document.getElementById('bulkBar').hidden = !checked.length;
+  document.getElementById('bulkBar').classList.toggle('idle', !checked.length);
   document.getElementById('bulkCount').textContent = checked.length + '건 선택';
   // 버튼마다 "선택한 것 중 실제로 적용될 건수" — 누르기 전에 몇 건인지 알 수 있게
   document.querySelectorAll('.bulk-btn').forEach(function (btn) {

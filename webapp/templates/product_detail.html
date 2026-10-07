@@ -31,6 +31,71 @@
   .pd-kpis small { font-size:11.5px; color:var(--ink-muted); line-height:1.4; }
 </style>
 
+{# 판매가 직접 변경 — 입력하는 동안 개당 순이익을 바로 계산해 보여준다(등록 때와 같은 마진 계산기) #}
+<div class="panel" id="price">
+  <h2>판매가 바꾸기</h2>
+  <form method="post" action="{{ url_for('products_set_price') }}" class="pd-price"
+        onsubmit="return confirm('판매가를 ' + Number(this.sale_price.value).toLocaleString() + '원으로 바꿔 네이버에 실제로 반영합니다. 진행할까요?');">
+    <input type="hidden" name="naver_product_id" value="{{ record.naver_product_id }}">
+    <label style="margin:0;">새 판매가
+      <input type="number" name="sale_price" min="100" step="100" value="{{ record.sale_price or '' }}" required
+             oninput="pdPriceQuote(this.value, {{ record.supply_price or 0 }})" style="width:140px;"></label>
+    <span id="pdQuote" class="pd-quote">지금 개당 {{ "{:,}".format(unit) }}원 남음</span>
+    <button type="submit" class="btn-sm">바꾸기</button>
+  </form>
+  {% if fetch_error %}<p class="hint" style="margin:8px 0 0;">지금은 네이버 연결이 막혀 있어 바꾸기를 누르면 실패합니다.</p>{% endif %}
+</div>
+
+{# 조치 이력 — 언제 무엇을 했고 그 뒤 팔림이 달라졌는지(앞뒤 같은 기간 비교) #}
+<div class="panel">
+  <h2>조치 이력</h2>
+  {% if history %}
+  <div class="pd-hist">
+    {% for h in history %}
+    <div class="row-h">
+      <span class="d">{{ h.at }}</span>
+      <span class="k">{{ h.label }}</span>
+      <span class="s">{{ h.summary }}</span>
+      <span class="e">{% if h.effect %}이후 {{ h.effect.days }}일 주문 <b class="{{ 'up' if h.effect.better else ('down' if h.effect.better is sameas false) }}">{{ h.effect.after_orders }}건</b> · 이전 {{ h.effect.before_orders }}건{% else %}효과는 내일부터{% endif %}</span>
+    </div>
+    {% endfor %}
+  </div>
+  {% else %}
+  <p class="muted" style="margin:0;">아직 이 상품에 한 조치가 없습니다. 판매중지·가격·이름 변경·교체를 하면 여기 남고, 그 뒤 판매 변화가 같이 보입니다.</p>
+  {% endif %}
+</div>
+<style>
+  .pd-price { display:flex; align-items:center; gap:12px; flex-wrap:wrap; }
+  .pd-quote { font-size:13px; color:var(--ink-soft); font-variant-numeric:tabular-nums; }
+  .pd-quote b.bad { color:var(--err); } .pd-quote b.good { color:var(--ok); }
+  .pd-hist { display:flex; flex-direction:column; }
+  .pd-hist .row-h { display:grid; grid-template-columns:92px 72px minmax(0,1fr) auto; gap:10px; align-items:baseline;
+    padding:9px 0; border-bottom:1px solid var(--line); font-size:13px; }
+  .pd-hist .row-h:last-child { border-bottom:none; }
+  .pd-hist .d { color:var(--ink-muted); font-variant-numeric:tabular-nums; font-size:12px; }
+  .pd-hist .k { font-weight:600; }
+  .pd-hist .s { color:var(--ink-soft); min-width:0; overflow-wrap:anywhere; }
+  .pd-hist .e { font-size:12px; color:var(--ink-muted); white-space:nowrap; }
+  .pd-hist b.up { color:var(--ok); } .pd-hist b.down { color:var(--err); }
+</style>
+<script>
+var _pdQuoteTimer;
+function pdPriceQuote(v, cost) {
+  clearTimeout(_pdQuoteTimer);
+  _pdQuoteTimer = setTimeout(function () {
+    var el = document.getElementById('pdQuote');
+    if (!(v > 0)) { el.textContent = ''; return; }
+    fetch('{{ url_for("margin_quick") }}?sale=' + encodeURIComponent(v) + '&cost=' + cost)
+      .then(function (r) { return r.json(); })
+      .then(function (d) {
+        if (!d.ok) return;
+        el.innerHTML = '바꾸면 개당 <b class="' + (d.below_floor ? 'bad' : 'good') + '">' + d.net_profit.toLocaleString() + '원</b> 남음'
+          + (d.below_floor ? ' — 기준 {{ "{:,}".format(min_abs_profit) }}원 미달' : '') + ' (' + Math.round(d.margin_rate * 100) + '%)';
+      });
+  }, 250);
+}
+</script>
+
 <div class="panel">
   <h2>리스팅 품질 — {{ quality.score }}점
     <span class="{{ 'badge-ok' if quality.tier == '양호' else ('badge-warn' if quality.tier == '보완 권장' else 'badge-err') }}" style="margin-left:6px;">{{ quality.tier }}</span>

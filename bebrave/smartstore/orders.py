@@ -56,6 +56,7 @@ class ProductOrder:
     receiver_address1: str = ""
     receiver_address2: str = ""
     delivery_memo: str = ""
+    shipping_due: str = ""          # 네이버가 주는 발송기한(주말·공휴일 반영). 항목명 실주문 미검증 — 없으면 빈 값
     ordered_at: str = ""
     claim_type: str = ""            # CANCEL / RETURN / EXCHANGE 등 — status_type="CLAIM_REQUESTED" 조회시만 값 있음
     claim_reason: str = ""          # 반품/취소 사유 — 필드명 실주문으로 미검증, 없으면 빈 문자열
@@ -190,6 +191,8 @@ def fetch_order_detail(
             receiver_address2=delivery.get("detailAddress", ""),
             delivery_memo=delivery.get("deliveryMemo", ""),
             ordered_at=order.get("orderDate", ""),
+            # 발송기한 — 응답 항목명을 실주문으로 확인 못 해 후보를 모두 본다. 없으면 화면이 결제 후 24시간 기준으로 대신한다
+            shipping_due=content.get("shippingDueDate") or content.get("dispatchDueDate") or "",
             claim_type=content.get("claimType", ""),
             claim_reason=(
                 content.get("claimReason")
@@ -200,6 +203,29 @@ def fetch_order_detail(
             ),
         ))
     return orders
+
+
+def confirm_orders(product_order_ids: List[str], access_token: str) -> dict:
+    """네이버 "발주확인" — 이걸 해야 고객 취소가 즉시 환불이 아니라 판매자 승인 대상이 된다.
+    도매매에 돈을 낸 뒤 고객이 바로 취소해 환불되고 물건은 출발하는 손해를 막는다(2026-10).
+    경로는 공개 연동 코드(sejongtf/laravel-naver-commerce) 기준 — 실주문으로 검증 전.
+    반환: {"ok": [...], "failed": {id: 사유}}"""
+    if not _HAS_REQUESTS:
+        raise NotImplementedError("pip3 install requests 후 재시도하세요.")
+    if not product_order_ids:
+        return {"ok": [], "failed": {}}
+    resp = requests.post(
+        f"{_BASE_URL}/v1/pay-order/seller/product-orders/confirm",
+        headers=_headers(access_token),
+        json={"productOrderIds": list(product_order_ids)},
+        timeout=15,
+    )
+    if resp.status_code not in (200, 201):
+        raise RuntimeError(f"발주확인 실패 [{resp.status_code}]: {resp.text[:300]}")
+    data = (resp.json() or {}).get("data", {}) or {}
+    failed = {str(f.get("productOrderId", "")): f.get("message") or f.get("code") or "실패"
+              for f in data.get("failProductOrderInfos", []) or []}
+    return {"ok": [i for i in product_order_ids if i not in failed], "failed": failed}
 
 
 def dispatch_order(

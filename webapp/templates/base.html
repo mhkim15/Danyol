@@ -323,30 +323,20 @@
     --d-fast: 140ms; --d-base: 220ms; --d-slow: 420ms;
   }
 
-  /* 1) 화면 전환 — LNB는 그대로 두고 본문만 교차. 선택된 메뉴·탭 표시는 이전 위치에서 새 위치로 미끄러진다. */
+  /* 1) 화면 전환 — LNB는 그대로 두고 본문만 교차. 선택된 메뉴·탭 표시는 미끄러지지 않고 그 자리에서 바뀐다
+        (2026-10: 미끄러지는 동안 두 메뉴가 동시에 켜져 "아래 메뉴가 위로 올라가는" 오류처럼 보였다). */
   @media (prefers-reduced-motion: no-preference) {
     @view-transition { navigation: auto; }
   }
   nav.sidebar { view-transition-name: lnb; }
-  nav.sidebar a.active { view-transition-name: lnb-active; }
-  .tabs a.active { view-transition-name: tab-active; }
-  ::view-transition-group(lnb-active), ::view-transition-group(tab-active) {
-    animation-duration: var(--d-slow); animation-timing-function: var(--ease-out);
-  }
   ::view-transition-old(root) { animation: fade-out var(--d-fast) var(--ease-in) both; }
   ::view-transition-new(root) { animation: fade-in var(--d-base) var(--ease-out) both; }
   @keyframes fade-out { to { opacity: 0; } }
   @keyframes fade-in { from { opacity: 0; } }
 
-  /* 2) 본문 등장 — 블록이 위에서부터 40ms 간격으로 살짝 떠오른다. backwards라 끝나면 흔적(transform)이 안 남는다. */
+  /* 2) 본문 등장 — 페이지마다 블록이 차례로 떠오르던 연출은 뺐다(2026-10: 아래 블록이 늦게 올라와
+        메뉴를 옮길 때 화면이 밀려 올라오는 오류처럼 보였다). rise는 헬스체크 칸 펼침에서만 쓴다. */
   @keyframes rise { from { opacity: 0; transform: translateY(8px); } }
-  .shell > :not(style):not(script) { animation: rise var(--d-slow) var(--ease-out) backwards; }
-  .shell > :nth-child(2) { animation-delay: 40ms; }
-  .shell > :nth-child(3) { animation-delay: 80ms; }
-  .shell > :nth-child(4) { animation-delay: 120ms; }
-  .shell > :nth-child(5) { animation-delay: 160ms; }
-  .shell > :nth-child(6) { animation-delay: 200ms; }
-  .shell > :nth-child(n+7) { animation-delay: 240ms; }
 
   /* 3) 손에 닿는 것들 — 메뉴는 살짝 밀리고, 버튼은 눌리면 즉시 줄었다가 놓으면 부드럽게 돌아온다. */
   nav.sidebar a { transition: background var(--d-fast) ease, color var(--d-fast) ease, transform var(--d-base) var(--ease-out); }
@@ -365,7 +355,7 @@
   dialog#modal {
     opacity: 0; transform: translateY(12px) scale(0.985);
     transition: opacity var(--d-base) var(--ease-out), transform var(--d-slow) var(--ease-out),
-      width var(--d-slow) var(--ease-out), overlay var(--d-base) allow-discrete, display var(--d-base) allow-discrete;
+      overlay var(--d-base) allow-discrete, display var(--d-base) allow-discrete;  /* 폭 전환은 뺐다 — 늘어나는 동안 글줄이 계속 바뀌어 깨져 보였다 */
   }
   dialog#modal[open] { opacity: 1; transform: none; }
   @starting-style { dialog#modal[open] { opacity: 0; transform: translateY(12px) scale(0.985); } }
@@ -385,10 +375,9 @@
   }
   @keyframes shimmer { from { background-position: 100% 0; } to { background-position: -50% 0; } }
 
-  /* 5) 나타나는 조각들 — 도움말 말풍선, 일괄 액션 바 */
+  /* 5) 나타나는 조각들 — 도움말 말풍선(일괄 액션 바는 늘 떠 있는 줄이 돼 로드마다 튀어나와 뺐다) */
   @keyframes pop { from { opacity: 0; transform: translateY(-4px) scale(0.97); } }
   .tip-btn.open .tip-bubble { animation: pop var(--d-base) var(--ease-out); transform-origin: 8px 0; }
-  .bulkbar:not([hidden]) { animation: pop var(--d-base) var(--ease-out); }
 
   /* 6) 화면 이동 중 표시 — 응답이 느린 화면(주문·정산 조회 등)에서 눌렸는지 알 수 있게 위쪽에 가는 진행선 */
   #navProgress {

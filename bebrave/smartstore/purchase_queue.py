@@ -26,6 +26,9 @@ STATUS_HOLD = "hold"
 STATUS_ORDERED = "ordered"      # 도매매 발주 완료, 송장 미확보
 STATUS_DISPATCHED = "dispatched"  # 송장 확보 + 스마트스토어 발송처리까지 완료
 STATUS_FAILED = "failed"
+# 도매처 품절 등으로 발주할 수 없어 스마트스토어센터에서 판매취소한 주문 — 사람이 "취소 처리함"을 눌러 닫는다.
+# 네이버 판매취소 API는 실주문으로 검증 전이라 화면은 센터로 보내고 여기선 기록만 한다(2026-10).
+STATUS_CANCELLED = "cancelled"
 
 
 def _load_registered() -> list:
@@ -122,7 +125,7 @@ def build_queue(orders: list, refresh_hold: bool = True) -> list:
     for o in orders:
         if o.status != "PAYED":
             continue
-        if o.product_order_id in by_id and by_id[o.product_order_id]["status"] in (STATUS_ORDERED, STATUS_FAILED):
+        if o.product_order_id in by_id and by_id[o.product_order_id]["status"] in (STATUS_ORDERED, STATUS_FAILED, STATUS_CANCELLED):
             continue
 
         product, method = match_order_to_product(o, registered)
@@ -141,6 +144,7 @@ def build_queue(orders: list, refresh_hold: bool = True) -> list:
             # 지금까지 네이버에서 가져와 놓고 큐에 안 담아 통째로 사라지고 있었다
             # ("부재시 경비실에 맡겨주세요"가 전달 안 돼 배송 실패로 이어짐).
             "delivery_memo": getattr(o, "delivery_memo", ""),
+            "shipping_due": getattr(o, "shipping_due", ""),
             # CS가 생기면 연락할 사람은 수령인이 아니라 주문자다.
             "orderer_name": getattr(o, "orderer_name", ""),
             "orderer_tel": getattr(o, "orderer_tel", ""),
@@ -213,7 +217,41 @@ def refresh_queue(access_token: str, hours: Optional[int] = None) -> list:
     build_queue(new_orders)
     claims = fetch_new_orders(access_token, hours=window, status_type="CLAIM_REQUESTED")
     cancelled_ids = {c.product_order_id for c in claims if c.claim_type == "CANCEL"}
-    return demote_cancelled(cancelled_ids)
+    demote_cancelled(cancelled_ids)
+    return flag_claims_after_order(claims)
+
+
+CLAIM_LABEL = {"CANCEL": "취소", "RETURN": "반품", "EXCHANGE": "교환"}
+
+
+def flag_claims_after_order(claims: list) -> list:
+    """이미 도매매에 발주한(ordered)·발송한(dispatched) 주문에 고객 클레임이 들어오면 표시한다.
+    상태는 바꾸지 않는다(돈이 이미 나갔다) — 화면이 "도매처 출고 전이면 도매매 주문 취소"를 띄우게 할 뿐.
+    예전엔 발주 전 주문만 봐서, 발주 뒤 취소는 아무도 몰랐다(2026-10)."""
+    items = load_queue()
+    by_id = {c.product_order_id: c for c in claims if c.claim_type}
+    changed = False
+    for i in items:
+        c = by_id.get(i["product_order_id"])
+        if c and i["status"] in (STATUS_ORDERED, STATUS_DISPATCHED) and not i.get("claim_alert"):
+            i["claim_alert"] = {"type": c.claim_type, "label": CLAIM_LABEL.get(c.claim_type, c.claim_type),
+                                "reason": getattr(c, "claim_reason", "") or "", "at": date.today().isoformat()}
+            changed = True
+    if changed:
+        _save_queue(items)
+    return items
+
+
+def set_fields(product_order_ids: set, **fields) -> int:
+    """여러 주문에 같은 값을 적는다(네이버 발주확인 결과, 클레임 처리함 표시 등). 상태는 안 바꾼다."""
+    items, n = load_queue(), 0
+    for i in items:
+        if i["product_order_id"] in product_order_ids:
+            i.update(fields)
+            n += 1
+    if n:
+        _save_queue(items)
+    return n
 
 
 def sync_all_tracking(access_token: str) -> list:
@@ -271,6 +309,40 @@ def mark_dispatched(product_order_id: str, tracking_number: str, company: str) -
             i["delivery_company"] = company
             i["updated_at"] = date.today().isoformat()
     _save_queue(items)
+
+
+DELIVERY_FIELDS = ("receiver_name", "receiver_tel", "receiver_zipcode", "receiver_address1", "receiver_address2", "delivery_memo")
+
+
+def update_delivery(product_order_id: str, fields: dict) -> bool:
+    """발주 전 주문의 배송지(도매매로 보낼 값)를 사람이 고친다. 발주된 건은 이미 도매매로 나갔으니 못 고친다.
+    원래 값은 처음 고칠 때 한 번만 delivery_original에 남겨 둔다(무엇을 바꿨는지 알 수 있게)."""
+    items = load_queue()
+    for i in items:
+        if i["product_order_id"] != product_order_id:
+            continue
+        if i["status"] not in (STATUS_READY, STATUS_HOLD, STATUS_FAILED):
+            return False
+        i.setdefault("delivery_original", {k: i.get(k, "") for k in DELIVERY_FIELDS})
+        for k in DELIVERY_FIELDS:
+            if k in fields:
+                i[k] = (fields[k] or "").strip()
+        i["delivery_edited_at"] = date.today().isoformat()
+        _save_queue(items)
+        return True
+    return False
+
+
+def mark_cancelled(product_order_ids: set, reason: str) -> int:
+    """보류·실패 주문을 "판매취소 처리함"으로 닫는다. 발주된(ordered) 건은 건드리지 않는다 — 돈이 이미 나갔다."""
+    items, n = load_queue(), 0
+    for i in items:
+        if i["product_order_id"] in product_order_ids and i["status"] in (STATUS_HOLD, STATUS_FAILED, STATUS_READY):
+            i["status"], i["hold_reason"], i["updated_at"] = STATUS_CANCELLED, reason, date.today().isoformat()
+            n += 1
+    if n:
+        _save_queue(items)
+    return n
 
 
 def mark_failed(product_order_id: str, reason: str) -> None:

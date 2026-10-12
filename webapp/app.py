@@ -89,6 +89,62 @@ def _require_login():
         )
 
 
+_SHIP_CACHE: dict = {}
+
+
+def _supply_info(goods_no: str) -> dict:
+    """발주할 때 실제로 이머니에서 빠질 돈의 재료 — 지금 도매가(+기준 시점)와 도매처 배송비.
+    도매가는 '지금 확인'으로 받은 최신 값이 있으면 그걸, 없으면 등록 당시 값을 쓴다(2026-10: 등록가만 써서
+    도매처가 값을 올리면 화면 금액과 실제 차감액이 달랐다). 배송비는 도매매에서 조회해 1시간 기억한다
+    (판매자 부담 배송으로 발주하므로 배송비도 이머니에서 빠지는데, 필요 금액 계산에서 빠져 있었다)."""
+    import time
+    reg = next((p for p in _load_json(REGISTERED_PRODUCTS) if p.get("domemae_goods_no") == goods_no), None)
+    unit, basis = (reg.get("supply_price"), "등록 당시") if reg else (None, "")
+    sync = _load_json(PRODUCT_SYNC_CACHE)
+    if reg and isinstance(sync, list):
+        hit = next((x for x in sync if x.get("naver_product_id") == str(reg.get("naver_product_id"))
+                    and x.get("supply_price")), None)
+        if hit:
+            unit, basis = hit["supply_price"], f"{hit.get('checked_at', '')[:10]} 확인"
+    ship = None
+    cached = _SHIP_CACHE.get(goods_no)
+    if cached and time.time() - cached[1] < 3600:
+        ship = cached[0]
+    elif goods_no:
+        try:
+            from bebrave.sourcing.domemae import fetch_product_detail
+            ship = int(fetch_product_detail(goods_no).shipping_fee or 0)
+            _SHIP_CACHE[goods_no] = (ship, time.time())
+        except Exception:
+            ship = None
+    return {"unit": unit, "ship": ship, "basis": basis}
+
+
+def _apply_costs(items: list) -> int:
+    """발주 대기 주문에 도매가·배송비·이 주문 차감액을 붙이고 필요 이머니 합계를 돌려준다.
+    같은 네이버 주문(같은 받는 사람)으로 묶이는 주문은 한 번에 발주하므로 배송비를 첫 건에만 붙인다.
+    샘플처럼 값이 이미 들어 있으면 그대로 쓴다."""
+    groups: dict = {}
+    for i in items:
+        key = (i.get("order_id"), i.get("receiver_name"), i.get("receiver_address1"), i.get("receiver_address2"))
+        groups.setdefault(key, []).append(i)
+    needed = 0
+    for members in groups.values():
+        for n, i in enumerate(members):
+            if "supply_unit_price" not in i or "supply_ship" not in i:
+                info = _supply_info(i.get("matched_goods_no", ""))
+                i.setdefault("supply_unit_price", info["unit"])
+                i.setdefault("supply_ship", info["ship"])
+                i.setdefault("supply_basis", info["basis"])
+            i["group_size"] = len(members)
+            ship = (i.get("supply_ship") or 0) if n == 0 else 0  # 묶음 발주 — 배송비는 한 번
+            i["ship_charged"] = ship
+            unit = i.get("supply_unit_price")
+            i["supply_cost"] = unit * i["quantity"] + ship if unit is not None else None
+            needed += i["supply_cost"] or 0
+    return needed
+
+
 def _lookup_supply_price(goods_no: str):
     """등록 원장에서 도매매 상품번호로 등록 시점 도매가를 찾는다 — 발주 지출 추정용.
     실제 발주가는 domemae_order.place_order()가 알려주지 않으므로(도매매가 자체 가격으로
@@ -1647,20 +1703,40 @@ def products_view():
             "eligible": _bulk_eligibility(is_suspended, sync, perf_status),
         })
 
-    # 행마다 "문제 · 할 일"을 판정한다 — 헬스체크와 같은 기준(개당 순이익 하한·60일 무판매)
     from bebrave.config import MIN_ABS_PROFIT
-    from bebrave.report import suggest_replacements
+    from bebrave.report import action_log, load_sales_orders
+    from bebrave.report.strategy import DEAD_DAYS
+    counts = _finish_product_rows(rows, registered, _load_json(SOURCING_LOG), load_sales_orders(), action_log.load())
+
+    # 데이터 신선도 — 재고·판매상태가 하루 넘게 묵었으면 화면 맨 위에서 경고한다.
+    # 한 달 묵은 "판매중지" 배지를 지금 상태로 믿고 판단하는 일을 막는다(2026-10).
+    stale_days = None
+    if sync_checked_at:
+        try:
+            stale_days = (datetime.now() - datetime.fromisoformat(sync_checked_at)).days
+        except ValueError:
+            pass
+    return render_template("products.html", rows=rows, total=len(registered),
+                           counts=counts, sync_checked_at=sync_checked_at, stale_days=stale_days,
+                           min_abs_profit=MIN_ABS_PROFIT, dead_days=DEAD_DAYS)
+
+
+def _finish_product_rows(rows: list, registered: list, candidates: list, sales: list, actions: list,
+                         demo: bool = False) -> dict:
+    """행마다 "문제 · 할 일" 판정·필터·정렬을 하고 요약 칸 숫자를 돌려준다.
+    실데이터와 샘플(/products/demo)이 같은 판정 규칙을 타도록 한 곳에 둔다 — 헬스체크와
+    같은 기준(개당 순이익 하한·60일 무판매)."""
+    from bebrave.config import MIN_ABS_PROFIT
+    from bebrave.report import suggest_replacements, action_log
     from bebrave.report.product_triage import triage, VERDICT_ORDER, URGENT, REPLACE
     from bebrave.report.strategy import DEAD_DAYS, NEW_DAYS
-    from bebrave.report import action_log, load_sales_orders
-    candidates = _load_json(SOURCING_LOG)
-    sales, actions = load_sales_orders(), action_log.load()
     for r in rows:
         if not r["replacements"]:
             r["replacements"] = suggest_replacements(r["keyword"], candidates, registered)
-        r["replacements"] = [dict(c, url=url_for("candidates_preview", keyword=c.get("keyword", ""),
-                                                 goods_no=c.get("supply_goods_no", ""), track=c.get("track", ""),
-                                                 replaces=r["naver_product_id"]))
+        r["replacements"] = [dict(c, url=url_for("candidates_demo") if demo else
+                                  url_for("candidates_preview", keyword=c.get("keyword", ""),
+                                          goods_no=c.get("supply_goods_no", ""), track=c.get("track", ""),
+                                          replaces=r["naver_product_id"]))
                              for c in r["replacements"] or []]
         r["detail_url"] = url_for("products_detail", product_id=r["naver_product_id"])
         r["last_action"] = (action_log.history(r["naver_product_id"], sales, actions) or [None])[0]
@@ -1674,24 +1750,27 @@ def products_view():
         # 20일 된 상품이 "60일+ 무판매"·"조치 필요"에 섞여 표의 "지켜보기"와 숫자가 어긋난다
         r["filters"] = [f for f in r["filters"] if f not in ("action", "nosale", "ok")]
         r["filters"].append("action" if r["verdict"] in (URGENT, REPLACE) else "ok")
-        if (r["days_since_registered"] or 0) >= DEAD_DAYS and not r["recent_order_count"]:
+        # 판매중지라서 0건인 "예전에 팔리던 상품"은 무판매로 세지 않는다(판정과 같은 예외)
+        if ((r["days_since_registered"] or 0) >= DEAD_DAYS and not r["recent_order_count"]
+                and not (r["is_suspended"] and r["order_count"])):
             r["filters"].append("nosale")
     rows.sort(key=lambda r: VERDICT_ORDER[r["verdict"]])
+    return {k: sum(1 for r in rows if k in r["filters"]) for k in ("action", "suspended", "margin", "nosale", "stock")}
 
-    def _count(f):
-        return sum(1 for r in rows if f in r["filters"])
 
-    # 데이터 신선도 — 재고·판매상태가 하루 넘게 묵었으면 화면 맨 위에서 경고한다.
-    # 한 달 묵은 "판매중지" 배지를 지금 상태로 믿고 판단하는 일을 막는다(2026-10).
-    stale_days = None
-    if sync_checked_at:
-        try:
-            stale_days = (datetime.now() - datetime.fromisoformat(sync_checked_at)).days
-        except ValueError:
-            pass
-    return render_template("products.html", rows=rows, total=len(registered),
-                           counts={k: _count(k) for k in ("action", "suspended", "margin", "nosale", "stock")},
-                           sync_checked_at=sync_checked_at, stale_days=stale_days,
+@app.route("/products/demo")
+def products_demo():
+    """샘플 — 요약 칸(조치 필요·마진 부족·무판매·판매중지·품절)마다 다른 상품이 걸리게 만든
+    가상 상품으로, 실데이터와 같은 판정 규칙을 탄다. 버튼은 반영하지 않는다."""
+    from bebrave.config import MIN_ABS_PROFIT
+    from bebrave.report.product_demo import demo_products
+    from bebrave.report.strategy import DEAD_DAYS
+    rows, sales, actions, candidates = demo_products()
+    for r in rows:
+        r["eligible"] = _bulk_eligibility(r["is_suspended"], r["sync"], r["perf_status"])
+    counts = _finish_product_rows(rows, [], candidates, sales, actions, demo=True)
+    return render_template("products.html", demo=True, rows=rows, total=len(rows), counts=counts,
+                           sync_checked_at=datetime.now().isoformat(timespec="minutes"), stale_days=0,
                            min_abs_profit=MIN_ABS_PROFIT, dead_days=DEAD_DAYS)
 
 
@@ -1998,7 +2077,9 @@ def products_edit_detail():
 
 # ── 주문·발주 (주문확인 + 발주대기열 + 수동발주 통합, 탭: ready/dispatch/manual/history) ──
 
-ORDER_TABS = ("ready", "dispatch", "failed", "manual", "history")
+NAVER_STATUS_LABEL = {"DELIVERING": "배송중", "DELIVERED": "배송완료", "PURCHASE_DECIDED": "구매확정",
+                      "EXCHANGED": "교환", "RETURNED": "반품", "CANCELED": "취소"}
+ORDER_TABS = ("ready", "decide", "dispatch", "history", "failed", "manual")  # failed·manual은 옛 주소 — decide로 보낸다
 
 # 택배사별 배송조회 주소 — 송장번호만 있고 링크가 없어서 배송 문의가 올 때마다
 # 번호를 복사해 택배사 사이트에 직접 붙여넣어야 했다. 발송처리 select와 같은 목록.
@@ -2038,6 +2119,16 @@ def _annotate_orders(items: list) -> None:
             elapsed = None
         i["hours_since_order"] = elapsed
         i["is_delayed"] = elapsed is not None and elapsed >= DISPATCH_DELAY_HOURS
+        # 네이버가 준 실제 발송기한이 있으면 그걸로(주말·공휴일 반영). 없으면 판정은 결제 후 시간으로 대신한다
+        i["due_left_h"] = None
+        if i.get("shipping_due"):
+            try:
+                due = datetime.fromisoformat(str(i["shipping_due"]).replace("Z", "+00:00"))
+                if due.tzinfo:
+                    due = due.astimezone().replace(tzinfo=None)
+                i["due_left_h"] = (due - now).total_seconds() / 3600
+            except ValueError:
+                pass
         i["tracking_url"] = _tracking_url(i.get("delivery_company", ""), i.get("tracking_number", ""))
 
         # 발주를 누르는 순간 "이 건 얼마 남는지"가 화면에 없었다 — 도매가만 보였다.
@@ -2053,6 +2144,60 @@ def _annotate_orders(items: list) -> None:
             i["margin_rate"] = None
 
 
+def _order_view(ready, hold, dispatch_wait, failed, done, emoney) -> dict:
+    """주문 화면 공용 마무리 — 건마다 "문제 · 할 일" 판정, 요약 카드 숫자, 일괄 발주 기본 선택.
+    실데이터(/orders)와 샘플(/orders/demo)이 같은 규칙을 타도록 한 곳에 둔다(2026-10)."""
+    from bebrave.config import MIN_ABS_PROFIT
+    from bebrave.smartstore.order_triage import triage
+    for group in (ready, hold, dispatch_wait, failed, done):
+        for i in group:
+            i.update(triage(i, MIN_ABS_PROFIT))
+    for i in ready + hold + failed:
+        i["out"] = _outgoing(i)
+    # 결정이 필요한 것(보류·실패)과 발주 대기는 급한 순서로 — 같은 시간이면 오래된 주문이 위
+    for group in (hold, failed):
+        group.sort(key=lambda i: i.get("ordered_at", ""))
+    # 출고 대기 — 발주 뒤 취소·반품 요청이 들어온 주문이 맨 위(도매처 출고 전에 막아야 한다), 그다음 오래된 순
+    dispatch_wait.sort(key=lambda i: (0 if i.get("claim_alert") and not i.get("claim_handled") else 1, i.get("ordered_at", "")))
+    # 기본 선택 — 원가를 알고 손해가 아닌 주문만, 오래된 것부터 이머니가 닿는 데까지.
+    # 같은 고객 묶음(도매매 주문 하나로 나가는 주문들)은 함께 고르고 함께 뺀다 — 한쪽만 나가면 배송비가 두 번 든다
+    cash = emoney["cash"] if emoney else None
+    total = 0
+    groups: dict = {}
+    for i in ready:
+        i["group_key"] = f"{i.get('order_id')}|{i.get('receiver_name')}|{i.get('receiver_address1')}|{i.get('receiver_address2')}"
+        groups.setdefault(i["group_key"], []).append(i)
+    for members in groups.values():
+        cost = sum(m.get("supply_cost") or 0 for m in members)
+        ok = all(m["preselect"] for m in members)
+        fits = cash is None or total + cost <= cash
+        for m in members:
+            m["checked"] = ok and fits
+            if ok and not fits:
+                m["skip_reason"] = "이머니가 모자라 기본 선택에서 뺌 — 충전하거나 다른 주문 대신 고르세요"
+        if ok and fits:
+            total += cost
+    # 확인 필요 = 보류 + 발주 실패 — 운영자에겐 둘 다 "자동으로 안 됐으니 내가 결정할 주문"이다(2026-10, 별도 탭)
+    decide = sorted(hold + failed, key=lambda i: i.get("ordered_at", ""))
+    is_late = lambda i: i["urgency"] in ("late", "severe")
+    late = {"ready": sum(1 for i in ready if is_late(i)), "decide": sum(1 for i in decide if is_late(i)),
+            "dispatch": sum(1 for i in dispatch_wait if is_late(i))}
+    late["total"] = late["ready"] + late["decide"] + late["dispatch"]
+    return {"decide": decide, "late": late, "min_abs_profit": MIN_ABS_PROFIT}
+
+
+@app.route("/orders/close", methods=["POST"])
+def orders_close():
+    """보류·실패 주문을 닫는다 — 스마트스토어센터에서 판매취소를 마친 뒤(또는 고객 취소 확인 후) 누른다.
+    로컬 발주 큐 상태만 바꾸므로 돈도 네이버도 건드리지 않는다."""
+    from bebrave.smartstore.purchase_queue import mark_cancelled
+    ids = set(request.form.getlist("ids"))
+    back = request.form.get("return_to", "decide")
+    n = mark_cancelled(ids, "판매취소 처리함 — 스마트스토어센터에서 취소 완료") if ids else 0
+    flash(f"{n}건을 판매취소 처리함으로 닫았습니다." if n else "닫을 수 있는 주문이 없습니다.", "success" if n else "error")
+    return redirect(url_for("orders", tab=back if back in ORDER_TABS else "decide"))
+
+
 @app.route("/orders")
 def orders():
     """탭 5개: 처리할 주문(ready) | 발송 대기(ordered) | 발주 실패(failed) |
@@ -2065,9 +2210,11 @@ def orders():
         STATUS_FAILED, STATUS_DISPATCHED,
     )
 
-    tab = request.args.get("tab", "ready")
-    if tab not in ORDER_TABS:
-        tab = "ready"
+    tab = request.args.get("tab", "")
+    if tab in ("manual", "failed"):  # 옛 보류·발주 실패 탭 → 확인 필요
+        tab = "decide"
+    elif tab not in ORDER_TABS:
+        tab = ""  # 정해지지 않았으면 목록을 본 뒤 고른다(_pick_tab)
 
     error = None
     try:
@@ -2084,7 +2231,7 @@ def orders():
     # 발주 실패는 지금까지 화면 어디에도 없었다 — 실패 순간 플래시 한 번 뜨고 끝이라,
     # 새로고침하면 돈이 걸린 그 주문이 어디 갔는지 확인할 방법이 없었다.
     failed = [i for i in items if i["status"] == STATUS_FAILED]
-    done = [i for i in items if i["status"] == STATUS_DISPATCHED]
+    done = [i for i in items if i["status"] in (STATUS_DISPATCHED, "cancelled")]
     done.sort(key=lambda i: i.get("updated_at", ""), reverse=True)
     # 오래된 주문이 위로 — 발송기한이 급한 것부터 처리하도록.
     ready.sort(key=lambda i: i.get("ordered_at", ""))
@@ -2097,13 +2244,7 @@ def orders():
     emoney = None
     emoney_error = None
     if ready:
-        needed = 0
-        for i in ready:
-            supply_price = _lookup_supply_price(i["matched_goods_no"])
-            i["supply_unit_price"] = supply_price
-            i["supply_cost"] = supply_price * i["quantity"] if supply_price is not None else None
-            if supply_price is not None:
-                needed += supply_price * i["quantity"]
+        needed = _apply_costs(ready)
         try:
             from bebrave.sourcing.domemae_order import login, fetch_emoney_balance
             session_data = login()
@@ -2115,16 +2256,166 @@ def orders():
 
     _annotate_orders(items)
 
+    # 완료 탭을 볼 때만 — 발송 뒤 배송중·배송완료·구매확정·반품 여부를 네이버에서 받아 붙인다(최근 30일)
+    if tab == "history" and not error:
+        recent = [i["product_order_id"] for i in done if i["status"] == STATUS_DISPATCHED
+                  and i.get("updated_at", "") >= (date.today() - timedelta(days=30)).isoformat()]
+        if recent:
+            try:
+                from bebrave.smartstore.auth import get_access_token
+                from bebrave.smartstore.orders import fetch_order_detail
+                st = {o.product_order_id: o.status for o in fetch_order_detail(recent[:300], get_access_token())}
+                for i in done:
+                    i["naver_status"] = NAVER_STATUS_LABEL.get(st.get(i["product_order_id"], ""), "")
+            except Exception:
+                pass
+
     manual_prefill = {k: request.args.get(k, "") for k in
                        ("goods_no", "option_code", "qty", "receiver_name", "phone", "zipcode", "address1", "address2",
-                        "shop_name", "delivery_memo", "product_order_id")}
+                        "delivery_memo", "product_order_id")}
 
     return render_template(
-        "orders.html", tab=tab, ready=ready, hold=hold, dispatch_wait=dispatch_wait,
-        failed=failed, done=done, error=error,
-        emoney=emoney, emoney_error=emoney_error,
+        "orders.html", tab=tab or _pick_tab(ready, hold + failed), ready=ready, hold=hold, dispatch_wait=dispatch_wait,
+        failed=failed, done=done, error=_friendly_naver_error(Exception(error)) if error else None,
+        emoney=emoney, emoney_error=emoney_error, store_name_ok=_store_name_ok(),
+        **_order_view(ready, hold, dispatch_wait, failed, done, emoney),
         **manual_prefill,
     )
+
+
+def _outgoing(i: dict) -> dict:
+    """도매매 주문서에 실제로 들어갈 배송지 — 화면에 보여주는 값과 보내는 값이 같아야 한다.
+    휴대전화는 발주 직전에 하는 형식 맞춤을 미리 적용해 보여주고, 맞출 수 없으면 문제로 표시한다."""
+    from bebrave.sourcing.domemae_order import format_phone, delivery_problem, store_name
+    try:
+        phone = format_phone(i.get("receiver_tel", ""))
+    except ValueError:
+        phone = i.get("receiver_tel", "")
+    try:
+        shop = store_name()
+    except ValueError:
+        shop = ""
+    return {"name": i.get("receiver_name", ""), "phone": phone, "zipcode": i.get("receiver_zipcode", ""),
+            "address1": i.get("receiver_address1", ""), "address2": i.get("receiver_address2", ""),
+            "memo": i.get("delivery_memo", ""), "shop": shop,
+            "problem": delivery_problem(i.get("receiver_zipcode", ""), i.get("receiver_address1", ""),
+                                        i.get("receiver_address2", ""), i.get("receiver_tel", ""))}
+
+
+@app.route("/orders/delivery_form")
+def orders_delivery_form():
+    """발주 정보 확인·수정 창 — 도매매로 보낼 배송지를 발주 전에 눈으로 보고 고친다(2026-10)."""
+    from bebrave.smartstore.purchase_queue import load_queue
+    pid = request.args.get("product_order_id", "")
+    demo = pid.startswith("DEMO-")
+    pool = _demo_order_items() if demo else load_queue()
+    item = next((i for i in pool if i.get("product_order_id") == pid), None)
+    if not item:
+        return '<div class="flash flash-error">주문을 찾을 수 없습니다.</div>', 404
+    out = _outgoing(item)
+    if demo and not out["shop"]:
+        out["shop"] = "(샘플) 내 스토어 이름"
+    return render_template("order_delivery_form.html", i=item, out=out, demo=demo,
+                           return_to=request.args.get("return_to", "ready"))
+
+
+@app.route("/orders/delivery_save", methods=["POST"])
+def orders_delivery_save():
+    """배송지 수정 저장 — Friday의 발주 대기 기록만 바꾼다(돈·네이버 무관). 다음 발주부터 고친 값이 나간다."""
+    from bebrave.smartstore.purchase_queue import update_delivery, DELIVERY_FIELDS
+    from bebrave.sourcing.domemae_order import delivery_problem
+    pid = request.form.get("product_order_id", "")
+    back = request.form.get("return_to", "ready")
+    fields = {k: request.form.get(k, "") for k in DELIVERY_FIELDS}
+    if pid.startswith("DEMO-") or not update_delivery(pid, fields):
+        flash("이 주문은 고칠 수 없습니다(샘플이거나 이미 발주된 주문).", "error")
+    else:
+        problem = delivery_problem(fields["receiver_zipcode"], fields["receiver_address1"],
+                                   fields["receiver_address2"], fields["receiver_tel"])
+        flash(f"발주 정보를 저장했습니다 — 그래도 남은 문제: {problem}" if problem else
+              "발주 정보를 저장했습니다 — 다음 발주부터 고친 값으로 나갑니다.", "error" if problem else "success")
+    return redirect(url_for("orders", tab=back if back in ORDER_TABS else "ready"))
+
+
+def _naver_confirm(product_order_ids: list) -> str:
+    """네이버 발주확인을 하고 결과를 주문 기록에 남긴다. 문제가 있으면 사람이 읽을 한 줄, 없으면 빈 문자열."""
+    from bebrave.smartstore.purchase_queue import set_fields
+    if not product_order_ids:
+        return ""
+    try:
+        from bebrave.smartstore.auth import get_access_token
+        from bebrave.smartstore.orders import confirm_orders
+        r = confirm_orders(product_order_ids, get_access_token())
+    except Exception as e:
+        set_fields(set(product_order_ids), naver_confirmed=False)
+        return f"네이버 발주확인 실패 — 출고 대기에서 '네이버 발주확인'을 다시 누르세요 ({_friendly_naver_error(e)[:60]})"
+    set_fields(set(r["ok"]), naver_confirmed=True)
+    if r["failed"]:
+        set_fields(set(r["failed"]), naver_confirmed=False)
+        return f"네이버 발주확인 {len(r['failed'])}건 실패 — 출고 대기에서 다시 시도하세요"
+    return ""
+
+
+@app.route("/orders/naver_confirm", methods=["POST"])
+def orders_naver_confirm():
+    """발주확인이 안 된 주문을 다시 네이버에 발주확인한다(고객 즉시취소 막기). 돈과 무관."""
+    ids = request.form.getlist("ids")
+    note = _naver_confirm(ids) if ids else "선택된 주문이 없습니다."
+    flash(note or f"네이버 발주확인 완료 — {len(ids)}건", "error" if note else "success")
+    return redirect(url_for("orders", tab="dispatch"))
+
+
+@app.route("/orders/claim_ack", methods=["POST"])
+def orders_claim_ack():
+    """발주 뒤 들어온 취소·반품 요청을 처리했다고 표시한다(도매매 주문 취소·반품 회수는 사람이 함)."""
+    from bebrave.smartstore.purchase_queue import set_fields
+    ids = set(request.form.getlist("ids"))
+    n = set_fields(ids, claim_handled=True) if ids else 0
+    flash(f"{n}건 처리함으로 표시했습니다." if n else "선택된 주문이 없습니다.", "success" if n else "error")
+    return redirect(url_for("orders", tab=request.form.get("return_to", "dispatch")))
+
+
+@app.route("/purchase/sync_tracking_all", methods=["POST"])
+def purchase_sync_tracking_all():
+    """출고 대기 전체의 도매매 송장을 한 번에 확인해, 나온 건은 스마트스토어 발송처리까지(행마다 누르던 걸 한 번에)."""
+    try:
+        from bebrave.smartstore.auth import get_access_token
+        from bebrave.smartstore.purchase_queue import sync_all_tracking
+        results = sync_all_tracking(get_access_token())
+        done = sum(1 for r in results if r.get("status") == "완료")
+        fail = [r for r in results if r.get("status") == "실패"]
+        flash(f"송장 확인 — 발송처리 {done}건, 아직 송장 없음 {len(results) - done - len(fail)}건"
+              + (f", 실패 {len(fail)}건" if fail else ""), "error" if fail else "success")
+    except Exception as e:
+        flash(f"송장 확인 실패 — {_friendly_naver_error(e)}", "error")
+    return redirect(url_for("orders", tab="dispatch"))
+
+
+def _pick_tab(ready: list, decide: list) -> str:
+    """처음 들어왔을 때 열 탭 — 기본은 발주 필요, 그게 비었는데 확인 필요만 있으면 확인 필요(빈 화면부터 보지 않게)."""
+    return "decide" if not ready and decide else "ready"
+
+
+@app.route("/orders/manual_form")
+def orders_manual_form():
+    """수동·직접 발주 양식(창으로 띄움). product_order_id가 있으면 그 주문으로 채운다."""
+    from bebrave.smartstore.purchase_queue import load_queue
+    pid = request.args.get("product_order_id", "")
+    item = None
+    if pid:
+        pool = _demo_order_items() if pid.startswith("DEMO-") else load_queue()
+        item = next((i for i in pool if i.get("product_order_id") == pid), None)
+    back = request.args.get("return_to", "decide")
+    return render_template("order_manual_form.html", i=item, return_to=back if back in ORDER_TABS else "decide")
+
+
+def _store_name_ok() -> bool:
+    from bebrave.sourcing.domemae_order import store_name
+    try:
+        store_name()
+        return True
+    except ValueError:
+        return False
 
 
 @app.route("/orders/detail/<product_order_id>")
@@ -2174,71 +2465,115 @@ def orders_retry():
 def _demo_order_items() -> list:
     """샘플 주문 목록 — 실제 발주 큐와 **같은 키 이름**을 쓴다. 예전에 택배사만 다른
     이름(company)을 써서, 실제 화면에서는 항상 빈칸인 버그가 샘플에서는 정상으로
-    보였다. 상세 모달도 이 목록을 그대로 읽는다(샘플 정의가 한 곳에만 있도록)."""
+    보였다. 상세 모달도 이 목록을 그대로 읽는다(샘플 정의가 한 곳에만 있도록).
+
+    탭마다 운영에서 실제로 마주칠 상황을 하나씩 넣었다(2026-10 확장):
+      처리할 주문 — 정상 · 발송기한 임박(이름 매칭) · 옵션 상품 · 도매가 미확인 · 역마진
+      발송 대기   — 방금 발주 · 28시간 · 52시간(도매처 출고 지연)
+      발주 실패   — 이머니 부족 · 도매처 품절 · 일시 오류
+      수동 발주   — 옵션 재고 부족 · 상품 매칭 실패 · 주소 확인 필요
+      완료 이력   — 3건"""
     now = datetime.now()
 
     def _ago(hours):
         return (now - timedelta(hours=hours)).isoformat(timespec="minutes")
 
+    def _day(days):
+        return (now - timedelta(days=days)).date().isoformat()
+
+    def item(qid, status, name, qty, price, hours, receiver, addr, **kw):
+        base = {"product_order_id": f"DEMO-{qid}", "order_id": f"20261011{sum(map(ord, qid)):05d}", "product_name": name,
+                "option_name": "", "quantity": qty, "unit_price": price, "matched_goods_no": "",
+                "matched_option_code": None, "matched_name": name, "match_method": "id",
+                "ordered_at": _ago(hours), "receiver_name": receiver[0], "receiver_tel": receiver[1],
+                "orderer_name": receiver[0], "orderer_tel": receiver[1],
+                "receiver_zipcode": addr[0], "receiver_address1": addr[1], "receiver_address2": addr[2],
+                "status": status, "hold_reason": "", "delivery_memo": ""}
+        base.update(kw)
+        return base
+
     return [
-        {"product_order_id": "DEMO-Q1", "order_id": "DEMO-O1",
-         "product_name": "실리콘주걱 대코 브라이트 미니볶음주걱 실리콘 이유식주걱",
-         "option_name": "", "quantity": 2, "unit_price": 3300, "matched_goods_no": "11013443",
-         "matched_option_code": None, "matched_name": "실리콘주걱 대코 브라이트 미니볶음주걱 실리콘 이유식주걱",
-         "match_method": "id", "ordered_at": _ago(5),
-         "orderer_name": "김철수", "orderer_tel": "010-1111-2222",
-         "delivery_memo": "부재시 경비실에 맡겨주세요",
-         "receiver_name": "김철수", "receiver_tel": "010-1111-2222", "receiver_zipcode": "06000",
-         "receiver_address1": "서울시 강남구", "receiver_address2": "101호", "status": "ready", "hold_reason": "",
-         "supply_unit_price": 2300, "supply_cost": 4600},
-        # 결제 후 30시간 — 발송지연 배지가 실제로 어떻게 보이는지 확인하는 샘플
-        {"product_order_id": "DEMO-Q2", "order_id": "DEMO-O2",
-         "product_name": "우산 양산 양우산 자동우산  3단자동우산 우양산 골프우",
-         "option_name": "", "quantity": 1, "unit_price": 4600, "matched_goods_no": "13187678",
-         "matched_option_code": None, "matched_name": "우산 양산 양우산 자동우산  3단자동우산 우양산 골프우",
-         "match_method": "name", "ordered_at": _ago(30),
-         # 선물 주문 — 주문자와 수령인이 다른 경우(CS 연락은 주문자에게 해야 한다)
-         "orderer_name": "최민호", "orderer_tel": "010-4444-5555",
-         "receiver_name": "최지은", "receiver_tel": "010-7777-8888", "receiver_zipcode": "42000",
-         "receiver_address1": "대구시 수성구", "receiver_address2": "", "status": "ready", "hold_reason": "",
-         "supply_unit_price": 3190, "supply_cost": 3190},
-        {"product_order_id": "DEMO-Q3", "order_id": "DEMO-O3",
-         "product_name": "캠핑용 접이식 미니 테이블", "option_name": "카키",
-         "quantity": 5, "unit_price": 13000, "matched_goods_no": "20000001", "matched_option_code": "02",
-         "matched_name": "캠핑용 접이식 미니 테이블", "match_method": "id", "ordered_at": _ago(9),
-         "receiver_name": "박민수", "receiver_tel": "010-5555-6666",
-         "receiver_zipcode": "48000", "receiver_address1": "부산시 해운대구", "receiver_address2": "",
-         "status": "hold", "hold_reason": "도매매 옵션 재고 부족 — '카키' 필요 5개, 재고 3개"},
-        {"product_order_id": "DEMO-Q4", "order_id": "DEMO-O4",
-         "product_name": "완전 다른 상품 XYZ", "option_name": "",
-         "quantity": 1, "unit_price": 9900, "matched_goods_no": "", "matched_option_code": None,
-         "matched_name": "", "match_method": "none", "ordered_at": _ago(12),
-         "receiver_name": "한소망", "receiver_tel": "010-1212-3434",
-         "receiver_zipcode": "61900", "receiver_address1": "광주시 서구", "receiver_address2": "",
-         "status": "hold", "hold_reason": "도매매 상품 매칭 실패 — 수동 확인 필요"},
-        {"product_order_id": "DEMO-Q5", "order_id": "DEMO-O5",
-         "product_name": "실리콘주걱 대코 브라이트 미니볶음주걱 실리콘 이유식주걱",
-         "option_name": "", "quantity": 1, "unit_price": 3300, "status": "ordered",
-         "match_method": "id", "ordered_at": _ago(28), "spent_amount": 2300,
-         "hold_reason": "", "domemae_order_no": "OR9990001",
-         "receiver_name": "정하늘", "receiver_tel": "010-2222-3333", "receiver_zipcode": "03000",
-         "receiver_address1": "서울시 마포구", "receiver_address2": "202호"},
-        {"product_order_id": "DEMO-Q6", "order_id": "DEMO-O6",
-         "product_name": "우산 양산 양우산 자동우산 3단자동우산",
-         "option_name": "", "quantity": 1, "unit_price": 4600, "matched_goods_no": "13187678",
-         "matched_option_code": None, "matched_name": "우산 양산 양우산 자동우산",
-         "match_method": "name", "ordered_at": _ago(40), "supply_cost": 3190,
-         "receiver_name": "이서준", "receiver_tel": "010-3434-5656", "receiver_zipcode": "13500",
-         "receiver_address1": "성남시 분당구", "receiver_address2": "", "status": "failed",
-         "hold_reason": "도매매 이머니 잔액 부족 — 4,600원 필요", "updated_at": "2026-08-29"},
-        {"product_order_id": "DEMO-Q7", "order_id": "DEMO-O7",
-         "product_name": "실리콘주걱 대코 브라이트 미니볶음주걱",
-         "option_name": "", "quantity": 3, "unit_price": 3300, "status": "dispatched",
-         "match_method": "id", "ordered_at": _ago(72), "spent_amount": 6900,
-         "hold_reason": "", "domemae_order_no": "OR9990002", "tracking_number": "123456789012",
-         "delivery_company": "CJ대한통운", "updated_at": "2026-08-28",
-         "receiver_name": "오지훈", "receiver_tel": "010-9999-0000", "receiver_zipcode": "21000",
-         "receiver_address1": "인천시 연수구", "receiver_address2": ""},
+        # ── 처리할 주문 ──
+        item("Q1", "ready", "실리콘주걱 대코 브라이트 미니볶음주걱 실리콘 이유식주걱", 2, 3300, 5,
+             ("김철수", "010-1111-2222"), ("06000", "서울시 강남구", "101호"),
+             order_id="2026101100130", matched_goods_no="11013443", supply_unit_price=2300,
+             delivery_memo="부재시 경비실에 맡겨주세요"),
+        # 결제 후 30시간 + 이름으로 매칭 + 선물(주문자≠수령인)
+        item("Q2", "ready", "우산 양산 양우산 자동우산  3단자동우산 우양산 골프우", 1, 4600, 30,
+             ("최지은", "010-7777-8888"), ("42000", "대구시 수성구", ""),
+             matched_goods_no="13187678", match_method="name", supply_unit_price=3190, supply_cost=3190,
+             orderer_name="최민호", orderer_tel="010-4444-5555"),
+        # 네이버 발송기한이 주말로 넉넉한 주문 — 경과 시간이 아니라 실제 기한으로 판정
+        item("Q3", "ready", "캠핑 접이식 테이블 경량 알루미늄 롤테이블", 1, 18900, 2,
+             ("윤가람", "010-2323-4545"), ("34000", "대전시 유성구", "3층"),
+             option_name="블랙 / 대형", matched_goods_no="20000002", matched_option_code="03",
+             supply_unit_price=9800, shipping_due=(now + timedelta(hours=40)).isoformat(timespec="minutes")),
+        # 같은 고객이 한 번에 산 두 번째 상품 — 김철수 주문과 묶어 도매매 주문 하나로, 배송비 한 번
+        item("Q6", "ready", "실리콘 주방집게 미니 2P 세트", 1, 6900, 5,
+             ("김철수", "010-1111-2222"), ("06000", "서울시 강남구", "101호"),
+             order_id="2026101100130", matched_goods_no="20000007", supply_unit_price=2100),
+        # 도매가를 못 찾은 주문 — 마진·필요 이머니 계산에서 빠진다
+        item("Q4", "ready", "방수 지퍼백 대용량 여행 파우치 3종", 3, 13900, 3,
+             ("서도윤", "010-6767-8989"), ("63000", "제주시 노형동", ""),
+             matched_goods_no="20000003", supply_unit_price=None, supply_cost=None),
+        # 도매가가 올라 팔수록 손해 — 발주 전에 걸러야 할 주문
+        item("Q5", "ready", "차량용 컵홀더 확장형 대용량 텀블러 거치", 2, 11900, 8,
+             ("문채원", "010-1357-2468"), ("16000", "수원시 영통구", "1203호"),
+             matched_goods_no="20000004", supply_unit_price=10400, supply_cost=20800),
+        # ── 발송 대기 ──
+        # 네이버 발주확인이 실패한 주문 — 고객이 바로 취소·환불할 수 있는 상태
+        item("D1", "ordered", "실리콘주걱 대코 브라이트 미니볶음주걱 실리콘 이유식주걱", 1, 3300, 4,
+             ("정하늘", "010-2222-3333"), ("03000", "서울시 마포구", "202호"),
+             spent_amount=5300, domemae_order_no="OR9990001", naver_confirmed=False),
+        # 발주한 뒤 고객이 취소 요청 — 도매처 출고 전에 도매매 주문을 취소해야 한다
+        item("D2", "ordered", "폴딩 체어 커버 방수 캠핑의자 커버", 2, 12900, 28,
+             ("강보름", "010-8080-9090"), ("44000", "울산시 남구", "1동 304호"),
+             spent_amount=13800, domemae_order_no="OR9990003", naver_confirmed=True,
+             claim_alert={"type": "CANCEL", "label": "취소", "reason": "단순 변심", "at": _day(0)}),
+        # 발주는 이틀 전에 했는데 도매처가 아직 출고 안 함
+        item("D3", "ordered", "미니 랜턴 USB 충전식 캠핑 무드등", 1, 15900, 52,
+             ("임하준", "010-4646-5757"), ("57000", "전남 순천시", ""),
+             spent_amount=6900, domemae_order_no="OR9990004"),
+        # ── 발주 실패 ──
+        item("F1", "failed", "우산 양산 양우산 자동우산 3단자동우산", 1, 4600, 40,
+             ("이서준", "010-3434-5656"), ("13500", "성남시 분당구", ""),
+             matched_goods_no="13187678", supply_cost=3190,
+             hold_reason="도매매 이머니 잔액 부족 — 4,600원 필요", updated_at=_day(1)),
+        item("F2", "failed", "욕실 미끄럼방지 매트 규조토 발매트", 1, 16900, 20,
+             ("배수아", "010-1919-2828"), ("05500", "서울시 송파구", "502호"),
+             matched_goods_no="20000005", supply_cost=7200,
+             hold_reason="도매처 품절 — 발주 시점에 재고 0", updated_at=_day(0)),
+        item("F3", "failed", "휴대용 선풍기 거치대 유모차 집게형", 1, 9900, 6,
+             ("조은우", "010-3030-4040"), ("28000", "청주시 흥덕구", ""),
+             matched_goods_no="20000006", supply_cost=5400,
+             hold_reason="도매매 로그인 실패 — 일시 오류", updated_at=_day(0)),
+        # ── 수동 발주(보류) ──
+        item("H1", "hold", "캠핑용 접이식 미니 테이블", 5, 13000, 9,
+             ("박민수", "010-5555-6666"), ("48000", "부산시 해운대구", ""),
+             option_name="카키", matched_goods_no="20000001", matched_option_code="02",
+             hold_reason="도매매 옵션 재고 부족 — '카키' 필요 5개, 재고 3개"),
+        item("H2", "hold", "완전 다른 상품 XYZ", 1, 9900, 12,
+             ("한소망", "010-1212-3434"), ("61900", "광주시 서구", ""),
+             matched_name="", match_method="none", hold_reason="도매매 상품 매칭 실패 — 수동 확인 필요"),
+        item("H3", "hold", "여행용 목베개 메모리폼 기내용", 1, 14700, 26,
+             ("노지안", "010-6060-7070"), ("", "경기도 화성시 동탄", ""),
+             matched_goods_no="47747155", hold_reason="주소 확인 필요 — 우편번호 없음"),
+        # ── 완료 이력 ──
+        item("C0", "cancelled", "미니 랜턴 USB 충전식 캠핑 무드등", 1, 15900, 60,
+             ("유다인", "010-5151-6262"), ("35000", "대전시 서구", ""),
+             hold_reason="판매취소 처리함 — 스마트스토어센터에서 취소 완료", updated_at=_day(1)),
+        item("C1", "dispatched", "실리콘주걱 대코 브라이트 미니볶음주걱", 3, 3300, 72,
+             ("오지훈", "010-9999-0000"), ("21000", "인천시 연수구", ""),
+             spent_amount=9900, domemae_order_no="OR9990002", tracking_number="123456789012",
+             delivery_company="CJ대한통운", updated_at=_day(2), naver_status="배송중"),
+        item("C2", "dispatched", "캠핑 접이식 테이블 경량 알루미늄 롤테이블", 1, 18900, 96,
+             ("신예린", "010-1414-2525"), ("37000", "포항시 북구", ""),
+             spent_amount=12800, domemae_order_no="OR9990005", tracking_number="5678123456",
+             delivery_company="롯데택배", updated_at=_day(3), naver_status="구매확정"),
+        item("C3", "dispatched", "폴딩 체어 커버 방수 캠핑의자 커버", 1, 12900, 120,
+             ("권도현", "010-3636-4747"), ("26400", "원주시 단구동", ""),
+             spent_amount=8400, domemae_order_no="OR9990006", tracking_number="6074123412",
+             delivery_company="우체국택배", updated_at=_day(4), naver_status="반품"),
     ]
 
 
@@ -2248,23 +2583,32 @@ def orders_demo():
     눈으로 확인할 수 있도록 가짜 데이터로 렌더링. 저장은 전혀 안 함."""
     demo_items = _demo_order_items()
     _annotate_orders(demo_items)
-    tab = request.args.get("tab", "ready")
-    if tab not in ORDER_TABS:
-        tab = "ready"
-    flash("샘플 데이터입니다 — 실제 주문이 아닙니다.", "success")
+    tab = request.args.get("tab", "")
+    if tab in ("manual", "failed"):  # 옛 보류·발주 실패 탭 → 확인 필요
+        tab = "decide"
+    elif tab not in ORDER_TABS:
+        tab = ""  # 정해지지 않았으면 목록을 본 뒤 고른다(_pick_tab)
     ready = [i for i in demo_items if i["status"] == "ready"]
     hold = [i for i in demo_items if i["status"] == "hold"]
     dispatch_wait = [i for i in demo_items if i["status"] == "ordered"]
     failed = [i for i in demo_items if i["status"] == "failed"]
-    done = [i for i in demo_items if i["status"] == "dispatched"]
-    demo_emoney = {"total": 15000, "cash": 15000, "card": 0, "point": 320, "needed": 9890, "short": False}
+    done = [i for i in demo_items if i["status"] in ("dispatched", "cancelled")]
+    # 실화면과 같은 정렬 — 오래된 주문이 위로(발송기한이 급한 것부터)
+    ready.sort(key=lambda i: i.get("ordered_at", ""))
+    dispatch_wait.sort(key=lambda i: i.get("ordered_at", ""))
+    for i in ready:  # 샘플 — 도매가는 들어 있고, 배송비는 샘플 값으로
+        i.setdefault("supply_ship", 3000)
+        i.setdefault("supply_basis", "샘플")
+    needed = _apply_costs(ready)
+    demo_emoney = {"total": 40000, "cash": 40000, "card": 0, "point": 320, "needed": needed, "short": needed > 40000}
     manual_prefill = {k: "" for k in
                        ("goods_no", "option_code", "qty", "receiver_name", "phone", "zipcode", "address1", "address2",
-                        "shop_name", "delivery_memo", "product_order_id")}
+                        "delivery_memo", "product_order_id")}
     return render_template(
-        "orders.html", tab=tab, ready=ready, hold=hold, dispatch_wait=dispatch_wait,
+        "orders.html", tab=tab or _pick_tab(ready, hold + failed), ready=ready, hold=hold, dispatch_wait=dispatch_wait,
         failed=failed, done=done, error=None,
-        emoney=demo_emoney, emoney_error=None, demo=True,
+        emoney=demo_emoney, emoney_error=None, demo=True, store_name_ok=True,
+        **_order_view(ready, hold, dispatch_wait, failed, done, demo_emoney),
         **manual_prefill,
     )
 
@@ -3033,6 +3377,14 @@ def purchase_bulk_place():
               f"실제로 넣으려면 '확인함' 체크 후 다시 실행하세요.", "success")
         return redirect(url_for("orders", tab="ready"))
 
+    # 상호명(내 스마트스토어 이름)이 없으면 시작도 하지 않는다 — 건마다 실패로 찍히는 대신 한 번에 알린다
+    from bebrave.sourcing.domemae_order import store_name
+    try:
+        shop = store_name()
+    except ValueError as e:
+        flash(str(e), "error")
+        return redirect(url_for("orders", tab="ready"))
+
     # 취소 주문 방어 — 큐에 담긴 뒤 주문이 취소됐을 수 있다. 발주 직전에 네이버
     # 실제 주문 상태를 다시 조회해, 그새 취소/반품/교환 클레임이 걸린 건은 여기서
     # 걸러낸다(2026-09 발견: 도매처로 돈이 나가고 물건이 배송되는 사고). 재확인
@@ -3067,9 +3419,8 @@ def purchase_bulk_place():
 
     # 안전버그A 수정: 이머니 부족은 버튼 disabled만으로는 못 막는다(자바스크립트가 꺼져
     # 있거나 값이 새로고침 전이면 뚫린다) — 실제 결제 직전에 서버가 다시 검증한다.
-    needed = sum(
-        (_lookup_supply_price(i["matched_goods_no"]) or 0) * i["quantity"] for i in targets
-    )
+    # 화면과 같은 계산(지금 도매가 + 도매처 배송비, 묶음은 배송비 한 번)으로 — 2026-10 배송비 누락 수정
+    needed = _apply_costs(targets)
     try:
         from bebrave.sourcing.domemae_order import fetch_emoney_balance
         cash = fetch_emoney_balance(session_data["sId"])["cash"]
@@ -3080,31 +3431,44 @@ def purchase_bulk_place():
         flash(f"이머니 잔액 확인 실패 — 안전을 위해 일괄 발주 중단: {e}", "error")
         return redirect(url_for("orders", tab="ready"))
 
-    ok, failed = 0, []
+    # 네이버 발주확인 — 도매매에 돈을 내기 전에 먼저 한다. 확인 뒤엔 고객 취소가 판매자 승인 대상이 돼,
+    # 돈을 낸 뒤 즉시 취소·환불되고 물건은 출발하는 손해를 막는다. 실패해도 발주는 계속하고 표시만 남긴다.
+    confirm_note = _naver_confirm([i["product_order_id"] for i in targets])
+
+    # 같은 네이버 주문·같은 받는 사람은 도매매 주문 하나로 묶는다 — 배송비 한 번, 상자 하나(2026-10)
+    groups: dict = {}
     for i in targets:
+        key = (i.get("order_id"), i["receiver_name"], i["receiver_address1"], i["receiver_address2"])
+        groups.setdefault(key, []).append(i)
+
+    ok, failed = 0, []
+    for members in groups.values():
+        first = members[0]
         try:
             delivery = DeliveryInfo(
-                name=i["receiver_name"], zipcode=i["receiver_zipcode"],
-                address1=i["receiver_address1"], address2=i["receiver_address2"],
-                phone=i["receiver_tel"], shop_name=i["matched_name"],
+                name=first["receiver_name"], zipcode=first["receiver_zipcode"],
+                address1=first["receiver_address1"], address2=first["receiver_address2"],
+                phone=first["receiver_tel"], shop_name=shop,
             )
-            option = (OrderOption(option_code=i["matched_option_code"], quantity=i["quantity"])
-                      if i.get("matched_option_code") else OrderOption(quantity=i["quantity"]))
             # 고객이 남긴 배송요청사항을 도매처로 넘긴다 — 도매처가 직배송하므로
             # 여기서 안 실으면 그 요청은 아무 데도 도달하지 않는다.
-            item = OrderItem(goods_no=i["matched_goods_no"], options=[option],
-                              delivery_message=(i.get("delivery_memo") or "")[:256])
-            result = place_order([item], delivery, sId=session_data["sId"], dry_run=False)
+            order_items = [OrderItem(goods_no=i["matched_goods_no"],
+                                     options=[OrderOption(option_code=i["matched_option_code"], quantity=i["quantity"])
+                                              if i.get("matched_option_code") else OrderOption(quantity=i["quantity"])],
+                                     delivery_message=(i.get("delivery_memo") or "")[:256]) for i in members]
+            result = place_order(order_items, delivery, sId=session_data["sId"], dry_run=False)
             order_no = (result or {}).get("order", {}).get("orderNo", "?")
-            supply_price = _lookup_supply_price(i["matched_goods_no"])
-            spent = supply_price * i["quantity"] if supply_price is not None else None
-            mark_ordered(i["product_order_id"], order_no, spent)
-            ok += 1
+            for i in members:
+                mark_ordered(i["product_order_id"], order_no, i.get("supply_cost"))
+                ok += 1
         except Exception as e:
-            mark_failed(i["product_order_id"], str(e))
-            failed.append(f"{i['product_name'][:16]}({e})")
+            for i in members:
+                mark_failed(i["product_order_id"], str(e))
+                failed.append(f"{i['product_name'][:16]}({e})")
 
     msg = f"일괄 발주 완료 — 성공 {ok}건"
+    if confirm_note:
+        msg += f" · {confirm_note}"
     if cancelled:
         msg += f", 취소 재확인으로 제외 {len(cancelled)}건"
     if failed:
@@ -3151,13 +3515,19 @@ def purchase_place():
     zipcode = request.form.get("zipcode", "")
     address1 = request.form.get("address1", "")
     address2 = request.form.get("address2", "")
-    shop_name = request.form.get("shop_name", "")
     product_order_id = request.form.get("product_order_id", "")
     live = request.form.get("live") == "on"
     # 큐/이력에서 넘어온 경우 그 탭으로, 수동 발주 탭에서 직접 입력한 경우 수동 발주 탭으로 복귀
     return_tab = request.form.get("return_to", "manual")
     if return_tab not in ORDER_TABS:
         return_tab = "manual"
+
+    from bebrave.sourcing.domemae_order import store_name
+    try:
+        shop_name = store_name()  # 입력칸이 아니라 설정값 — 화면에서 상품명이 들어가던 문제(2026-10)
+    except ValueError as e:
+        flash(str(e), "error")
+        return redirect(url_for("orders", tab=return_tab))
 
     try:
         from bebrave.sourcing.domemae_order import OrderItem, OrderOption, DeliveryInfo, login, place_order
@@ -3194,9 +3564,12 @@ def purchase_place():
         flash(f"발주 완료 — 주문번호 {order_no}", "success")
         if product_order_id:
             from bebrave.smartstore.purchase_queue import mark_ordered
-            supply_price = _lookup_supply_price(goods_no)
-            spent = supply_price * qty if supply_price is not None else None
+            info = _supply_info(goods_no)
+            spent = info["unit"] * qty + (info["ship"] or 0) if info["unit"] is not None else None
             mark_ordered(product_order_id, order_no, spent)
+            note = _naver_confirm([product_order_id])
+            if note:
+                flash(note, "error")
     except Exception as e:
         if product_order_id:
             from bebrave.smartstore.purchase_queue import mark_failed

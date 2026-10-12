@@ -43,10 +43,11 @@
   .verdict.replace { background:var(--warn-bg); color:var(--warn); }
   .verdict.watch { background:var(--chip-bg); color:var(--ink-soft); }
   .verdict.ok { background:var(--ok-bg); color:var(--ok); }
-  .issues { margin:0; padding:0; list-style:none; display:flex; flex-direction:column; gap:3px; }
-  .issues li { font-size:12.5px; color:var(--ink-soft); line-height:1.45; padding-left:12px; position:relative; }
-  .issues li::before { content:""; position:absolute; left:0; top:7px; width:5px; height:5px; border-radius:50%; background:var(--ink-muted); }
-  .issues li.bad::before { background:var(--err); } .issues li.warn::before { background:var(--warn); }
+  .chips { display:flex; flex-wrap:wrap; gap:4px; margin-top:2px; }
+  .chip { display:inline-block; font-size:12px; font-weight:600; padding:2px 8px; border-radius:6px; white-space:nowrap; cursor:help; }
+  .chip.bad { background:var(--err-bg); color:var(--err); }
+  .chip.warn { background:var(--warn-bg); color:var(--warn); }
+  .chip.info { background:var(--chip-bg); color:var(--ink-soft); }
   .acts { display:flex; flex-wrap:wrap; gap:6px; margin-top:9px; }
   .acts .btn-sm { white-space:nowrap; }
   .last-act { margin:8px 0 0; font-size:12px; color:var(--ink-muted); }
@@ -73,10 +74,22 @@
 
 <div class="pm-head">
   <h1>상품 관리{% if sync_checked_at %}<span class="when">{{ sync_checked_at.replace('T', ' ') }} 기준</span>{% endif %}</h1>
-  <form method="post" action="{{ url_for('products_refresh_stock') }}" style="margin:0;">
-    <button type="submit" class="{{ 'btn-sm' if stale_days is none or stale_days >= 1 else 'secondary btn-sm' }}">지금 확인</button>
-  </form>
+  <div class="row" style="gap:6px;margin:0;">
+    {% if demo %}
+    <a class="btn secondary btn-sm" href="{{ url_for('products_view') }}">실데이터 보기</a>
+    {% else %}
+    <a class="btn secondary btn-sm" href="{{ url_for('products_demo') }}">샘플 데이터</a>
+    <form method="post" action="{{ url_for('products_refresh_stock') }}" style="margin:0;">
+      <button type="submit" class="{{ 'btn-sm' if stale_days is none or stale_days >= 1 else 'secondary btn-sm' }}">지금 확인</button>
+    </form>
+    {% endif %}
+  </div>
 </div>
+{% if demo %}
+<div class="stale" style="background:var(--chip-bg);"><span class="ico" style="background:var(--ink-muted);"></span>
+  <span><b style="color:var(--ink);">샘플 화면</b> — 요약 칸마다 다른 상품이 걸리도록 만든 가상 상품입니다. 판정 규칙은 실데이터와 같고, 버튼은 눌러도 반영되지 않습니다.</span>
+</div>
+{% endif %}
 
 {% if stale_days is none or stale_days >= 1 %}
 <div class="stale"><span class="ico"></span>
@@ -167,7 +180,8 @@
       <td class="c-todo">
         <span class="verdict {{ p.verdict }}">{{ p.verdict_label }}</span>
         {% if p.issues %}
-        <ul class="issues">{% for i in p.issues %}<li class="{{ i.level }}">{{ i.text }}</li>{% endfor %}</ul>
+        {# 문장 대신 짧은 상태 칩 — 설명은 마우스를 올리면(주문·발주와 같은 방식) #}
+        <div class="chips">{% for i in p.issues %}<span class="chip {{ i.level }}" title="{{ i.text }}">{{ i.chip or i.text }}</span>{% endfor %}</div>
         {% endif %}
         {% set la = p.last_action %}
         {% if la %}
@@ -201,6 +215,9 @@
 
 <script>
 var currentFilter = 'all';
+var DEMO = {{ 'true' if demo else 'false' }};
+// 샘플 화면 — 가상 상품이라 상세 창·반영 버튼을 막는다
+if (DEMO) window.openPreviewModal = function () { alert('샘플 화면에서는 상세 창을 열지 않습니다.'); };
 function rowsAll() { return document.querySelectorAll('#productTable tbody tr[data-filters]'); }
 function visibleRows() {
   return Array.prototype.filter.call(rowsAll(), function (tr) { return tr.style.display !== 'none'; });
@@ -249,6 +266,7 @@ function updateBulkBar() {
   });
 }
 function bulkAct(btn) {
+  if (DEMO) { alert('샘플 화면에서는 반영하지 않습니다.'); return; }
   var checked = checkedBoxes().filter(function (c) {
     return c.closest('tr').dataset.eligible.split(' ').indexOf(btn.dataset.act) !== -1;
   });
@@ -263,6 +281,7 @@ function bulkAct(btn) {
   f.submit();
 }
 function rowAct(id, action, label, name) {
+  if (DEMO) { alert('샘플 화면 — 실제로는 "' + label + '"이(가) 네이버에 반영됩니다.'); return; }
   if (!confirm(label + ' — "' + name + '"\n\n네이버에 실제로 반영합니다. 진행할까요?')) return;
   document.getElementById('rowAction').value = action;
   document.getElementById('rowId').value = id;

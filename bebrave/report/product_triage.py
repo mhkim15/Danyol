@@ -1,4 +1,5 @@
 """상품 관리 표의 "문제 · 할 일" 판정 — 상품 1개의 상태를 보고 무엇이 문제이고 무엇을 누르면 되는지 정한다.
+문제마다 짧은 상태 칩(chip)과 긴 설명(text, 마우스 올리면 보임)을 함께 낸다 — 주문·발주와 같은 표시 방식(2026-10).
 
 표가 상태 배지만 늘어놓고 "그래서 이 상품을 어떻게 하라는 건지"를 말하지 않았다(2026-10).
 판정은 여기 한 곳에서만 하고, 화면은 결과(문제 문장 + 버튼)를 그대로 그린다.
@@ -32,40 +33,43 @@ def triage(p: dict, min_abs_profit: int, new_days: int, dead_days: int) -> dict:
     # 1) 팔리면 바로 손해·취소가 나는 것 — 도매처 품절·수량 불일치·원가 상승
     if (stock is not None and stock <= 0) or sync_action == "판매중지":
         urgent = True
-        issues.append({"level": "bad", "text": "도매처 품절 — 주문이 들어와도 발주할 수 없습니다"})
+        issues.append({"level": "bad", "text": "도매처 품절 — 주문이 들어와도 발주할 수 없습니다", "chip": "도매처 품절"})
         if "apply_sync" in eligible:
             actions.append({"kind": "post", "action": "apply_sync", "label": "판매중지 반영"})
     elif stock is not None and stock <= 10:
         watch = True
-        issues.append({"level": "warn", "text": f"도매처 재고 {stock}개 — 품절 임박"})
+        issues.append({"level": "warn", "text": f"도매처 재고 {stock}개 — 품절 임박", "chip": "품절 임박"})
     if sync_action == "재고조정":
         urgent = True
-        issues.append({"level": "warn", "text": "도매처 수량과 내 등록 수량이 다릅니다"})
+        issues.append({"level": "warn", "text": "도매처 수량과 내 등록 수량이 다릅니다", "chip": "수량 불일치"})
         if "apply_sync" in eligible:
             actions.append({"kind": "post", "action": "apply_sync", "label": "수량 맞추기"})
     if sync_action == "마진경고":
         urgent = True
         sp = sync.get("suggested_price")
-        issues.append({"level": "bad", "text": "도매가가 올라 마진이 줄었습니다" + (f" — 권장가 {sp:,}원" if sp else "")})
+        issues.append({"level": "bad", "text": "도매가가 올라 마진이 줄었습니다" + (f" — 권장가 {sp:,}원" if sp else ""), "chip": "도매가 상승"})
         if "apply_price" in eligible:
             actions.append({"kind": "post", "action": "apply_price", "label": "권장가 적용"})
     if sync_action == "확인실패":
         watch = True
-        issues.append({"level": "warn", "text": "도매처 정보를 확인하지 못했습니다"})
+        issues.append({"level": "warn", "text": "도매처 정보를 확인하지 못했습니다", "chip": "확인 실패"})
 
     # 2) 남겨둘 이유가 없는 것 — 팔려도 남는 돈이 적거나, 오래 안 팔림
     low_profit = unit_profit < min_abs_profit
     if low_profit:
-        issues.append({"level": "bad", "text": f"개당 {unit_profit:,}원 남음 — 기준 {min_abs_profit:,}원 미달"})
+        issues.append({"level": "bad", "text": f"개당 {unit_profit:,}원 남음 — 기준 {min_abs_profit:,}원 미달", "chip": "마진 부족"})
     # 정리 기준은 헬스체크 "정리 대상(60일+ 0건)"과 같은 숫자를 쓴다 — 두 화면의 개수가 달라지지 않게
-    no_sale_long = days is not None and days >= dead_days and sold_30 == 0
+    # 판매중지 상태에서 "최근 30일 0건"은 안 팔려서가 아니라 막아놔서다 — 예전에 팔리던 상품이면
+    # 교체 대상으로 보지 않는다(샘플에서 누적 37건 팔린 상품이 "교체 권장"으로 나와 발견, 2026-10)
+    paused_seller = bool(p.get("is_suspended")) and sold_total > 0
+    no_sale_long = days is not None and days >= dead_days and sold_30 == 0 and not paused_seller
     if no_sale_long:
-        issues.append({"level": "bad", "text": f"등록 {days}일째 " + ("판매 0건" if not sold_total else "최근 30일 판매 0건")})
+        issues.append({"level": "bad", "text": f"등록 {days}일째 " + ("판매 0건" if not sold_total else "최근 30일 판매 0건"), "chip": f"{days}일 무판매"})
     elif days is not None and new_days <= days < dead_days and sold_30 == 0:
         watch = True
-        issues.append({"level": "warn", "text": f"등록 {days}일 — 아직 판매 없음 ({dead_days}일 넘으면 교체 대상)"})
+        issues.append({"level": "warn", "text": f"등록 {days}일 — 아직 판매 없음 ({dead_days}일 넘으면 교체 대상)", "chip": "판매 없음"})
     if p.get("auto_delete_risk"):
-        issues.append({"level": "bad", "text": f"{p.get('months_since_sold')}개월 미판매 — 네이버 자동삭제 대상"})
+        issues.append({"level": "bad", "text": f"{p.get('months_since_sold')}개월 미판매 — 네이버 자동삭제 대상", "chip": "자동삭제 위험"})
     if low_profit or no_sale_long:
         replace = True
         rep = (p.get("replacements") or [None])[0]
@@ -84,14 +88,15 @@ def triage(p: dict, min_abs_profit: int, new_days: int, dead_days: int) -> dict:
 
     # 3) 네이버에서 판매중지 — 교체 대상이 아니면 다시 여는 게 할 일
     if p.get("is_suspended"):
-        issues.append({"level": "warn", "text": "네이버에서 판매중지 상태입니다"})
+        issues.append({"level": "warn", "text": "네이버에서 판매중지 상태입니다"
+                       + (f" — 중지 전 누적 {sold_total}건 팔린 상품" if paused_seller else ""), "chip": "판매중지"})
         if not replace and "resume" in eligible:
             urgent = True
             actions.append({"kind": "post", "action": "resume", "label": "판매 재개"})
 
     if not issues and days is not None and days < new_days:
         watch = True
-        issues.append({"level": "info", "text": f"등록 {days}일 — 아직 판단하기 이릅니다"})
+        issues.append({"level": "info", "text": f"등록 {days}일 — 아직 판단하기 이릅니다", "chip": "신규"})
 
     verdict = URGENT if urgent else REPLACE if replace else WATCH if watch else OK
     return {"verdict": verdict, "verdict_label": VERDICT_LABEL[verdict], "issues": issues,
@@ -112,6 +117,9 @@ def _demo() -> None:
     # 도매처 품절 → 바로 조치 + 판매중지 반영 버튼
     r = triage(dict(base, sync={"action": "판매중지", "supply_stock": 0}), **kw)
     assert r["verdict"] == URGENT and r["actions"][0]["action"] == "apply_sync", r
+    # 누적 37건 팔리다 판매중지된 상품 → 교체가 아니라 판매 재개
+    r = triage(dict(base, days_since_registered=150, recent_order_count=0, order_count=37, is_suspended=True), **kw)
+    assert r["verdict"] == URGENT and r["actions"][0]["action"] == "resume", r
     # 막 등록한 상품 → 지켜보기
     assert triage(dict(base, days_since_registered=5, recent_order_count=0, order_count=0), **kw)["verdict"] == WATCH
     # 30일째 무판매(마진은 충분) → 아직 교체 아님, 지켜보기

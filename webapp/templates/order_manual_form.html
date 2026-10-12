@@ -1,0 +1,47 @@
+{#- 수동·직접 발주 양식 — 주문·발주 화면에서 창(모달)으로 띄운다.
+    목록 안에서 양식을 펼치면 목록 길이가 바뀌어 보던 자리를 잃었다(2026-10).
+    i가 있으면 그 주문으로 채우고(보류·실패 주문의 수동 발주), 없으면 직접 입력 발주다.
+    제출 확인(confirmLive)·샘플 막기(demoGuard)는 주문·발주 화면의 스크립트를 쓴다. -#}
+{% set addr_issue = i and ('주소' in (i.hold_reason or '') or '우편' in (i.hold_reason or '')) %}
+<h1 style="margin:0 0 6px;font-size:18px;">{{ '수동 발주' if i else '직접 입력 발주' }}</h1>
+{% if i %}
+<p class="muted" style="margin:0 0 14px;font-size:13px;">{{ i.product_name }} × {{ i.quantity }}{% if i.option_name %} · {{ i.option_name }}{% endif %}
+  {% if i.hold_reason %}<br>멈춘 이유: {{ i.hold_reason }}{% endif %}</p>
+{% else %}
+<p class="muted" style="margin:0 0 14px;font-size:13px;">네이버 주문과 상관없이 도매매에 직접 발주합니다.</p>
+{% endif %}
+<form method="post" action="{{ url_for('purchase_place') }}" data-name="{{ (i.product_name if i else '도매매 상품')[:20] }}"
+      onsubmit="return confirmLive(this, '{{ '수동' if i else '직접 입력' }} 발주 — ' + this.dataset.name + ' × ' + this.qty.value + '개를 도매매에 실제로 발주합니다(이머니 차감).');">
+  <input type="hidden" name="live" value="">
+  <input type="hidden" name="return_to" value="{{ return_to }}">
+  <input type="hidden" name="product_order_id" value="{{ i.product_order_id if i else '' }}">
+  <div class="mf-grid3">
+    <div><label>도매매 상품번호</label><input type="text" name="goods_no" value="{{ i.matched_goods_no if i else '' }}" required></div>
+    <div><label>옵션코드</label><input type="text" name="option_code" value="{{ (i.matched_option_code or '') if i else '' }}" placeholder="단일옵션은 비움"></div>
+    <div><label>수량</label><input type="number" name="qty" value="{{ i.quantity if i else 1 }}" min="1"></div>
+  </div>
+  <details class="mf-recv" {{ 'open' if (not i) or addr_issue }}>
+    <summary>받는 사람{% if i %} — 주문에서 자동으로 채웠습니다{% if addr_issue %} <b style="color:var(--warn);">(주소 확인 필요)</b>{% endif %}{% endif %}</summary>
+    <div class="mf-grid2">
+      <div><label>이름</label><input type="text" name="receiver_name" value="{{ i.receiver_name if i else '' }}" required></div>
+      <div><label>휴대전화</label><input type="text" name="phone" value="{{ i.receiver_tel if i else '' }}" required></div>
+      <div><label>우편번호</label><input type="text" name="zipcode" value="{{ i.receiver_zipcode if i else '' }}" required></div>
+      <div><label>주소1</label><input type="text" name="address1" value="{{ i.receiver_address1 if i else '' }}" required></div>
+      <div><label>주소2</label><input type="text" name="address2" value="{{ i.receiver_address2 if i else '' }}"></div>
+      <div><label>배송요청사항 <span class="muted">— 도매처에 그대로 전달</span></label>
+        <input type="text" name="delivery_memo" value="{{ (i.delivery_memo or '') if i else '' }}" maxlength="256"></div>
+    </div>
+  </details>
+  <div class="row" style="margin-top:16px;gap:8px;">
+    <button type="submit">도매매에 발주</button>
+    <button type="button" class="secondary" onclick="document.getElementById('modal').close()">닫기</button>
+  </div>
+</form>
+<style>
+  .mf-grid3 { display:grid; grid-template-columns:2fr 1fr 1fr; gap:10px; }
+  .mf-grid2 { display:grid; grid-template-columns:1fr 1fr; gap:8px 10px; margin-top:8px; }
+  .mf-grid3 label, .mf-grid2 label { margin:0 0 4px; font-size:12px; }
+  .mf-recv { margin-top:12px; }
+  .mf-recv summary { cursor:pointer; font-size:13px; color:var(--ink-soft); }
+  @media (max-width: 680px) { .mf-grid3, .mf-grid2 { grid-template-columns:1fr; } }
+</style>

@@ -29,6 +29,56 @@ except ImportError:
 
 _BASE = "https://domeggook.com/ssl/api/"
 
+STORE_NAME_MAX = 16  # 공식 가이드 deliinfo 8번 항목 최대 16글자(바로 위 추가연락처가 13글자 — 처음에 잘못 읽었다)
+
+
+def store_name() -> str:
+    """deliinfo의 "쇼핑몰명/상호명" — **내 스마트스토어 이름**(.env SELLER_STORE_NAME).
+
+    공식 가이드(2026-07-07): "실제 소비자가 상품을 주문한 쇼핑몰의 이름을 입력합니다 … 도매꾹, 도매매 및
+    그 하위 브랜드의 상표가 소비자에게 배송되는 박스나 송장에 노출되는 것을 막기 위한 것"(최대 16글자).
+    2026-10까지 도매 상품명을 넣고 있었다 — 박스·송장에 내 가게 대신 긴 상품명이 찍히고 글자 수도 넘었다.
+    미설정·길이 초과면 예외 — 엉뚱한 이름으로 조용히 발주되는 것보다 발주가 멈추는 게 낫다."""
+    name = os.environ.get("SELLER_STORE_NAME", "").strip()
+    if not name:
+        raise ValueError("발주 전에 .env에 SELLER_STORE_NAME(내 스마트스토어 이름, 16글자 이내)을 넣어야 합니다 — "
+                         "도매처가 박스·송장에 찍는 쇼핑몰명입니다")
+    if len(name) > STORE_NAME_MAX:
+        raise ValueError(f"SELLER_STORE_NAME '{name}'이 {len(name)}글자입니다 — 도매매 쇼핑몰명은 {STORE_NAME_MAX}글자까지입니다")
+    return name
+
+
+def format_phone(raw: str) -> str:
+    """수령인 휴대전화를 도매매 형식(하이픈 포함)으로. 공식 가이드: 010~019, 050·0502~0507·0707 안심번호만
+    휴대전화 칸에 들어가고, 유선전화(02·031 등)는 넣을 수 없다 — 형식이 틀리면 도매매가 주문을 거절한다.
+    네이버가 하이픈 없이 줄 수도 있어 숫자만 뽑아 다시 맞춘다(실주문 형식 미검증, 2026-10)."""
+    import re
+    d = re.sub(r"\D", "", raw or "")
+    if d.startswith(("0502", "0503", "0504", "0505", "0506", "0507", "0707")) and len(d) == 12:
+        return f"{d[:4]}-{d[4:8]}-{d[8:]}"
+    if d.startswith("050") and len(d) == 11:
+        return f"{d[:3]}-{d[3:7]}-{d[7:]}"
+    if re.match(r"01[0-9]", d) and len(d) in (10, 11):
+        return f"{d[:3]}-{d[3:-4]}-{d[-4:]}"
+    raise ValueError(f"수령인 연락처 '{raw}'가 휴대전화·안심번호가 아닙니다 — 도매매는 휴대전화만 받습니다. "
+                     "고객에게 휴대전화를 확인해 수동 발주에서 고쳐 주세요")
+
+
+def delivery_problem(zipcode: str, address1: str, address2: str, phone: str) -> str:
+    """도매매가 거절할 배송지면 사람이 읽을 이유, 괜찮으면 빈 문자열. 발주 전(목록 표시)과 발주 직전에 같이 쓴다."""
+    import re
+    if not re.fullmatch(r"\d{5}", (zipcode or "").strip()):
+        return "우편번호가 없거나 5자리가 아닙니다 — 주소 확인 필요"
+    if not (address1 or "").strip():
+        return "주소가 비어 있습니다 — 주소 확인 필요"
+    if not (address2 or "").strip():
+        return "상세주소(주소2)가 비어 있습니다 — 도매매 필수 칸. 상세주소가 없는 주소면 '없음'으로 적어 수동 발주"
+    try:
+        format_phone(phone)
+    except ValueError as e:
+        return str(e)
+    return ""
+
 
 @dataclass
 class DeliveryInfo:
@@ -41,7 +91,7 @@ class DeliveryInfo:
     address1: str                  # 4. 주소1 (필수)
     address2: str                  # 5. 주소2 (필수)
     phone: str                     # 6. 휴대전화, 010-0000-0000 형식 (필수)
-    shop_name: str                 # 8. 쇼핑몰명/상호명 — 도매꾹 상표 노출 방지용 (필수)
+    shop_name: str                 # 8. 쇼핑몰명/상호명 — 내 스마트스토어 이름, 16글자 이내. store_name() 사용 (필수)
     email: str = ""                # 2. 이메일 (선택)
     phone2: str = ""               # 7. 추가연락처 (선택)
     customs_code: str = ""         # 9. 통관고유부호 (해외직배송 상품 주문시에만 필수)
@@ -209,6 +259,11 @@ def place_order(
     구매자(id)와 판매자가 동일하면 SELF_ORDER 오류 발생 — 도매꾹/도매매 자체에 상품을 등록해
     판매하지 않는 이상 해당 없음.
     """
+    # 도매매가 거절할 배송지는 보내기 전에 막는다 — 실패 사유가 "확인 필요"에 그대로 남아 고칠 곳이 보인다
+    problem = delivery_problem(delivery.zipcode, delivery.address1, delivery.address2, delivery.phone)
+    if problem:
+        raise ValueError(problem)
+    delivery.phone = format_phone(delivery.phone)
     key = api_key or os.environ.get("DOMEMAE_ORDER_API_KEY", "") or os.environ.get("DOMEMAE_API_KEY", "")
     uid = user_id or os.environ.get("DOMEMAE_USER_ID", "")
     if not dry_run and not (key and uid):
@@ -245,3 +300,31 @@ def place_order(
     if data.get("result") != "SUCCESS":
         raise RuntimeError(f"발주 실패: {data}")
     return data
+
+
+def _demo() -> None:
+    """실행 가능한 자체 점검 — 연락처 형식·배송지 검사·상호명 길이 (네트워크 없음)."""
+    assert format_phone("01012345678") == "010-1234-5678"
+    assert format_phone("010-1234-5678") == "010-1234-5678"
+    assert format_phone("0507-1234-5678") == "0507-1234-5678"
+    assert format_phone("0161234567") == "016-123-4567"
+    for bad in ("02-1234-5678", "031-123-4567", ""):
+        try:
+            format_phone(bad); raise AssertionError(f"유선·빈 번호가 통과됨: {bad}")
+        except ValueError:
+            pass
+    assert delivery_problem("06000", "서울시 강남구", "101호", "01012345678") == ""
+    assert "우편번호" in delivery_problem("", "경기도 화성시", "1층", "01012345678")
+    assert "상세주소" in delivery_problem("06000", "서울시", " ", "01012345678")
+    assert "휴대전화" in delivery_problem("06000", "서울시", "1층", "02-123-4567")
+    os.environ["SELLER_STORE_NAME"] = "가" * 16; assert store_name() == "가" * 16
+    os.environ["SELLER_STORE_NAME"] = "가" * 17
+    try:
+        store_name(); raise AssertionError("17글자 상호명이 통과됨")
+    except ValueError:
+        pass
+    print("domemae_order self-check OK")
+
+
+if __name__ == "__main__":
+    _demo()

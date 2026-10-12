@@ -1,0 +1,52 @@
+{#- 발주 정보 확인·수정 — 이 주문이 도매매 주문서에 어떻게 들어가는지 그대로 보여주고, 배송지를 고칠 수 있다.
+    저장은 Friday의 발주 대기 기록만 바꾼다(돈·네이버 무관). 실제 발주는 목록의 "선택 발주"로 한다(2026-10). -#}
+<h1 style="margin:0 0 4px;font-size:18px;">발주 정보 확인·수정</h1>
+<p class="muted" style="margin:0 0 14px;font-size:13px;">{{ i.product_name }} × {{ i.quantity }}{% if i.option_name %} · {{ i.option_name }}{% endif %}</p>
+
+{% if out.problem %}
+<div class="flash flash-error" style="margin:0 0 12px;">{{ out.problem }} — 이대로 발주하면 도매매가 거절합니다.</div>
+{% endif %}
+
+<p class="df-h">도매매 주문서에 이렇게 들어갑니다</p>
+<table class="df-preview">
+  <tr><th>주문자</th><td>내 도매매 계정 정보 <span class="muted">(도매매가 자동으로 채움 — 고객 정보 아님)</span></td></tr>
+  <tr><th>쇼핑몰명</th><td>{% if out.shop %}{{ out.shop }} <span class="muted">(택배 상자·송장에 찍힘)</span>{% else %}<b style="color:var(--err);">미설정 — 발주 불가</b>{% endif %}</td></tr>
+  <tr><th>상품</th><td>도매매 {{ i.matched_goods_no or '—' }}{% if i.matched_option_code %} · 옵션 {{ i.matched_option_code }}{% endif %} × {{ i.quantity }}</td></tr>
+  <tr><th>받는 사람</th><td>{{ out.name or '—' }} · {{ out.phone or '—' }}</td></tr>
+  <tr><th>배송지</th><td>({{ out.zipcode or '우편번호 없음' }}) {{ out.address1 }} {{ out.address2 or '[상세주소 없음]' }}</td></tr>
+  <tr><th>배송요청</th><td>{{ out.memo or '—' }} <span class="muted">(도매처에 그대로 전달)</span></td></tr>
+</table>
+{% if i.orderer_name and i.orderer_name != i.receiver_name %}
+<p class="muted" style="font-size:12.5px;margin:8px 0 0;">스마트스토어 주문자는 {{ i.orderer_name }}({{ i.orderer_tel }})이고 받는 사람이 다릅니다(선물 등) — 도매매에는 받는 사람만 들어갑니다.</p>
+{% endif %}
+{% if i.delivery_original %}
+<p class="muted" style="font-size:12.5px;margin:8px 0 0;">{{ i.delivery_edited_at }}에 고친 주문입니다. 원래 값: {{ i.delivery_original.receiver_name }} · {{ i.delivery_original.receiver_tel }} · ({{ i.delivery_original.receiver_zipcode }}) {{ i.delivery_original.receiver_address1 }} {{ i.delivery_original.receiver_address2 }}</p>
+{% endif %}
+
+<p class="df-h" style="margin-top:18px;">받는 사람 고치기</p>
+<form method="post" action="{{ url_for('orders_delivery_save') }}" onsubmit="return demoGuard();">
+  <input type="hidden" name="product_order_id" value="{{ i.product_order_id }}">
+  <input type="hidden" name="return_to" value="{{ return_to }}">
+  <div class="df-grid">
+    <div><label>이름</label><input type="text" name="receiver_name" value="{{ i.receiver_name }}" required></div>
+    <div><label>휴대전화 <span class="muted">— 하이픈은 자동</span></label><input type="text" name="receiver_tel" value="{{ i.receiver_tel }}" required></div>
+    <div><label>우편번호</label><input type="text" name="receiver_zipcode" value="{{ i.receiver_zipcode }}" maxlength="5" required></div>
+    <div><label>주소1</label><input type="text" name="receiver_address1" value="{{ i.receiver_address1 }}" required></div>
+    <div><label>주소2 <span class="muted">— 상세주소가 없으면 '없음'</span></label><input type="text" name="receiver_address2" value="{{ i.receiver_address2 }}" required></div>
+    <div><label>배송요청사항</label><input type="text" name="delivery_memo" value="{{ i.delivery_memo or '' }}" maxlength="256"></div>
+  </div>
+  <div class="row" style="margin-top:16px;gap:8px;">
+    <button type="submit">저장</button>
+    <button type="button" class="secondary" onclick="document.getElementById('modal').close()">닫기</button>
+    <span class="muted" style="font-size:12px;">저장만 합니다 — 발주는 목록에서 "선택 발주"로</span>
+  </div>
+</form>
+<style>
+  .df-h { font-size:13px; font-weight:700; margin:0 0 8px; }
+  .df-preview { width:100%; border-collapse:collapse; font-size:13px; }
+  .df-preview th { width:84px; text-align:left; color:var(--ink-soft); font-weight:600; padding:7px 0; border-bottom:1px solid var(--line); vertical-align:top; text-transform:none; letter-spacing:0; font-size:12.5px; }
+  .df-preview td { padding:7px 0; border-bottom:1px solid var(--line); }
+  .df-grid { display:grid; grid-template-columns:1fr 1fr; gap:8px 10px; }
+  .df-grid label { margin:0 0 4px; font-size:12px; }
+  @media (max-width: 680px) { .df-grid { grid-template-columns:1fr; } }
+</style>
